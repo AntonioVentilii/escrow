@@ -1,0 +1,50 @@
+# Please see the documentation for all configuration options:
+# https://docs.github.com/en/enterprise-cloud@latest/code-security/dependabot/dependabot-version-updates
+
+version: 2
+updates:
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'chore(github-actions): '
+    cooldown:
+      default-days: 30
+
+  - package-ecosystem: cargo
+    directory: '/'
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'chore(cargo-deps): '
+      prefix-development: 'chore(cargo-deps-dev): '
+    cooldown:
+      default-days: 30
+    groups:
+      ic-cdk-kit:
+        patterns:
+          - 'ic-cdk'
+          - 'ic-cdk-macros'
+
+  - package-ecosystem: rust-toolchain
+    directory: '/'
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'chore(rust): '
+    cooldown:
+      default-days: 30
+
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'chore(npm-deps): '
+      prefix-development: 'chore(npm-deps-dev): '
+    cooldown:
+      default-days: 30
+    allow:
+      - dependency-type: all
+    open-pull-requests-limit: 10

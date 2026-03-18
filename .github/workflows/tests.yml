@@ -1,0 +1,71 @@
+name: Tests
+
+on:
+  push:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: tests-unit-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare
+        uses: ./.github/actions/prepare
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm run test:unit
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: tests-integration-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare
+        uses: ./.github/actions/prepare
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm run test:integration
+
+  tests-pass:
+    name: Tests Pass
+    needs: ['unit', 'integration']
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: tests-pass-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/needs_success
+        with:
+          needs: '${{ toJson(needs) }}'

@@ -1,0 +1,32 @@
+{
+	"canisters": {
+		"escrow": {
+			"type": "rust",
+			"package": "escrow",
+			"candid": "src/escrow/escrow.did",
+			"metadata": [
+				{
+					"name": "candid:service"
+				}
+			]
+		}
+	},
+	"defaults": {
+		"build": {
+			"args": "",
+			"packtool": ""
+		}
+	},
+	"output_env_file": ".env",
+	"version": 1,
+	"networks": {
+		"local": {
+			"bind": "127.0.0.1:4943",
+			"type": "ephemeral"
+		},
+		"staging": {
+			"providers": ["https://icp0.io"],
+			"type": "persistent"
+		}
+	}
+}
