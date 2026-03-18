@@ -1,3 +1,4 @@
+use candid::Nat;
 use ic_cdk::export_candid;
 use ic_cdk_macros::{post_upgrade, pre_upgrade};
 
@@ -13,7 +14,12 @@ use crate::{
             ProcessExpiredDealsResult, ReclaimDealResult,
         },
     },
-    types::{deal::DealId, state::Config},
+    types::{
+        deal::DealId,
+        icrc7::{Icrc7TransferArg, Icrc7TransferResponse, SupportedStandard, Value},
+        ledger_types::Account,
+        state::Config,
+    },
 };
 
 pub mod api;

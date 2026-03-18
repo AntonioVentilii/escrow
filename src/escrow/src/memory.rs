@@ -52,6 +52,14 @@ pub fn with_deals<R>(f: impl FnOnce(&BTreeMap<DealId, Deal>) -> R) -> R {
     DEALS.with(|d| f(&d.borrow()))
 }
 
+/// Returns the total number of deals in storage.
+///
+/// Used by the ICRC-7 layer for `icrc7_total_supply`.
+#[must_use]
+pub fn deal_count() -> u64 {
+    DEALS.with(|d| d.borrow().len() as u64)
+}
+
 fn allocate_deal_id() -> DealId {
     NEXT_DEAL_ID.with(|id| {
         let mut id = id.borrow_mut();
@@ -236,6 +244,14 @@ mod tests {
         let deal = make_stored_deal(DealStatus::Created);
         let found = with_deals(|deals: &BTreeMap<_, _>| deals.values().any(|d| d.id == deal.id));
         assert!(found);
+    }
+
+    #[test]
+    fn deal_count_reflects_insertions() {
+        let before = super::deal_count();
+        make_stored_deal(DealStatus::Created);
+        make_stored_deal(DealStatus::Funded);
+        assert_eq!(super::deal_count(), before + 2);
     }
 
     #[test]
