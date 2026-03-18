@@ -3,14 +3,17 @@ use ic_cdk_macros::{post_upgrade, pre_upgrade};
 
 use crate::{
     api::deals::{
-        errors::EscrowError,
         params::{
             AcceptDealArgs, CancelDealArgs, CreateDealArgs, FundDealArgs, ListMyDealsArgs,
             ReclaimDealArgs,
         },
-        results::{ClaimableDealView, DealView},
+        results::{
+            AcceptDealResult, CancelDealResult, CreateDealResult, DealView, FundDealResult,
+            GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
+            ProcessExpiredDealsResult, ReclaimDealResult,
+        },
     },
-    types::{deal::DealId, ledger_types::Account, state::Config},
+    types::{deal::DealId, state::Config},
 };
 
 pub mod api;

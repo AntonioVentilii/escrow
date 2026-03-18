@@ -1,6 +1,39 @@
 use candid::{CandidType, Deserialize, Principal};
 
-use crate::types::deal::{Deal, DealId, DealStatus};
+use super::errors::EscrowError;
+use crate::types::{
+    deal::{Deal, DealId, DealStatus},
+    ledger_types::Account,
+};
+
+macro_rules! candid_result {
+    ($name:ident, $ok:ty) => {
+        #[derive(CandidType, Deserialize, Clone, Debug)]
+        pub enum $name {
+            Ok(Box<$ok>),
+            Err(EscrowError),
+        }
+
+        impl From<Result<$ok, EscrowError>> for $name {
+            fn from(result: Result<$ok, EscrowError>) -> Self {
+                match result {
+                    Ok(v) => Self::Ok(Box::new(v)),
+                    Err(e) => Self::Err(e),
+                }
+            }
+        }
+    };
+}
+
+candid_result!(CreateDealResult, DealView);
+candid_result!(FundDealResult, DealView);
+candid_result!(AcceptDealResult, DealView);
+candid_result!(ReclaimDealResult, DealView);
+candid_result!(CancelDealResult, DealView);
+candid_result!(GetDealResult, DealView);
+candid_result!(GetClaimableDealResult, ClaimableDealView);
+candid_result!(GetEscrowAccountResult, Account);
+candid_result!(ProcessExpiredDealsResult, Vec<DealId>);
 
 /// Full deal view returned to authorised participants (payer or recipient).
 #[derive(CandidType, Deserialize, Clone, Debug)]
