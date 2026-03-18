@@ -92,3 +92,32 @@ Introduce a `Resolver` trait or enum (`Admin`, `Oracle(Principal)`, `DaoVote { .
 ### Storage at scale
 
 The current `BTreeMap + stable_save` approach works for MVP volumes. For production scale, migrate the deal map to `ic-stable-structures` `StableBTreeMap` for O(1) upgrade cost. The `memory.rs` accessor API (`get_deal`, `with_deal`, `with_deals`) isolates callers from the storage backend, making this migration transparent.
+
+### Deal ledger — deals as ICRC-7 NFTs
+
+To further improve long-term scalability and avoid canister memory exhaustion, each deal could be represented as a non-fungible token on a dedicated **ICRC-7 deal ledger canister**.
+
+**How it maps:**
+
+| Deal concept                                            | ICRC-7 equivalent                                            |
+| ------------------------------------------------------- | ------------------------------------------------------------ |
+| `create_deal`                                           | `icrc7_mint` — mint a new NFT with deal metadata             |
+| `accept_deal`                                           | `icrc7_transfer` — transfer the NFT from payer to recipient  |
+| Terminal states (`Completed`, `Refunded`, `Cancelled`)  | `icrc7_burn` or metadata update marking the token as settled |
+| Deal details (amount, status, expiry, payer, recipient) | Token metadata fields (ICRC-16 value map)                    |
+| Deal history / audit trail                              | ICRC-3 transaction log (built into compliant ledgers)        |
+
+**Benefits:**
+
+- **Scalability** — deal storage moves out of the escrow canister into a purpose-built ledger canister (or canister group) with its own memory, effectively removing the single-canister memory ceiling.
+- **Composability** — deals become first-class IC assets queryable via standard ICRC-7 methods; wallets, explorers, and other canisters can display and interact with deals without custom integration.
+- **Auditability** — ICRC-3 provides an immutable, append-only transaction log of every mint, transfer, and burn at no extra development cost.
+- **Transferability** — representing a deal as an NFT opens the door to secondary-market scenarios (e.g. selling or assigning a claim before settlement).
+
+**Open challenges:**
+
+- ICRC-7 does not standardize metadata _updates_ after minting; status transitions would require a custom extension method on the deal ledger (e.g. `update_deal_status`).
+- Every deal lifecycle action becomes an inter-canister call (escrow canister -> deal ledger), adding ~1-2 seconds of latency per step.
+- The deal ledger canister itself must be upgradeable and its cycles balance managed.
+
+**Migration path:** the escrow canister already isolates storage behind the `memory.rs` accessor API. A phased rollout could (1) deploy the ICRC-7 deal ledger, (2) dual-write new deals to both local memory and the ledger, (3) backfill existing deals, and (4) remove the local deal map once the ledger is the source of truth.
