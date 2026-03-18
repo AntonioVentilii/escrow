@@ -276,7 +276,13 @@ async fn execute_reclaim(deal_id: DealId, deal: &Deal) -> Result<DealView, Escro
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use candid::Principal;
+
+    use super::{cancel, create, get, get_claimable, get_escrow_account, list_for_caller};
+    use crate::{
+        api::deals::{errors::EscrowError, params::CreateDealArgs},
+        types::deal::DealStatus,
+    };
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])

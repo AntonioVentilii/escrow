@@ -106,8 +106,16 @@ pub fn validate_can_cancel(deal: &Deal, caller: Principal) -> Result<bool, Escro
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::types::deal::DealMetadata;
+    use candid::Principal;
+
+    use super::{
+        validate_can_accept, validate_can_cancel, validate_can_fund, validate_can_reclaim,
+        validate_create,
+    };
+    use crate::{
+        api::deals::errors::EscrowError,
+        types::deal::{Deal, DealMetadata, DealStatus},
+    };
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])

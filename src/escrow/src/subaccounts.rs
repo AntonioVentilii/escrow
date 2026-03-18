@@ -18,7 +18,8 @@ pub fn derive_deal_subaccount(deal_id: DealId) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{derive_deal_subaccount, DOMAIN_SEPARATOR};
+    use crate::types::deal::DealId;
 
     #[test]
     fn deterministic() {

@@ -121,10 +121,12 @@ pub fn restore_state() {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use candid::Principal;
 
-    use super::*;
-    use crate::types::deal::DealStatus;
+    use super::{get_deal, insert_new_deal, release_lock, try_acquire_lock, with_deal, with_deals};
+    use crate::types::deal::{Deal, DealStatus};
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])
