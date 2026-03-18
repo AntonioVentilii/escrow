@@ -53,8 +53,8 @@ sequenceDiagram
 
     %% --- CLAIM ---
     R->>F: Open QR / link
-    F->>E: get_deal(deal_id)
-    F->>R: Prompt login / signup
+    F->>E: get_claimable_deal(deal_id)
+    F->>R: Show tip preview, prompt login / signup
 
     R->>F: accept_deal(deal_id)
     F->>E: accept_deal(deal_id)

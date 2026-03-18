@@ -2,21 +2,36 @@ use candid::{CandidType, Deserialize, Principal};
 
 use crate::types::deal::{Deal, DealId, DealStatus};
 
+/// Full deal view returned to authorised participants (payer or recipient).
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct DealView {
+    /// Unique deal identifier.
     pub id: DealId,
+    /// Principal of the deal creator / payer.
     pub payer: Principal,
+    /// Principal of the recipient, or `None` if not yet bound.
     pub recipient: Option<Principal>,
+    /// Escrowed token amount.
     pub amount: u128,
+    /// Principal of the ICRC token ledger canister.
     pub token_ledger: Principal,
+    /// Current lifecycle status of the deal.
     pub status: DealStatus,
+    /// Nanosecond UTC timestamp when the deal was created.
     pub created_at_ns: u64,
+    /// Nanosecond UTC timestamp after which the deal expires.
     pub expires_at_ns: u64,
+    /// 32-byte ledger subaccount that holds the escrowed funds.
     pub escrow_subaccount: Vec<u8>,
+    /// Optional short title.
     pub title: Option<String>,
+    /// Optional note or message.
     pub note: Option<String>,
+    /// Timestamp when the deal was funded, if applicable.
     pub funded_at_ns: Option<u64>,
+    /// Timestamp when the deal was completed (funds released), if applicable.
     pub completed_at_ns: Option<u64>,
+    /// Timestamp when the deal was refunded, if applicable.
     pub refunded_at_ns: Option<u64>,
 }
 
@@ -44,13 +59,21 @@ impl From<&Deal> for DealView {
 /// Reduced view for public claim pages — does not expose payer or internal fields.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct ClaimableDealView {
+    /// Unique deal identifier.
     pub id: DealId,
+    /// Escrowed token amount.
     pub amount: u128,
+    /// Principal of the ICRC token ledger canister.
     pub token_ledger: Principal,
+    /// Current lifecycle status of the deal.
     pub status: DealStatus,
+    /// Whether a recipient principal has already been bound to this deal.
     pub is_recipient_bound: bool,
+    /// Nanosecond UTC timestamp after which the deal expires.
     pub expires_at_ns: u64,
+    /// Optional short title.
     pub title: Option<String>,
+    /// Optional note or message.
     pub note: Option<String>,
 }
 
@@ -73,9 +96,8 @@ impl From<&Deal> for ClaimableDealView {
 mod tests {
     use candid::Principal;
 
-    use crate::types::deal::{Deal, DealMetadata, DealStatus};
-
     use super::{ClaimableDealView, DealView};
+    use crate::types::deal::{Deal, DealMetadata, DealStatus};
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])

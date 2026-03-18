@@ -6,29 +6,31 @@ An Internet Computer escrow canister MVP implementing a **tip flow**: a payer fu
 
 ### Update methods
 
-| Method | Description |
-|---|---|
-| `create_deal(CreateDealArgs)` | Create a new tip deal. Caller becomes the payer. |
-| `fund_deal(FundDealArgs)` | Move tokens from payer to escrow subaccount via ICRC-2 `transfer_from`. Payer must have approved the canister first. |
-| `accept_deal(AcceptDealArgs)` | Recipient claims a funded tip before expiry. Binds the recipient if unset. |
-| `reclaim_deal(ReclaimDealArgs)` | Payer reclaims funds from an expired, unclaimed deal. |
-| `cancel_deal(CancelDealArgs)` | Payer cancels an unfunded (Created) deal. |
-| `process_expired_deals(limit)` | Batch-refund up to `limit` expired funded deals. Idempotent. |
+| Method                          | Description                                                                                                          |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `create_deal(CreateDealArgs)`   | Create a new tip deal. Caller becomes the payer.                                                                     |
+| `fund_deal(FundDealArgs)`       | Move tokens from payer to escrow subaccount via ICRC-2 `transfer_from`. Payer must have approved the canister first. |
+| `accept_deal(AcceptDealArgs)`   | Recipient claims a funded tip before expiry. Binds the recipient if unset.                                           |
+| `reclaim_deal(ReclaimDealArgs)` | Payer reclaims funds from an expired, unclaimed deal.                                                                |
+| `cancel_deal(CancelDealArgs)`   | Payer cancels an unfunded (Created) deal.                                                                            |
+| `process_expired_deals(limit)`  | Batch-refund up to `limit` expired funded deals. Idempotent.                                                         |
 
 ### Query methods
 
-| Method | Description |
-|---|---|
-| `get_deal(deal_id)` | Full deal view (authenticated). |
-| `list_my_deals(ListMyDealsArgs)` | Paginated deals where caller is payer or recipient. |
-| `get_claimable_deal(deal_id)` | Reduced public view for claim/share-link pages (no auth required). |
-| `get_escrow_account(deal_id)` | Returns the escrow `Account` (canister principal + deal subaccount). |
+| Method                           | Description                                                                                                |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `get_deal(deal_id)`              | Full deal view. Caller must be payer or recipient.                                                         |
+| `list_my_deals(ListMyDealsArgs)` | Paginated deals where caller is payer or recipient.                                                        |
+| `get_claimable_deal(deal_id)`    | Reduced public view for claim/share-link pages. Any authenticated caller may query (no participant check). |
+| `get_escrow_account(deal_id)`    | Returns the escrow `Account` (canister principal + deal subaccount). Caller must be payer or recipient.    |
+
+> **Note:** Every endpoint rejects anonymous callers (`caller_is_not_anonymous` guard).
 
 ### Admin methods
 
-| Method | Description |
-|---|---|
-| `config()` | Read canister configuration (controller-only). |
+| Method                  | Description                                      |
+| ----------------------- | ------------------------------------------------ |
+| `config()`              | Read canister configuration (controller-only).   |
 | `update_config(Config)` | Update canister configuration (controller-only). |
 
 ## Deal lifecycle
@@ -45,20 +47,23 @@ Cancelled        Refunded
 
 ## Module structure
 
-| Module | Responsibility |
-|---|---|
-| `types/deal.rs` | Deal, DealStatus, args, views |
-| `types/errors.rs` | Typed `EscrowError` enum |
-| `types/ledger_types.rs` | ICRC-1/ICRC-2 Account and transfer types |
-| `types/state.rs` | Config, StableState for persistence |
-| `memory.rs` | Thread-local storage, save/restore, processing locks |
-| `api/deals/api.rs` | Deal update/query canister endpoints |
-| `api/admin/api.rs` | Controller-only admin endpoints |
-| `ledger.rs` | ICRC inter-canister call helpers (transfer, transfer_from) |
-| `subaccounts.rs` | Deterministic deal subaccount derivation |
-| `validation.rs` | State transition and input validation |
-| `expiry.rs` | Batch expired-deal refund processing |
-| `guards.rs` | Caller authentication guards |
+| Module                  | Responsibility                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| `types/deal.rs`         | Internal `Deal`, `DealStatus`, `DealMetadata` types                             |
+| `types/ledger_types.rs` | ICRC-1/ICRC-2 Account and transfer types                                        |
+| `types/state.rs`        | Config, StableState for persistence                                             |
+| `api/deals/api.rs`      | Thin deal endpoint layer (delegates to services)                                |
+| `api/deals/params.rs`   | Public argument structs (`CreateDealArgs`, `FundDealArgs`, …)                   |
+| `api/deals/results.rs`  | Public view structs (`DealView`, `ClaimableDealView`)                           |
+| `api/deals/errors.rs`   | Typed `EscrowError` enum                                                        |
+| `api/admin/api.rs`      | Controller-only admin endpoints                                                 |
+| `services/deals.rs`     | Core deal business logic (create, fund, accept, reclaim, cancel, queries)       |
+| `services/expiry.rs`    | Batch expired-deal refund processing                                            |
+| `memory.rs`             | Thread-local storage, atomic deal-ID allocation, save/restore, processing locks |
+| `ledger.rs`             | ICRC inter-canister call helpers (transfer, transfer_from)                      |
+| `subaccounts.rs`        | Deterministic deal subaccount derivation                                        |
+| `validation.rs`         | State transition and input validation                                           |
+| `guards.rs`             | Caller authentication/authorization guards                                      |
 
 ## Future expansion
 
@@ -70,7 +75,7 @@ Add `Disputed` / `Resolved` variants to `DealStatus`. The explicit state machine
 
 ### YES / NO / EMPTY signatures
 
-Add `payer_signature` and `recipient_signature` fields to `Deal` (each an `Option<SignatureChoice>` enum). Settlement logic in `api/deals/api.rs` can branch on the combination of signatures once they exist, while the current tip flow simply hard-codes both as implicit YES.
+Add `payer_signature` and `recipient_signature` fields to `Deal` (each an `Option<SignatureChoice>` enum). Settlement logic in `services/deals.rs` can branch on the combination of signatures once they exist, while the current tip flow simply hard-codes both as implicit YES.
 
 ### Multi-asset / multi-ledger
 

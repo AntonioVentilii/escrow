@@ -123,9 +123,8 @@ pub fn restore_state() {
 mod tests {
     use candid::Principal;
 
-    use crate::types::deal::DealStatus;
-
     use super::*;
+    use crate::types::deal::DealStatus;
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])

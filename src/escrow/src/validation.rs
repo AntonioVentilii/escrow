@@ -107,7 +107,6 @@ pub fn validate_can_cancel(deal: &Deal, caller: Principal) -> Result<bool, Escro
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use crate::types::deal::DealMetadata;
 
     fn test_principal(id: u8) -> Principal {
@@ -163,14 +162,14 @@ mod tests {
     fn fund_ok_when_created() {
         let payer = test_principal(1);
         let deal = make_deal(DealStatus::Created, payer, None);
-        assert_eq!(validate_can_fund(&deal, payer).unwrap(), false);
+        assert!(!validate_can_fund(&deal, payer).unwrap());
     }
 
     #[test]
     fn fund_idempotent_when_funded() {
         let payer = test_principal(1);
         let deal = make_deal(DealStatus::Funded, payer, None);
-        assert_eq!(validate_can_fund(&deal, payer).unwrap(), true);
+        assert!(validate_can_fund(&deal, payer).unwrap());
     }
 
     #[test]
@@ -195,7 +194,7 @@ mod tests {
         let payer = test_principal(1);
         let recip = test_principal(2);
         let deal = make_deal(DealStatus::Funded, payer, None);
-        assert_eq!(validate_can_accept(&deal, recip, 150).unwrap(), false);
+        assert!(!validate_can_accept(&deal, recip, 150).unwrap());
     }
 
     #[test]
@@ -222,7 +221,7 @@ mod tests {
     fn accept_idempotent_when_completed() {
         let payer = test_principal(1);
         let deal = make_deal(DealStatus::Completed, payer, None);
-        assert_eq!(validate_can_accept(&deal, payer, 150).unwrap(), true);
+        assert!(validate_can_accept(&deal, payer, 150).unwrap());
     }
 
     #[test]
@@ -241,7 +240,7 @@ mod tests {
     fn reclaim_ok_when_funded_and_expired() {
         let payer = test_principal(1);
         let deal = make_deal(DealStatus::Funded, payer, None);
-        assert_eq!(validate_can_reclaim(&deal, payer, 300).unwrap(), false);
+        assert!(!validate_can_reclaim(&deal, payer, 300).unwrap());
     }
 
     #[test]
@@ -266,7 +265,7 @@ mod tests {
     fn reclaim_idempotent_when_refunded() {
         let payer = test_principal(1);
         let deal = make_deal(DealStatus::Refunded, payer, None);
-        assert_eq!(validate_can_reclaim(&deal, payer, 300).unwrap(), true);
+        assert!(validate_can_reclaim(&deal, payer, 300).unwrap());
     }
 
     #[test]
@@ -285,7 +284,7 @@ mod tests {
     fn cancel_ok_when_created() {
         let payer = test_principal(1);
         let deal = make_deal(DealStatus::Created, payer, None);
-        assert_eq!(validate_can_cancel(&deal, payer).unwrap(), false);
+        assert!(!validate_can_cancel(&deal, payer).unwrap());
     }
 
     #[test]

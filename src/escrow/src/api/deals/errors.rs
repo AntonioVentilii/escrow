@@ -1,17 +1,35 @@
 use candid::{CandidType, Deserialize};
 
-#[derive(CandidType, Deserialize, Clone, Debug)]
+/// Canonical error type returned by all deal endpoints.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum EscrowError {
+    /// The requested deal does not exist.
     NotFound,
+    /// The caller is not authorised to perform this action on the deal.
     NotAuthorised,
-    InvalidState { expected: String, actual: String },
+    /// The deal is not in the expected state for this operation.
+    InvalidState {
+        /// The state(s) that would have been valid.
+        expected: String,
+        /// The state the deal is actually in.
+        actual: String,
+    },
+    /// The deal has already reached a terminal state (`Completed`, `Refunded`, or `Cancelled`).
     AlreadyFinalised,
+    /// A reclaim was attempted before the deal's expiry deadline.
     NotExpired,
+    /// An accept was attempted after the deal's expiry deadline.
     Expired,
+    /// The supplied amount is invalid (e.g. zero).
     InvalidAmount,
+    /// The supplied expiry timestamp is invalid (e.g. in the past).
     InvalidExpiry,
+    /// An error occurred while communicating with the ICRC ledger canister.
     LedgerError(String),
+    /// The ledger accepted the call but the transfer itself failed.
     TransferFailed(String),
+    /// The caller does not match the deal's bound recipient.
     RecipientMismatch,
+    /// A generic validation error with a human-readable message.
     ValidationError(String),
 }

@@ -1,12 +1,6 @@
 use ic_cdk::{api::time, caller};
 use ic_cdk_macros::{query, update};
 
-use crate::{
-    guards::caller_is_not_anonymous,
-    services,
-    types::{deal::DealId, ledger_types::Account},
-};
-
 use super::{
     errors::EscrowError,
     params::{
@@ -14,6 +8,11 @@ use super::{
         ReclaimDealArgs,
     },
     results::{ClaimableDealView, DealView},
+};
+use crate::{
+    guards::caller_is_not_anonymous,
+    services,
+    types::{deal::DealId, ledger_types::Account},
 };
 
 // ---------------------------------------------------------------------------
@@ -57,7 +56,7 @@ pub async fn process_expired_deals(limit: u32) -> Result<Vec<DealId>, EscrowErro
 
 #[query(guard = "caller_is_not_anonymous")]
 pub fn get_deal(deal_id: DealId) -> Result<DealView, EscrowError> {
-    services::deals::get(deal_id)
+    services::deals::get(caller(), deal_id)
 }
 
 #[query(guard = "caller_is_not_anonymous")]
@@ -69,14 +68,17 @@ pub fn list_my_deals(args: ListMyDealsArgs) -> Vec<DealView> {
     services::deals::list_for_caller(caller(), offset, limit)
 }
 
-/// Public lookup for claim/share-link pages. Does not require authentication.
-#[query]
+/// Reduced public view for claim/share-link pages.
+/// Returns limited info (no payer, no internal fields). Any authenticated
+/// caller may query this — authorization is intentionally open so a
+/// not-yet-bound recipient can preview the tip before accepting.
+#[query(guard = "caller_is_not_anonymous")]
 pub fn get_claimable_deal(deal_id: DealId) -> Result<ClaimableDealView, EscrowError> {
     services::deals::get_claimable(deal_id)
 }
 
 /// Returns the escrow `Account` (canister principal + deal subaccount) for a deal.
-#[query]
+#[query(guard = "caller_is_not_anonymous")]
 pub fn get_escrow_account(deal_id: DealId) -> Result<Account, EscrowError> {
-    services::deals::get_escrow_account(deal_id)
+    services::deals::get_escrow_account(caller(), deal_id)
 }

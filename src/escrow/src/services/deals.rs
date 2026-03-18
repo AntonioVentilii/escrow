@@ -127,10 +127,11 @@ pub fn cancel(caller: Principal, deal_id: DealId) -> Result<DealView, EscrowErro
 // Queries
 // ---------------------------------------------------------------------------
 
-pub fn get(deal_id: DealId) -> Result<DealView, EscrowError> {
-    load_deal(deal_id)
-        .map(|d| DealView::from(&d))
-        .ok_or(EscrowError::NotFound)
+/// Returns the full deal view. Caller must be payer or recipient.
+pub fn get(caller: Principal, deal_id: DealId) -> Result<DealView, EscrowError> {
+    let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
+    authorize_deal_participant(&deal, caller)?;
+    Ok(DealView::from(&deal))
 }
 
 #[must_use]
@@ -146,18 +147,28 @@ pub fn list_for_caller(caller: Principal, offset: usize, limit: usize) -> Vec<De
     })
 }
 
+/// Reduced public view for claim/share-link pages (no authorization required).
 pub fn get_claimable(deal_id: DealId) -> Result<ClaimableDealView, EscrowError> {
     load_deal(deal_id)
         .map(|d| ClaimableDealView::from(&d))
         .ok_or(EscrowError::NotFound)
 }
 
-pub fn get_escrow_account(deal_id: DealId) -> Result<Account, EscrowError> {
+/// Returns the escrow account for a deal. Caller must be payer or recipient.
+pub fn get_escrow_account(caller: Principal, deal_id: DealId) -> Result<Account, EscrowError> {
     let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
+    authorize_deal_participant(&deal, caller)?;
     Ok(Account {
         owner: id(),
         subaccount: Some(deal.escrow_subaccount),
     })
+}
+
+fn authorize_deal_participant(deal: &Deal, caller: Principal) -> Result<(), EscrowError> {
+    if deal.payer == caller || deal.recipient == Some(caller) {
+        return Ok(());
+    }
+    Err(EscrowError::NotAuthorised)
 }
 
 // ---------------------------------------------------------------------------
@@ -326,16 +337,45 @@ mod tests {
     }
 
     #[test]
-    fn get_returns_existing_deal() {
+    fn get_returns_deal_for_payer() {
         let payer = test_principal(1);
         let view = create(payer, valid_args(), 100).unwrap();
-        let fetched = get(view.id).unwrap();
+        let fetched = get(payer, view.id).unwrap();
         assert_eq!(fetched.id, view.id);
     }
 
     #[test]
+    fn get_returns_deal_for_recipient() {
+        let payer = test_principal(1);
+        let recipient = test_principal(2);
+        let mut args = valid_args();
+        args.recipient = Some(recipient);
+        let view = create(payer, args, 100).unwrap();
+        let fetched = get(recipient, view.id).unwrap();
+        assert_eq!(fetched.id, view.id);
+    }
+
+    #[test]
+    fn get_rejects_unrelated_caller() {
+        let payer = test_principal(1);
+        let stranger = test_principal(3);
+        let view = create(payer, valid_args(), 100).unwrap();
+        let err = get(stranger, view.id).unwrap_err();
+        assert_eq!(err, EscrowError::NotAuthorised);
+    }
+
+    #[test]
     fn get_returns_not_found() {
-        assert!(get(999_999).is_err());
+        assert!(get(test_principal(1), 999_999).is_err());
+    }
+
+    #[test]
+    fn get_escrow_account_rejects_unrelated_caller() {
+        let payer = test_principal(1);
+        let stranger = test_principal(3);
+        let view = create(payer, valid_args(), 100).unwrap();
+        let err = get_escrow_account(stranger, view.id).unwrap_err();
+        assert_eq!(err, EscrowError::NotAuthorised);
     }
 
     #[test]
