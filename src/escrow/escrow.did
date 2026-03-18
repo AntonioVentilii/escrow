@@ -1,0 +1,79 @@
+type AcceptDealArgs = record { deal_id : nat64 };
+type Account = record { owner : principal; subaccount : opt blob };
+type ClaimableDealView = record {
+	id : nat64;
+	status : DealStatus;
+	title : opt text;
+	note : opt text;
+	amount : nat;
+	token_ledger : principal;
+	expires_at_ns : nat64;
+	is_recipient_bound : bool
+};
+type CreateDealArgs = record {
+	title : opt text;
+	note : opt text;
+	recipient : opt principal;
+	amount : nat;
+	token_ledger : principal;
+	expires_at_ns : nat64
+};
+type DealStatus = variant { Refunded; Funded; Cancelled; Created; Completed };
+type DealView = record {
+	id : nat64;
+	status : DealStatus;
+	title : opt text;
+	funded_at_ns : opt nat64;
+	completed_at_ns : opt nat64;
+	refunded_at_ns : opt nat64;
+	note : opt text;
+	recipient : opt principal;
+	escrow_subaccount : blob;
+	created_at_ns : nat64;
+	payer : principal;
+	amount : nat;
+	token_ledger : principal;
+	expires_at_ns : nat64
+};
+type EscrowError = variant {
+	AlreadyFinalised;
+	InvalidExpiry;
+	InvalidAmount;
+	NotFound;
+	ValidationError : text;
+	NotAuthorised;
+	LedgerError : text;
+	RecipientMismatch;
+	TransferFailed : text;
+	NotExpired;
+	InvalidState : record { actual : text; expected : text };
+	Expired
+};
+type FundDealArgs = record { deal_id : nat64 };
+type ListMyDealsArgs = record { offset : opt nat64; limit : opt nat64 };
+type Result = variant { Ok : DealView; Err : EscrowError };
+type Result_1 = variant { Ok : ClaimableDealView; Err : EscrowError };
+type Result_2 = variant { Ok : Account; Err : EscrowError };
+type Result_3 = variant { Ok : vec nat64; Err : EscrowError };
+service : {
+	accept_deal : (AcceptDealArgs) -> (Result);
+	cancel_deal : (AcceptDealArgs) -> (Result);
+	config : () -> (record {}) query;
+	create_deal : (CreateDealArgs) -> (Result);
+	fund_deal : (FundDealArgs) -> (Result);
+	// Reduced public view for claim/share-link pages.
+	// Returns limited info (no payer, no internal fields). Any authenticated
+	// caller may query this — authorization is intentionally open so a
+	// not-yet-bound recipient can preview the tip before accepting.
+	get_claimable_deal : (nat64) -> (Result_1) query;
+	get_deal : (nat64) -> (Result) query;
+	// Returns the escrow `Account` (canister principal + deal subaccount) for a deal.
+	get_escrow_account : (nat64) -> (Result_2) query;
+	list_my_deals : (ListMyDealsArgs) -> (vec DealView) query;
+	process_expired_deals : (nat32) -> (Result_3);
+	reclaim_deal : (FundDealArgs) -> (Result);
+	// Updates the global configuration for the Escrow canister.
+	//
+	// This method is gated to canister controllers.
+	update_config : (record {}) -> ()
+}
