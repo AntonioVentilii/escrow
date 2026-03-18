@@ -1,4 +1,4 @@
-use ic_cdk::api::time;
+use ic_cdk::{api::time, id};
 
 use crate::{
     api::deals::errors::EscrowError,
@@ -65,11 +65,15 @@ async fn try_refund_deal(deal_id: DealId) -> Result<(), EscrowError> {
 
     let block_index = ledger::transfer(ledger_id, Some(subaccount), payer_account, amount).await?;
 
+    let now = time();
+    let canister = id();
     with_deal(deal_id, |deal| {
         if deal.status == DealStatus::Funded {
             deal.status = DealStatus::Refunded;
-            deal.refunded_at_ns = Some(time());
+            deal.refunded_at_ns = Some(now);
             deal.refund_tx = Some(block_index);
+            deal.updated_at_ns = Some(now);
+            deal.updated_by = Some(canister);
         }
     });
 

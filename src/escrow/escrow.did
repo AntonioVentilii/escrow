@@ -25,11 +25,14 @@ type DealView = record {
 	status : DealStatus;
 	title : opt text;
 	funded_at_ns : opt nat64;
+	updated_by : opt principal;
 	completed_at_ns : opt nat64;
 	refunded_at_ns : opt nat64;
 	note : opt text;
 	recipient : opt principal;
+	updated_at_ns : opt nat64;
 	escrow_subaccount : blob;
+	created_by : principal;
 	created_at_ns : nat64;
 	payer : principal;
 	amount : nat;

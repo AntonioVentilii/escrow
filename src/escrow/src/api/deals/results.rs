@@ -40,7 +40,7 @@ candid_result!(ProcessExpiredDealsResult, Vec<DealId>);
 pub struct DealView {
     /// Unique deal identifier.
     pub id: DealId,
-    /// Principal of the deal creator / payer.
+    /// Principal of the payer.
     pub payer: Principal,
     /// Principal of the recipient, or `None` if not yet bound.
     pub recipient: Option<Principal>,
@@ -52,6 +52,12 @@ pub struct DealView {
     pub status: DealStatus,
     /// Nanosecond UTC timestamp when the deal was created.
     pub created_at_ns: u64,
+    /// Principal who created the deal.
+    pub created_by: Principal,
+    /// Nanosecond UTC timestamp when the deal was last updated.
+    pub updated_at_ns: Option<u64>,
+    /// Principal who last updated the deal.
+    pub updated_by: Option<Principal>,
     /// Nanosecond UTC timestamp after which the deal expires.
     pub expires_at_ns: u64,
     /// 32-byte ledger subaccount that holds the escrowed funds.
@@ -78,6 +84,9 @@ impl From<&Deal> for DealView {
             token_ledger: deal.token_ledger,
             status: deal.status.clone(),
             created_at_ns: deal.created_at_ns,
+            created_by: deal.created_by,
+            updated_at_ns: deal.updated_at_ns,
+            updated_by: deal.updated_by,
             expires_at_ns: deal.expires_at_ns,
             escrow_subaccount: deal.escrow_subaccount.clone(),
             title: deal.metadata.as_ref().and_then(|m| m.title.clone()),
@@ -146,6 +155,9 @@ mod tests {
             token_symbol: None,
             amount: 1_000_000,
             created_at_ns: 100,
+            created_by: test_principal(1),
+            updated_at_ns: None,
+            updated_by: None,
             expires_at_ns: 1000,
             status: DealStatus::Created,
             escrow_subaccount: vec![0_u8; 32],
@@ -165,6 +177,9 @@ mod tests {
         assert_eq!(view.title.as_deref(), Some("Test tip"));
         assert!(view.note.is_none());
         assert_eq!(view.escrow_subaccount.len(), 32);
+        assert_eq!(view.created_by, test_principal(1));
+        assert!(view.updated_at_ns.is_none());
+        assert!(view.updated_by.is_none());
     }
 
     #[test]
@@ -177,6 +192,9 @@ mod tests {
             token_symbol: None,
             amount: 500,
             created_at_ns: 100,
+            created_by: test_principal(1),
+            updated_at_ns: None,
+            updated_by: None,
             expires_at_ns: 1000,
             status: DealStatus::Funded,
             escrow_subaccount: vec![0_u8; 32],

@@ -44,6 +44,9 @@ pub fn create(caller: Principal, args: CreateDealArgs, now: u64) -> Result<DealV
         token_symbol: None,
         amount: args.amount,
         created_at_ns: now,
+        created_by: caller,
+        updated_at_ns: None,
+        updated_by: None,
         expires_at_ns: args.expires_at_ns,
         status: DealStatus::Created,
         escrow_subaccount: derive_deal_subaccount(deal_id),
@@ -69,7 +72,7 @@ pub async fn fund(caller: Principal, deal_id: DealId) -> Result<DealView, Escrow
     }
 
     try_acquire_lock(deal_id)?;
-    let result = execute_fund(deal_id, &deal).await;
+    let result = execute_fund(deal_id, &deal, caller).await;
     release_lock(deal_id);
     result
 }
@@ -101,12 +104,12 @@ pub async fn reclaim(
     }
 
     try_acquire_lock(deal_id)?;
-    let result = execute_reclaim(deal_id, &deal).await;
+    let result = execute_reclaim(deal_id, &deal, caller).await;
     release_lock(deal_id);
     result
 }
 
-pub fn cancel(caller: Principal, deal_id: DealId) -> Result<DealView, EscrowError> {
+pub fn cancel(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, EscrowError> {
     let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
 
     let already_done = validation::validate_can_cancel(&deal, caller)?;
@@ -116,6 +119,8 @@ pub fn cancel(caller: Principal, deal_id: DealId) -> Result<DealView, EscrowErro
 
     with_deal(deal_id, |d| {
         d.status = DealStatus::Cancelled;
+        d.updated_at_ns = Some(now);
+        d.updated_by = Some(caller);
     });
 
     load_deal(deal_id)
@@ -139,7 +144,7 @@ pub fn list_for_caller(caller: Principal, offset: usize, limit: usize) -> Vec<De
     with_deals(|deals| {
         let mut matched: Vec<DealView> = deals
             .values()
-            .filter(|d| d.payer == caller || d.recipient == Some(caller))
+            .filter(|d| d.created_by == caller || d.payer == caller || d.recipient == Some(caller))
             .map(DealView::from)
             .collect();
         matched.sort_by(|a, b| b.created_at_ns.cmp(&a.created_at_ns));
@@ -165,7 +170,7 @@ pub fn get_escrow_account(caller: Principal, deal_id: DealId) -> Result<Account,
 }
 
 fn authorize_deal_participant(deal: &Deal, caller: Principal) -> Result<(), EscrowError> {
-    if deal.payer == caller || deal.recipient == Some(caller) {
+    if deal.created_by == caller || deal.payer == caller || deal.recipient == Some(caller) {
         return Ok(());
     }
     Err(EscrowError::NotAuthorised)
@@ -175,7 +180,11 @@ fn authorize_deal_participant(deal: &Deal, caller: Principal) -> Result<(), Escr
 // Internal async executors (run inside processing lock)
 // ---------------------------------------------------------------------------
 
-async fn execute_fund(deal_id: DealId, deal: &Deal) -> Result<DealView, EscrowError> {
+async fn execute_fund(
+    deal_id: DealId,
+    deal: &Deal,
+    caller: Principal,
+) -> Result<DealView, EscrowError> {
     let escrow_account = Account {
         owner: id(),
         subaccount: Some(deal.escrow_subaccount.clone()),
@@ -193,11 +202,14 @@ async fn execute_fund(deal_id: DealId, deal: &Deal) -> Result<DealView, EscrowEr
     )
     .await?;
 
+    let now = time();
     with_deal(deal_id, |d| {
         if d.status == DealStatus::Created {
             d.status = DealStatus::Funded;
-            d.funded_at_ns = Some(time());
+            d.funded_at_ns = Some(now);
             d.funding_tx = Some(block_index);
+            d.updated_at_ns = Some(now);
+            d.updated_by = Some(caller);
         }
     });
 
@@ -230,11 +242,14 @@ async fn execute_accept(
     )
     .await?;
 
+    let completed_at = time();
     with_deal(deal_id, |d| {
         if d.status == DealStatus::Funded {
             d.status = DealStatus::Completed;
-            d.completed_at_ns = Some(time());
+            d.completed_at_ns = Some(completed_at);
             d.payout_tx = Some(block_index);
+            d.updated_at_ns = Some(completed_at);
+            d.updated_by = Some(recipient);
         }
     });
 
@@ -243,7 +258,11 @@ async fn execute_accept(
         .ok_or(EscrowError::NotFound)
 }
 
-async fn execute_reclaim(deal_id: DealId, deal: &Deal) -> Result<DealView, EscrowError> {
+async fn execute_reclaim(
+    deal_id: DealId,
+    deal: &Deal,
+    caller: Principal,
+) -> Result<DealView, EscrowError> {
     let payer_account = Account {
         owner: deal.payer,
         subaccount: None,
@@ -257,11 +276,14 @@ async fn execute_reclaim(deal_id: DealId, deal: &Deal) -> Result<DealView, Escro
     )
     .await?;
 
+    let now = time();
     with_deal(deal_id, |d| {
         if d.status == DealStatus::Funded {
             d.status = DealStatus::Refunded;
-            d.refunded_at_ns = Some(time());
+            d.refunded_at_ns = Some(now);
             d.refund_tx = Some(block_index);
+            d.updated_at_ns = Some(now);
+            d.updated_by = Some(caller);
         }
     });
 
@@ -306,10 +328,13 @@ mod tests {
     #[test]
     fn create_succeeds_with_valid_input() {
         let view = create(test_principal(1), valid_args(), 100).unwrap();
+        assert_eq!(view.created_by, test_principal(1));
         assert_eq!(view.payer, test_principal(1));
         assert_eq!(view.amount, 1_000_000);
         assert_eq!(view.status, DealStatus::Created);
         assert_eq!(view.title.as_deref(), Some("Test"));
+        assert!(view.updated_at_ns.is_none());
+        assert!(view.updated_by.is_none());
     }
 
     #[test]
@@ -330,8 +355,10 @@ mod tests {
     fn cancel_succeeds_for_created_deal() {
         let payer = test_principal(1);
         let view = create(payer, valid_args(), 100).unwrap();
-        let cancelled = cancel(payer, view.id).unwrap();
+        let cancelled = cancel(payer, view.id, 200).unwrap();
         assert_eq!(cancelled.status, DealStatus::Cancelled);
+        assert_eq!(cancelled.updated_at_ns, Some(200));
+        assert_eq!(cancelled.updated_by, Some(payer));
     }
 
     #[test]
@@ -339,7 +366,7 @@ mod tests {
         let payer = test_principal(1);
         let other = test_principal(2);
         let view = create(payer, valid_args(), 100).unwrap();
-        assert!(cancel(other, view.id).is_err());
+        assert!(cancel(other, view.id, 200).is_err());
     }
 
     #[test]

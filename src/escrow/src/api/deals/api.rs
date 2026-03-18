@@ -70,7 +70,7 @@ pub async fn reclaim_deal(args: ReclaimDealArgs) -> ReclaimDealResult {
 #[expect(clippy::needless_pass_by_value)]
 #[must_use]
 pub fn cancel_deal(args: CancelDealArgs) -> CancelDealResult {
-    services::deals::cancel(caller(), args.deal_id).into()
+    services::deals::cancel(caller(), args.deal_id, time()).into()
 }
 
 /// Batch-processes expired deals by refunding escrowed tokens back to their
