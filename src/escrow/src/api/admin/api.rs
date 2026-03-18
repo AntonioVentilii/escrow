@@ -2,6 +2,9 @@ use ic_cdk_macros::{query, update};
 
 use crate::{guards::caller_is_controller, memory::CONFIG, Config};
 
+/// Returns the current global configuration of the Escrow canister.
+///
+/// This method is gated to canister controllers.
 #[query(guard = "caller_is_controller")]
 #[must_use]
 pub fn config() -> Config {
