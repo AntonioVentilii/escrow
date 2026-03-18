@@ -19,10 +19,22 @@ thread_local! {
     static PROCESSING: RefCell<BTreeSet<DealId>> = const { RefCell::new(BTreeSet::new()) };
 }
 
-// --- Deal storage helpers ---
+// --- Deal storage ---
 
-pub fn insert_deal(deal: Deal) {
-    DEALS.with(|d| d.borrow_mut().insert(deal.id, deal));
+/// Atomically allocates a unique `DealId`, builds the deal via `build`, and
+/// inserts it into the store.
+///
+/// This is the **only** public way to create a deal — guaranteeing that every
+/// stored deal has a unique, canister-assigned ID.  The `build` closure
+/// receives the freshly allocated ID so it can derive subaccounts and populate
+/// the struct.  After `build` returns, the deal's `id` field is forcibly set
+/// to the allocated value (belt-and-suspenders) before insertion.
+pub fn insert_new_deal(build: impl FnOnce(DealId) -> Deal) -> Deal {
+    let deal_id = allocate_deal_id();
+    let mut deal = build(deal_id);
+    deal.id = deal_id;
+    DEALS.with(|d| d.borrow_mut().insert(deal_id, deal.clone()));
+    deal
 }
 
 #[must_use]
@@ -40,12 +52,11 @@ pub fn with_deals<R>(f: impl FnOnce(&BTreeMap<DealId, Deal>) -> R) -> R {
     DEALS.with(|d| f(&d.borrow()))
 }
 
-#[must_use]
-pub fn next_deal_id() -> DealId {
+fn allocate_deal_id() -> DealId {
     NEXT_DEAL_ID.with(|id| {
         let mut id = id.borrow_mut();
         let current = *id;
-        *id += 1;
+        *id = current.checked_add(1).expect("DealId overflow");
         current
     })
 }
@@ -120,9 +131,8 @@ mod tests {
         Principal::from_slice(&[id])
     }
 
-    fn make_test_deal(status: DealStatus) -> Deal {
-        let deal_id = next_deal_id();
-        Deal {
+    fn make_stored_deal(status: DealStatus) -> Deal {
+        insert_new_deal(|deal_id| Deal {
             id: deal_id,
             payer: test_principal(1),
             recipient: None,
@@ -141,17 +151,14 @@ mod tests {
             refund_tx: None,
             claim_code: None,
             metadata: None,
-        }
+        })
     }
 
     #[test]
     fn insert_and_retrieve() {
-        let deal = make_test_deal(DealStatus::Created);
-        let id = deal.id;
-        insert_deal(deal);
-
-        let loaded = get_deal(id).expect("deal should exist");
-        assert_eq!(loaded.id, id);
+        let deal = make_stored_deal(DealStatus::Created);
+        let loaded = get_deal(deal.id).expect("deal should exist");
+        assert_eq!(loaded.id, deal.id);
         assert_eq!(loaded.status, DealStatus::Created);
     }
 
@@ -161,35 +168,66 @@ mod tests {
     }
 
     #[test]
-    fn deal_id_increments() {
-        let a = next_deal_id();
-        let b = next_deal_id();
-        assert_eq!(b, a + 1);
+    fn ids_are_sequential() {
+        let a = make_stored_deal(DealStatus::Created);
+        let b = make_stored_deal(DealStatus::Created);
+        assert_eq!(b.id, a.id + 1);
+    }
+
+    #[test]
+    fn ids_are_globally_unique() {
+        let mut seen = BTreeSet::new();
+        for _ in 0..100 {
+            let deal = make_stored_deal(DealStatus::Created);
+            assert!(seen.insert(deal.id), "duplicate DealId: {}", deal.id);
+        }
+    }
+
+    #[test]
+    fn builder_cannot_forge_id() {
+        let deal = insert_new_deal(|_deal_id| Deal {
+            id: 999_999_999,
+            payer: test_principal(1),
+            recipient: None,
+            token_ledger: test_principal(99),
+            token_symbol: None,
+            amount: 1000,
+            created_at_ns: 100,
+            expires_at_ns: 200,
+            status: DealStatus::Created,
+            escrow_subaccount: vec![0_u8; 32],
+            funded_at_ns: None,
+            completed_at_ns: None,
+            refunded_at_ns: None,
+            funding_tx: None,
+            payout_tx: None,
+            refund_tx: None,
+            claim_code: None,
+            metadata: None,
+        });
+        // The store overrides whatever the builder returned
+        assert_ne!(deal.id, 999_999_999);
+        assert!(get_deal(deal.id).is_some());
+        assert!(get_deal(999_999_999).is_none());
     }
 
     #[test]
     fn with_deal_mutates_in_place() {
-        let deal = make_test_deal(DealStatus::Created);
-        let id = deal.id;
-        insert_deal(deal);
-
-        with_deal(id, |d| {
+        let deal = make_stored_deal(DealStatus::Created);
+        with_deal(deal.id, |d| {
             d.status = DealStatus::Funded;
             d.funded_at_ns = Some(500);
         });
 
-        let loaded = get_deal(id).unwrap();
+        let loaded = get_deal(deal.id).unwrap();
         assert_eq!(loaded.status, DealStatus::Funded);
         assert_eq!(loaded.funded_at_ns, Some(500));
     }
 
     #[test]
     fn with_deals_reads_all() {
-        let deal = make_test_deal(DealStatus::Created);
-        let id = deal.id;
-        insert_deal(deal);
-
-        let found = with_deals(|deals: &BTreeMap<_, _>| deals.values().any(|d| d.id == id));
+        let deal = make_stored_deal(DealStatus::Created);
+        let found = with_deals(|deals: &BTreeMap<_, _>| deals.values().any(|d| d.id == deal.id));
         assert!(found);
     }
 

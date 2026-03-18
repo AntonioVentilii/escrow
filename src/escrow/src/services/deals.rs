@@ -9,8 +9,8 @@ use crate::{
     },
     ledger,
     memory::{
-        get_deal as load_deal, insert_deal, next_deal_id, release_lock, try_acquire_lock,
-        with_deal, with_deals,
+        get_deal as load_deal, insert_new_deal, release_lock, try_acquire_lock, with_deal,
+        with_deals,
     },
     subaccounts::derive_deal_subaccount,
     types::{
@@ -27,9 +27,6 @@ use crate::{
 pub fn create(caller: Principal, args: CreateDealArgs, now: u64) -> Result<DealView, EscrowError> {
     validation::validate_create(args.amount, args.expires_at_ns, now)?;
 
-    let deal_id = next_deal_id();
-    let escrow_subaccount = derive_deal_subaccount(deal_id);
-
     let metadata = if args.title.is_some() || args.note.is_some() {
         Some(DealMetadata {
             title: args.title,
@@ -39,7 +36,7 @@ pub fn create(caller: Principal, args: CreateDealArgs, now: u64) -> Result<DealV
         None
     };
 
-    let deal = Deal {
+    let deal = insert_new_deal(|deal_id| Deal {
         id: deal_id,
         payer: caller,
         recipient: args.recipient,
@@ -49,7 +46,7 @@ pub fn create(caller: Principal, args: CreateDealArgs, now: u64) -> Result<DealV
         created_at_ns: now,
         expires_at_ns: args.expires_at_ns,
         status: DealStatus::Created,
-        escrow_subaccount,
+        escrow_subaccount: derive_deal_subaccount(deal_id),
         funded_at_ns: None,
         completed_at_ns: None,
         refunded_at_ns: None,
@@ -58,11 +55,9 @@ pub fn create(caller: Principal, args: CreateDealArgs, now: u64) -> Result<DealV
         refund_tx: None,
         claim_code: None,
         metadata,
-    };
+    });
 
-    let view = DealView::from(&deal);
-    insert_deal(deal);
-    Ok(view)
+    Ok(DealView::from(&deal))
 }
 
 pub async fn fund(caller: Principal, deal_id: DealId) -> Result<DealView, EscrowError> {
