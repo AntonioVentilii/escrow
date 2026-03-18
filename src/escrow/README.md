@@ -30,40 +30,40 @@ An Internet Computer escrow canister implementing a **tip flow**: a payer funds 
 
 Every deal is a non-fungible token. Ownership follows deal lifecycle: the payer owns the token until `Completed`, at which point the recipient becomes the owner.
 
-| Method                                              | Description                                                                      |
-| --------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `icrc7_name()`                                      | Collection name: `"Escrow Deals"`.                                               |
-| `icrc7_symbol()`                                    | Collection symbol: `"ESCROW"`.                                                   |
-| `icrc7_description()`                               | Human-readable description of the collection.                                    |
-| `icrc7_logo()`                                      | Collection logo (currently `None`).                                              |
-| `icrc7_total_supply()`                              | Total number of deal NFTs minted (one per deal).                                 |
-| `icrc7_supply_cap()`                                | Maximum supply cap (`None` = unlimited).                                         |
-| `icrc7_collection_metadata()`                       | Collection-level ICRC-16 metadata map.                                           |
-| `icrc7_token_metadata(token_ids)`                   | Per-token metadata (deal details as ICRC-16 key-value pairs).                    |
-| `icrc7_owner_of(token_ids)`                         | Owner account for each token ID.                                                 |
-| `icrc7_balance_of(accounts)`                        | Number of deal NFTs owned by each account.                                       |
-| `icrc7_tokens(prev, take)`                          | Paginated token IDs in ascending order.                                          |
-| `icrc7_tokens_of(account, prev, take)`              | Paginated token IDs owned by a specific account.                                 |
-| `icrc7_max_query_batch_size()`                      | Max batch size for metadata/owner queries (100).                                 |
-| `icrc7_max_update_batch_size()`                     | Max batch size for transfer calls (`None`).                                      |
-| `icrc7_default_take_value()`                        | Default page size for token listing (50).                                        |
-| `icrc7_max_take_value()`                            | Max page size for token listing (500).                                           |
-| `icrc7_max_memo_size()`                             | Max memo size (`None`).                                                          |
-| `icrc7_atomic_batch_transfers()`                    | Whether batch transfers are atomic (`None`).                                     |
-| `icrc7_tx_window()`                                 | Transaction dedup window (`None`).                                               |
-| `icrc7_permitted_drift()`                           | Permitted time drift (`None`).                                                   |
+| Method                                 | Description                                                   |
+| -------------------------------------- | ------------------------------------------------------------- |
+| `icrc7_name()`                         | Collection name: `"Escrow Deals"`.                            |
+| `icrc7_symbol()`                       | Collection symbol: `"ESCROW"`.                                |
+| `icrc7_description()`                  | Human-readable description of the collection.                 |
+| `icrc7_logo()`                         | Collection logo (currently `None`).                           |
+| `icrc7_total_supply()`                 | Total number of deal NFTs minted (one per deal).              |
+| `icrc7_supply_cap()`                   | Maximum supply cap (`None` = unlimited).                      |
+| `icrc7_collection_metadata()`          | Collection-level ICRC-16 metadata map.                        |
+| `icrc7_token_metadata(token_ids)`      | Per-token metadata (deal details as ICRC-16 key-value pairs). |
+| `icrc7_owner_of(token_ids)`            | Owner account for each token ID.                              |
+| `icrc7_balance_of(accounts)`           | Number of deal NFTs owned by each account.                    |
+| `icrc7_tokens(prev, take)`             | Paginated token IDs in ascending order.                       |
+| `icrc7_tokens_of(account, prev, take)` | Paginated token IDs owned by a specific account.              |
+| `icrc7_max_query_batch_size()`         | Max batch size for metadata/owner queries (100).              |
+| `icrc7_max_update_batch_size()`        | Max batch size for transfer calls (`None`).                   |
+| `icrc7_default_take_value()`           | Default page size for token listing (50).                     |
+| `icrc7_max_take_value()`               | Max page size for token listing (500).                        |
+| `icrc7_max_memo_size()`                | Max memo size (`None`).                                       |
+| `icrc7_atomic_batch_transfers()`       | Whether batch transfers are atomic (`None`).                  |
+| `icrc7_tx_window()`                    | Transaction dedup window (`None`).                            |
+| `icrc7_permitted_drift()`              | Permitted time drift (`None`).                                |
 
 ### ICRC-7 transfer (always rejected)
 
-| Method                              | Description                                                                            |
-| ----------------------------------- | -------------------------------------------------------------------------------------- |
-| `icrc7_transfer(args)`              | Always returns `GenericError` — ownership is managed through escrow operations instead. |
+| Method                 | Description                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| `icrc7_transfer(args)` | Always returns `GenericError` — ownership is managed through escrow operations instead. |
 
 ### ICRC-10 supported standards
 
-| Method                              | Description                                                   |
-| ----------------------------------- | ------------------------------------------------------------- |
-| `icrc10_supported_standards()`      | Returns `ICRC-7` and `ICRC-10`.                               |
+| Method                         | Description                     |
+| ------------------------------ | ------------------------------- |
+| `icrc10_supported_standards()` | Returns `ICRC-7` and `ICRC-10`. |
 
 ### Admin methods
 
@@ -86,26 +86,26 @@ Cancelled        Refunded
 
 ## Module structure
 
-| Module                  | Responsibility                                                                  |
-| ----------------------- | ------------------------------------------------------------------------------- |
-| `types/deal.rs`         | Internal `Deal`, `DealStatus`, `DealMetadata` types                             |
-| `types/ledger_types.rs` | ICRC-1/ICRC-2 Account and transfer types                                        |
-| `types/icrc7.rs`        | ICRC-7/ICRC-16 `Value` type, ownership helpers, metadata builders               |
-| `types/state.rs`        | Config, StableState for persistence                                             |
-| `api/deals/api.rs`      | Thin deal endpoint layer (delegates to services)                                |
-| `api/deals/params.rs`   | Public argument structs (`CreateDealArgs`, `FundDealArgs`, …)                   |
-| `api/deals/results.rs`  | Public view structs (`DealView`, `ClaimableDealView`)                           |
-| `api/deals/errors.rs`   | Typed `EscrowError` enum                                                        |
-| `api/icrc7/api.rs`      | ICRC-7 NFT standard query/update endpoints + ICRC-10 supported standards        |
-| `api/admin/api.rs`      | Controller-only admin endpoints                                                 |
-| `services/deals.rs`     | Core deal business logic (create, fund, accept, reclaim, cancel, queries)       |
-| `services/expiry.rs`    | Batch expired-deal refund processing                                            |
-| `services/icrc7.rs`     | ICRC-7 service logic (token metadata, ownership, pagination, transfer rejection)|
-| `memory.rs`             | Thread-local storage, atomic deal-ID allocation, save/restore, processing locks |
-| `ledger.rs`             | ICRC inter-canister call helpers (transfer, transfer_from)                      |
-| `subaccounts.rs`        | Deterministic deal subaccount derivation                                        |
-| `validation.rs`         | State transition and input validation                                           |
-| `guards.rs`             | Caller authentication/authorization guards                                      |
+| Module                  | Responsibility                                                                   |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| `types/deal.rs`         | Internal `Deal`, `DealStatus`, `DealMetadata` types                              |
+| `types/ledger_types.rs` | ICRC-1/ICRC-2 Account and transfer types                                         |
+| `types/icrc7.rs`        | ICRC-7/ICRC-16 `Value` type, ownership helpers, metadata builders                |
+| `types/state.rs`        | Config, StableState for persistence                                              |
+| `api/deals/api.rs`      | Thin deal endpoint layer (delegates to services)                                 |
+| `api/deals/params.rs`   | Public argument structs (`CreateDealArgs`, `FundDealArgs`, …)                    |
+| `api/deals/results.rs`  | Public view structs (`DealView`, `ClaimableDealView`)                            |
+| `api/deals/errors.rs`   | Typed `EscrowError` enum                                                         |
+| `api/icrc7/api.rs`      | ICRC-7 NFT standard query/update endpoints + ICRC-10 supported standards         |
+| `api/admin/api.rs`      | Controller-only admin endpoints                                                  |
+| `services/deals.rs`     | Core deal business logic (create, fund, accept, reclaim, cancel, queries)        |
+| `services/expiry.rs`    | Batch expired-deal refund processing                                             |
+| `services/icrc7.rs`     | ICRC-7 service logic (token metadata, ownership, pagination, transfer rejection) |
+| `memory.rs`             | Thread-local storage, atomic deal-ID allocation, save/restore, processing locks  |
+| `ledger.rs`             | ICRC inter-canister call helpers (transfer, transfer_from)                       |
+| `subaccounts.rs`        | Deterministic deal subaccount derivation                                         |
+| `validation.rs`         | State transition and input validation                                            |
+| `guards.rs`             | Caller authentication/authorization guards                                       |
 
 ## Future expansion
 
