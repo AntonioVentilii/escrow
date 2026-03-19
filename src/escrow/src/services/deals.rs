@@ -14,7 +14,7 @@ use crate::{
     },
     subaccounts::derive_deal_subaccount,
     types::{
-        deal::{Deal, DealId, DealMetadata, DealStatus},
+        deal::{Consent, Deal, DealId, DealMetadata, DealStatus},
         ledger_types::Account,
     },
     validation,
@@ -24,8 +24,17 @@ use crate::{
 // Commands
 // ---------------------------------------------------------------------------
 
-pub fn create(caller: Principal, args: CreateDealArgs, now: u64) -> Result<DealView, EscrowError> {
+pub async fn create(
+    caller: Principal,
+    args: CreateDealArgs,
+    now: u64,
+) -> Result<DealView, EscrowError> {
     validation::validate_create(args.amount, args.expires_at_ns, now)?;
+
+    let (payer, recipient, payer_consent, recipient_consent) =
+        validation::resolve_parties(caller, args.payer, args.recipient)?;
+
+    let claim_code = generate_claim_code().await?;
 
     let metadata = if args.title.is_some() || args.note.is_some() {
         Some(DealMetadata {
@@ -38,8 +47,8 @@ pub fn create(caller: Principal, args: CreateDealArgs, now: u64) -> Result<DealV
 
     let deal = insert_new_deal(|deal_id| Deal {
         id: deal_id,
-        payer: caller,
-        recipient: args.recipient,
+        payer,
+        recipient,
         token_ledger: args.token_ledger,
         token_symbol: None,
         amount: args.amount,
@@ -51,12 +60,14 @@ pub fn create(caller: Principal, args: CreateDealArgs, now: u64) -> Result<DealV
         status: DealStatus::Created,
         escrow_subaccount: derive_deal_subaccount(deal_id),
         funded_at_ns: None,
-        completed_at_ns: None,
+        settled_at_ns: None,
         refunded_at_ns: None,
         funding_tx: None,
         payout_tx: None,
         refund_tx: None,
-        claim_code: None,
+        claim_code: Some(claim_code),
+        payer_consent,
+        recipient_consent,
         metadata,
     });
 
@@ -71,16 +82,30 @@ pub async fn fund(caller: Principal, deal_id: DealId) -> Result<DealView, Escrow
         return Ok(DealView::from(&deal));
     }
 
+    // Bind the payer if this is an open-payer deal (invoice flow).
+    if deal.payer.is_none() {
+        with_deal(deal_id, |d| {
+            d.payer = Some(caller);
+            d.payer_consent = Consent::Accepted;
+        });
+    }
+
     try_acquire_lock(deal_id)?;
     let result = execute_fund(deal_id, &deal, caller).await;
     release_lock(deal_id);
     result
 }
 
-pub async fn accept(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, EscrowError> {
+pub async fn accept(
+    caller: Principal,
+    deal_id: DealId,
+    now: u64,
+    claim_code: Option<String>,
+) -> Result<DealView, EscrowError> {
     let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
 
-    let already_done = validation::validate_can_accept(&deal, caller, now)?;
+    let already_done =
+        validation::validate_can_accept(&deal, caller, now, claim_code.as_deref())?;
     if already_done {
         return Ok(DealView::from(&deal));
     }
@@ -128,6 +153,47 @@ pub fn cancel(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, 
         .ok_or(EscrowError::NotFound)
 }
 
+pub fn consent(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, EscrowError> {
+    let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
+
+    let is_payer = validation::validate_can_consent(&deal, caller)?;
+
+    with_deal(deal_id, |d| {
+        if is_payer {
+            d.payer_consent = Consent::Accepted;
+        } else {
+            d.recipient_consent = Consent::Accepted;
+        }
+        d.updated_at_ns = Some(now);
+        d.updated_by = Some(caller);
+    });
+
+    load_deal(deal_id)
+        .map(|d| DealView::from(&d))
+        .ok_or(EscrowError::NotFound)
+}
+
+pub fn reject(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, EscrowError> {
+    let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
+
+    let is_payer = validation::validate_can_consent(&deal, caller)?;
+
+    with_deal(deal_id, |d| {
+        if is_payer {
+            d.payer_consent = Consent::Rejected;
+        } else {
+            d.recipient_consent = Consent::Rejected;
+        }
+        d.status = DealStatus::Rejected;
+        d.updated_at_ns = Some(now);
+        d.updated_by = Some(caller);
+    });
+
+    load_deal(deal_id)
+        .map(|d| DealView::from(&d))
+        .ok_or(EscrowError::NotFound)
+}
+
 // ---------------------------------------------------------------------------
 // Queries
 // ---------------------------------------------------------------------------
@@ -144,7 +210,11 @@ pub fn list_for_caller(caller: Principal, offset: usize, limit: usize) -> Vec<De
     with_deals(|deals| {
         let mut matched: Vec<DealView> = deals
             .values()
-            .filter(|d| d.created_by == caller || d.payer == caller || d.recipient == Some(caller))
+            .filter(|d| {
+                d.created_by == caller
+                    || d.payer == Some(caller)
+                    || d.recipient == Some(caller)
+            })
             .map(DealView::from)
             .collect();
         matched.sort_by(|a, b| b.created_at_ns.cmp(&a.created_at_ns));
@@ -170,10 +240,35 @@ pub fn get_escrow_account(caller: Principal, deal_id: DealId) -> Result<Account,
 }
 
 fn authorize_deal_participant(deal: &Deal, caller: Principal) -> Result<(), EscrowError> {
-    if deal.created_by == caller || deal.payer == caller || deal.recipient == Some(caller) {
+    if deal.created_by == caller
+        || deal.payer == Some(caller)
+        || deal.recipient == Some(caller)
+    {
         return Ok(());
     }
     Err(EscrowError::NotAuthorised)
+}
+
+// ---------------------------------------------------------------------------
+// Claim code generation
+// ---------------------------------------------------------------------------
+
+async fn generate_claim_code() -> Result<String, EscrowError> {
+    let (random_bytes,): (Vec<u8>,) = ic_cdk::call(
+        Principal::management_canister(),
+        "raw_rand",
+        (),
+    )
+    .await
+    .map_err(|(code, msg)| {
+        EscrowError::ValidationError(format!("Failed to generate claim code: {code:?}: {msg}"))
+    })?;
+
+    Ok(random_bytes
+        .iter()
+        .take(16)
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>())
 }
 
 // ---------------------------------------------------------------------------
@@ -185,12 +280,14 @@ async fn execute_fund(
     deal: &Deal,
     caller: Principal,
 ) -> Result<DealView, EscrowError> {
+    let payer = deal.payer.unwrap_or(caller);
+
     let escrow_account = Account {
         owner: id(),
         subaccount: Some(deal.escrow_subaccount.clone()),
     };
     let payer_account = Account {
-        owner: deal.payer,
+        owner: payer,
         subaccount: None,
     };
 
@@ -210,6 +307,7 @@ async fn execute_fund(
             d.funding_tx = Some(block_index);
             d.updated_at_ns = Some(now);
             d.updated_by = Some(caller);
+            d.payer_consent = Consent::Accepted;
         }
     });
 
@@ -227,6 +325,7 @@ async fn execute_accept(
         if d.recipient.is_none() {
             d.recipient = Some(recipient);
         }
+        d.recipient_consent = Consent::Accepted;
     });
 
     let recipient_account = Account {
@@ -242,13 +341,13 @@ async fn execute_accept(
     )
     .await?;
 
-    let completed_at = time();
+    let settled_at = time();
     with_deal(deal_id, |d| {
         if d.status == DealStatus::Funded {
-            d.status = DealStatus::Completed;
-            d.completed_at_ns = Some(completed_at);
+            d.status = DealStatus::Settled;
+            d.settled_at_ns = Some(settled_at);
             d.payout_tx = Some(block_index);
-            d.updated_at_ns = Some(completed_at);
+            d.updated_at_ns = Some(settled_at);
             d.updated_by = Some(recipient);
         }
     });
@@ -263,8 +362,10 @@ async fn execute_reclaim(
     deal: &Deal,
     caller: Principal,
 ) -> Result<DealView, EscrowError> {
+    let payer = deal.payer.ok_or(EscrowError::PayerNotSet)?;
+
     let payer_account = Account {
-        owner: deal.payer,
+        owner: payer,
         subaccount: None,
     };
 
@@ -300,10 +401,12 @@ async fn execute_reclaim(
 mod tests {
     use candid::Principal;
 
-    use super::{cancel, create, get, get_claimable, get_escrow_account, list_for_caller};
+    use super::{cancel, consent, get, get_claimable, get_escrow_account, list_for_caller, reject};
     use crate::{
         api::deals::{errors::EscrowError, params::CreateDealArgs},
-        types::deal::DealStatus,
+        memory::insert_new_deal,
+        subaccounts::derive_deal_subaccount,
+        types::deal::{Consent, Deal, DealMetadata, DealStatus},
     };
 
     fn test_principal(id: u8) -> Principal {
@@ -314,48 +417,58 @@ mod tests {
         test_principal(99)
     }
 
-    fn valid_args() -> CreateDealArgs {
-        CreateDealArgs {
-            amount: 1_000_000,
+    fn store_deal(
+        payer: Option<Principal>,
+        recipient: Option<Principal>,
+        status: DealStatus,
+        payer_consent: Consent,
+        recipient_consent: Consent,
+    ) -> Deal {
+        insert_new_deal(|deal_id| Deal {
+            id: deal_id,
+            payer,
+            recipient,
             token_ledger: ledger_principal(),
+            token_symbol: None,
+            amount: 1_000_000,
+            created_at_ns: 100,
+            created_by: payer.or(recipient).unwrap_or(test_principal(1)),
+            updated_at_ns: None,
+            updated_by: None,
             expires_at_ns: 1000,
-            recipient: None,
-            title: Some("Test".to_owned()),
-            note: None,
-        }
+            status,
+            escrow_subaccount: derive_deal_subaccount(deal_id),
+            funded_at_ns: None,
+            settled_at_ns: None,
+            refunded_at_ns: None,
+            funding_tx: None,
+            payout_tx: None,
+            refund_tx: None,
+            claim_code: Some("test-code-abc".to_owned()),
+            payer_consent,
+            recipient_consent,
+            metadata: Some(DealMetadata {
+                title: Some("Test".to_owned()),
+                note: None,
+            }),
+        })
     }
 
-    #[test]
-    fn create_succeeds_with_valid_input() {
-        let view = create(test_principal(1), valid_args(), 100).unwrap();
-        assert_eq!(view.created_by, test_principal(1));
-        assert_eq!(view.payer, test_principal(1));
-        assert_eq!(view.amount, 1_000_000);
-        assert_eq!(view.status, DealStatus::Created);
-        assert_eq!(view.title.as_deref(), Some("Test"));
-        assert!(view.updated_at_ns.is_none());
-        assert!(view.updated_by.is_none());
-    }
-
-    #[test]
-    fn create_rejects_zero_amount() {
-        let mut args = valid_args();
-        args.amount = 0;
-        assert!(create(test_principal(1), args, 100).is_err());
-    }
-
-    #[test]
-    fn create_rejects_past_expiry() {
-        let mut args = valid_args();
-        args.expires_at_ns = 50;
-        assert!(create(test_principal(1), args, 100).is_err());
+    fn store_tip(payer: Principal) -> Deal {
+        store_deal(
+            Some(payer),
+            None,
+            DealStatus::Created,
+            Consent::Accepted,
+            Consent::Pending,
+        )
     }
 
     #[test]
     fn cancel_succeeds_for_created_deal() {
         let payer = test_principal(1);
-        let view = create(payer, valid_args(), 100).unwrap();
-        let cancelled = cancel(payer, view.id, 200).unwrap();
+        let deal = store_tip(payer);
+        let cancelled = cancel(payer, deal.id, 200).unwrap();
         assert_eq!(cancelled.status, DealStatus::Cancelled);
         assert_eq!(cancelled.updated_at_ns, Some(200));
         assert_eq!(cancelled.updated_by, Some(payer));
@@ -365,35 +478,39 @@ mod tests {
     fn cancel_rejects_non_payer() {
         let payer = test_principal(1);
         let other = test_principal(2);
-        let view = create(payer, valid_args(), 100).unwrap();
-        assert!(cancel(other, view.id, 200).is_err());
+        let deal = store_tip(payer);
+        assert!(cancel(other, deal.id, 200).is_err());
     }
 
     #[test]
     fn get_returns_deal_for_payer() {
         let payer = test_principal(1);
-        let view = create(payer, valid_args(), 100).unwrap();
-        let fetched = get(payer, view.id).unwrap();
-        assert_eq!(fetched.id, view.id);
+        let deal = store_tip(payer);
+        let fetched = get(payer, deal.id).unwrap();
+        assert_eq!(fetched.id, deal.id);
     }
 
     #[test]
     fn get_returns_deal_for_recipient() {
         let payer = test_principal(1);
         let recipient = test_principal(2);
-        let mut args = valid_args();
-        args.recipient = Some(recipient);
-        let view = create(payer, args, 100).unwrap();
-        let fetched = get(recipient, view.id).unwrap();
-        assert_eq!(fetched.id, view.id);
+        let deal = store_deal(
+            Some(payer),
+            Some(recipient),
+            DealStatus::Created,
+            Consent::Accepted,
+            Consent::Pending,
+        );
+        let fetched = get(recipient, deal.id).unwrap();
+        assert_eq!(fetched.id, deal.id);
     }
 
     #[test]
     fn get_rejects_unrelated_caller() {
         let payer = test_principal(1);
         let stranger = test_principal(3);
-        let view = create(payer, valid_args(), 100).unwrap();
-        let err = get(stranger, view.id).unwrap_err();
+        let deal = store_tip(payer);
+        let err = get(stranger, deal.id).unwrap_err();
         assert_eq!(err, EscrowError::NotAuthorised);
     }
 
@@ -406,8 +523,8 @@ mod tests {
     fn get_escrow_account_rejects_unrelated_caller() {
         let payer = test_principal(1);
         let stranger = test_principal(3);
-        let view = create(payer, valid_args(), 100).unwrap();
-        let err = get_escrow_account(stranger, view.id).unwrap_err();
+        let deal = store_tip(payer);
+        let err = get_escrow_account(stranger, deal.id).unwrap_err();
         assert_eq!(err, EscrowError::NotAuthorised);
     }
 
@@ -415,21 +532,75 @@ mod tests {
     fn list_returns_own_deals_only() {
         let payer = test_principal(1);
         let other = test_principal(2);
-        let view = create(payer, valid_args(), 100).unwrap();
+        let deal = store_tip(payer);
 
         let own = list_for_caller(payer, 0, 50);
-        assert!(own.iter().any(|d| d.id == view.id));
+        assert!(own.iter().any(|d| d.id == deal.id));
 
         let theirs = list_for_caller(other, 0, 50);
-        assert!(!theirs.iter().any(|d| d.id == view.id));
+        assert!(!theirs.iter().any(|d| d.id == deal.id));
     }
 
     #[test]
     fn get_claimable_hides_sensitive_fields() {
         let payer = test_principal(1);
-        let view = create(payer, valid_args(), 100).unwrap();
-        let claimable = get_claimable(view.id).unwrap();
+        let deal = store_tip(payer);
+        let claimable = get_claimable(deal.id).unwrap();
         assert!(!claimable.is_recipient_bound);
         assert_eq!(claimable.amount, 1_000_000);
+    }
+
+    #[test]
+    fn consent_sets_payer_consent() {
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = store_deal(
+            Some(payer),
+            Some(recip),
+            DealStatus::Created,
+            Consent::Pending,
+            Consent::Accepted,
+        );
+        let updated = consent(payer, deal.id, 200).unwrap();
+        assert_eq!(updated.payer_consent, Consent::Accepted);
+    }
+
+    #[test]
+    fn consent_sets_recipient_consent() {
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = store_deal(
+            Some(payer),
+            Some(recip),
+            DealStatus::Created,
+            Consent::Accepted,
+            Consent::Pending,
+        );
+        let updated = consent(recip, deal.id, 200).unwrap();
+        assert_eq!(updated.recipient_consent, Consent::Accepted);
+    }
+
+    #[test]
+    fn reject_transitions_to_rejected() {
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = store_deal(
+            Some(payer),
+            Some(recip),
+            DealStatus::Created,
+            Consent::Accepted,
+            Consent::Pending,
+        );
+        let updated = reject(recip, deal.id, 200).unwrap();
+        assert_eq!(updated.status, DealStatus::Rejected);
+        assert_eq!(updated.recipient_consent, Consent::Rejected);
+    }
+
+    #[test]
+    fn deal_view_contains_claim_code() {
+        let payer = test_principal(1);
+        let deal = store_tip(payer);
+        let view = get(payer, deal.id).unwrap();
+        assert_eq!(view.claim_code.as_deref(), Some("test-code-abc"));
     }
 }

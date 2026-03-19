@@ -76,15 +76,21 @@ pub const MAX_QUERY_BATCH_SIZE: u64 = 100;
 
 /// Computes the ICRC-7 owner of a deal token.
 ///
-/// Completed deals are owned by the recipient; all other states (including
+/// Settled deals are owned by the recipient; all other states (including
 /// terminal ones like `Refunded` and `Cancelled`) are owned by the payer.
+/// Falls back to `created_by` when the relevant principal is not set.
 #[must_use]
 pub fn token_owner(deal: &Deal) -> Account {
     let owner = match deal.status {
-        DealStatus::Completed => deal.recipient.unwrap_or(deal.payer),
-        DealStatus::Created | DealStatus::Funded | DealStatus::Refunded | DealStatus::Cancelled => {
-            deal.payer
-        }
+        DealStatus::Settled => deal
+            .recipient
+            .or(deal.payer)
+            .unwrap_or(deal.created_by),
+        DealStatus::Created
+        | DealStatus::Funded
+        | DealStatus::Refunded
+        | DealStatus::Cancelled
+        | DealStatus::Rejected => deal.payer.unwrap_or(deal.created_by),
     };
     Account {
         owner,
@@ -132,7 +138,6 @@ pub fn deal_to_metadata(deal: &Deal) -> Vec<(String, Value)> {
             "escrow:status".to_owned(),
             Value::Text(format!("{:?}", deal.status)),
         ),
-        ("escrow:payer".to_owned(), Value::Text(deal.payer.to_text())),
         (
             "escrow:amount".to_owned(),
             Value::Nat(Nat::from(deal.amount)),
@@ -153,7 +158,19 @@ pub fn deal_to_metadata(deal: &Deal) -> Vec<(String, Value)> {
             "escrow:escrow_subaccount".to_owned(),
             Value::Blob(deal.escrow_subaccount.clone()),
         ),
+        (
+            "escrow:payer_consent".to_owned(),
+            Value::Text(format!("{:?}", deal.payer_consent)),
+        ),
+        (
+            "escrow:recipient_consent".to_owned(),
+            Value::Text(format!("{:?}", deal.recipient_consent)),
+        ),
     ];
+
+    if let Some(payer) = deal.payer {
+        meta.push(("escrow:payer".to_owned(), Value::Text(payer.to_text())));
+    }
 
     if let Some(recipient) = deal.recipient {
         meta.push((
@@ -173,10 +190,10 @@ pub fn deal_to_metadata(deal: &Deal) -> Vec<(String, Value)> {
         ));
     }
 
-    if let Some(completed) = deal.completed_at_ns {
+    if let Some(settled) = deal.settled_at_ns {
         meta.push((
-            "escrow:completed_at_ns".to_owned(),
-            Value::Nat(Nat::from(completed)),
+            "escrow:settled_at_ns".to_owned(),
+            Value::Nat(Nat::from(settled)),
         ));
     }
 
@@ -231,7 +248,7 @@ mod tests {
         token_owner, Value, COLLECTION_NAME,
     };
     use crate::types::{
-        deal::{Deal, DealMetadata, DealStatus},
+        deal::{Consent, Deal, DealMetadata, DealStatus},
         ledger_types::Account,
     };
 
@@ -239,7 +256,7 @@ mod tests {
         Principal::from_slice(&[id])
     }
 
-    fn make_deal(status: DealStatus, payer: Principal, recipient: Option<Principal>) -> Deal {
+    fn make_deal(status: DealStatus, payer: Option<Principal>, recipient: Option<Principal>) -> Deal {
         Deal {
             id: 1,
             payer,
@@ -248,19 +265,21 @@ mod tests {
             token_symbol: None,
             amount: 1000,
             created_at_ns: 100,
-            created_by: payer,
+            created_by: payer.unwrap_or(test_principal(1)),
             updated_at_ns: None,
             updated_by: None,
             expires_at_ns: 200,
             status,
             escrow_subaccount: vec![0_u8; 32],
             funded_at_ns: None,
-            completed_at_ns: None,
+            settled_at_ns: None,
             refunded_at_ns: None,
             funding_tx: None,
             payout_tx: None,
             refund_tx: None,
             claim_code: None,
+            payer_consent: Consent::Accepted,
+            recipient_consent: Consent::Pending,
             metadata: None,
         }
     }
@@ -270,49 +289,63 @@ mod tests {
     #[test]
     fn owner_of_created_is_payer() {
         let payer = test_principal(1);
-        let deal = make_deal(DealStatus::Created, payer, None);
+        let deal = make_deal(DealStatus::Created, Some(payer), None);
         assert_eq!(token_owner(&deal).owner, payer);
     }
 
     #[test]
     fn owner_of_funded_is_payer() {
         let payer = test_principal(1);
-        let deal = make_deal(DealStatus::Funded, payer, None);
+        let deal = make_deal(DealStatus::Funded, Some(payer), None);
         assert_eq!(token_owner(&deal).owner, payer);
     }
 
     #[test]
-    fn owner_of_completed_is_recipient() {
+    fn owner_of_settled_is_recipient() {
         let payer = test_principal(1);
         let recip = test_principal(2);
-        let deal = make_deal(DealStatus::Completed, payer, Some(recip));
+        let deal = make_deal(DealStatus::Settled, Some(payer), Some(recip));
         assert_eq!(token_owner(&deal).owner, recip);
     }
 
     #[test]
-    fn owner_of_completed_falls_back_to_payer() {
+    fn owner_of_settled_falls_back_to_payer() {
         let payer = test_principal(1);
-        let deal = make_deal(DealStatus::Completed, payer, None);
+        let deal = make_deal(DealStatus::Settled, Some(payer), None);
         assert_eq!(token_owner(&deal).owner, payer);
     }
 
     #[test]
     fn owner_of_refunded_is_payer() {
         let payer = test_principal(1);
-        let deal = make_deal(DealStatus::Refunded, payer, Some(test_principal(2)));
+        let deal = make_deal(DealStatus::Refunded, Some(payer), Some(test_principal(2)));
         assert_eq!(token_owner(&deal).owner, payer);
     }
 
     #[test]
     fn owner_of_cancelled_is_payer() {
         let payer = test_principal(1);
-        let deal = make_deal(DealStatus::Cancelled, payer, None);
+        let deal = make_deal(DealStatus::Cancelled, Some(payer), None);
         assert_eq!(token_owner(&deal).owner, payer);
     }
 
     #[test]
+    fn owner_of_rejected_is_payer() {
+        let payer = test_principal(1);
+        let deal = make_deal(DealStatus::Rejected, Some(payer), Some(test_principal(2)));
+        assert_eq!(token_owner(&deal).owner, payer);
+    }
+
+    #[test]
+    fn owner_falls_back_to_created_by_when_payer_none() {
+        let mut deal = make_deal(DealStatus::Created, None, Some(test_principal(2)));
+        deal.created_by = test_principal(2);
+        assert_eq!(token_owner(&deal).owner, test_principal(2));
+    }
+
+    #[test]
     fn owner_subaccount_is_none() {
-        let deal = make_deal(DealStatus::Created, test_principal(1), None);
+        let deal = make_deal(DealStatus::Created, Some(test_principal(1)), None);
         assert!(token_owner(&deal).subaccount.is_none());
     }
 
@@ -321,7 +354,7 @@ mod tests {
     #[test]
     fn matching_principal_owns_token() {
         let payer = test_principal(1);
-        let deal = make_deal(DealStatus::Created, payer, None);
+        let deal = make_deal(DealStatus::Created, Some(payer), None);
         let account = Account {
             owner: payer,
             subaccount: None,
@@ -332,7 +365,7 @@ mod tests {
     #[test]
     fn account_with_subaccount_never_owns() {
         let payer = test_principal(1);
-        let deal = make_deal(DealStatus::Created, payer, None);
+        let deal = make_deal(DealStatus::Created, Some(payer), None);
         let account = Account {
             owner: payer,
             subaccount: Some(vec![1_u8; 32]),
@@ -343,7 +376,7 @@ mod tests {
     #[test]
     fn account_with_zero_subaccount_owns() {
         let payer = test_principal(1);
-        let deal = make_deal(DealStatus::Created, payer, None);
+        let deal = make_deal(DealStatus::Created, Some(payer), None);
         let account = Account {
             owner: payer,
             subaccount: Some(vec![0_u8; 32]),
@@ -355,7 +388,7 @@ mod tests {
     fn different_principal_does_not_own() {
         let payer = test_principal(1);
         let other = test_principal(2);
-        let deal = make_deal(DealStatus::Created, payer, None);
+        let deal = make_deal(DealStatus::Created, Some(payer), None);
         let account = Account {
             owner: other,
             subaccount: None,
@@ -389,7 +422,7 @@ mod tests {
 
     #[test]
     fn metadata_contains_required_fields() {
-        let deal = make_deal(DealStatus::Funded, test_principal(1), None);
+        let deal = make_deal(DealStatus::Funded, Some(test_principal(1)), None);
         let meta = deal_to_metadata(&deal);
         let keys: Vec<&str> = meta.iter().map(|(k, _)| k.as_str()).collect();
         assert!(keys.contains(&"icrc7:name"));
@@ -400,15 +433,17 @@ mod tests {
         assert!(keys.contains(&"escrow:expires_at_ns"));
         assert!(keys.contains(&"escrow:created_at_ns"));
         assert!(keys.contains(&"escrow:escrow_subaccount"));
+        assert!(keys.contains(&"escrow:payer_consent"));
+        assert!(keys.contains(&"escrow:recipient_consent"));
     }
 
     #[test]
     fn metadata_includes_optional_fields_when_present() {
         let payer = test_principal(1);
         let recip = test_principal(2);
-        let mut deal = make_deal(DealStatus::Completed, payer, Some(recip));
+        let mut deal = make_deal(DealStatus::Settled, Some(payer), Some(recip));
         deal.funded_at_ns = Some(150);
-        deal.completed_at_ns = Some(180);
+        deal.settled_at_ns = Some(180);
         deal.metadata = Some(DealMetadata {
             title: Some("Coffee tip".to_owned()),
             note: Some("Thanks!".to_owned()),
@@ -417,19 +452,19 @@ mod tests {
         let keys: Vec<&str> = meta.iter().map(|(k, _)| k.as_str()).collect();
         assert!(keys.contains(&"escrow:recipient"));
         assert!(keys.contains(&"escrow:funded_at_ns"));
-        assert!(keys.contains(&"escrow:completed_at_ns"));
+        assert!(keys.contains(&"escrow:settled_at_ns"));
         assert!(keys.contains(&"escrow:title"));
         assert!(keys.contains(&"escrow:note"));
     }
 
     #[test]
     fn metadata_omits_unset_optional_fields() {
-        let deal = make_deal(DealStatus::Created, test_principal(1), None);
+        let deal = make_deal(DealStatus::Created, Some(test_principal(1)), None);
         let meta = deal_to_metadata(&deal);
         let keys: Vec<&str> = meta.iter().map(|(k, _)| k.as_str()).collect();
         assert!(!keys.contains(&"escrow:recipient"));
         assert!(!keys.contains(&"escrow:funded_at_ns"));
-        assert!(!keys.contains(&"escrow:completed_at_ns"));
+        assert!(!keys.contains(&"escrow:settled_at_ns"));
         assert!(!keys.contains(&"escrow:refunded_at_ns"));
         assert!(!keys.contains(&"escrow:token_symbol"));
         assert!(!keys.contains(&"escrow:title"));
@@ -438,7 +473,7 @@ mod tests {
 
     #[test]
     fn metadata_name_contains_deal_id() {
-        let deal = make_deal(DealStatus::Created, test_principal(1), None);
+        let deal = make_deal(DealStatus::Created, Some(test_principal(1)), None);
         let meta = deal_to_metadata(&deal);
         let name_val = meta.iter().find(|(k, _)| k == "icrc7:name").map(|(_, v)| v);
         assert_eq!(name_val, Some(&Value::Text("Escrow Deal #1".to_owned())));
@@ -446,7 +481,7 @@ mod tests {
 
     #[test]
     fn metadata_amount_as_nat() {
-        let mut deal = make_deal(DealStatus::Created, test_principal(1), None);
+        let mut deal = make_deal(DealStatus::Created, Some(test_principal(1)), None);
         deal.amount = 42_000;
         let meta = deal_to_metadata(&deal);
         let amount_val = meta

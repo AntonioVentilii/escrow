@@ -14,7 +14,7 @@ pub enum EscrowError {
         /// The state the deal is actually in.
         actual: String,
     },
-    /// The deal has already reached a terminal state (`Completed`, `Refunded`, or `Cancelled`).
+    /// The deal has already reached a terminal state (`Settled`, `Refunded`, or `Cancelled`).
     AlreadyFinalised,
     /// A reclaim was attempted before the deal's expiry deadline.
     NotExpired,
@@ -32,4 +32,14 @@ pub enum EscrowError {
     RecipientMismatch,
     /// A generic validation error with a human-readable message.
     ValidationError(String),
+    /// The supplied claim code does not match the deal's claim code.
+    InvalidClaimCode,
+    /// A claim code is required for open (unbound-recipient) deals.
+    MissingClaimCode,
+    /// Both parties must consent before this operation can proceed.
+    ConsentRequired,
+    /// At least one of payer or recipient must be specified.
+    NeitherPartySet,
+    /// The payer principal is not set for this deal.
+    PayerNotSet,
 }
