@@ -1,12 +1,13 @@
 use core::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
+use candid::Principal;
 use ic_cdk::{storage, trap};
 
 use crate::{
     api::deals::errors::EscrowError,
     types::{
-        deal::{Deal, DealId},
+        deal::{Deal, DealId, DealStatus},
         state::{Config, StableState},
     },
 };
@@ -50,6 +51,37 @@ pub fn with_deal<R>(deal_id: DealId, f: impl FnOnce(&mut Deal) -> R) -> Option<R
 /// Runs `f` with a read-only reference to the full deal map.
 pub fn with_deals<R>(f: impl FnOnce(&BTreeMap<DealId, Deal>) -> R) -> R {
     DEALS.with(|d| f(&d.borrow()))
+}
+
+/// Returns the total number of deals in storage.
+///
+/// Used by the ICRC-7 layer for `icrc7_total_supply`.
+#[must_use]
+pub fn deal_count() -> u64 {
+    DEALS.with(|d| d.borrow().len() as u64)
+}
+
+/// Counts non-terminal deals created by `principal`.
+#[must_use]
+pub fn count_active_deals_for(principal: Principal) -> u32 {
+    DEALS.with(|d| {
+        u32::try_from(
+            d.borrow()
+                .values()
+                .filter(|deal| {
+                    deal.created_by == principal
+                        && !matches!(
+                            deal.status,
+                            DealStatus::Settled
+                                | DealStatus::Refunded
+                                | DealStatus::Cancelled
+                                | DealStatus::Rejected
+                        )
+                })
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
+    })
 }
 
 fn allocate_deal_id() -> DealId {
@@ -126,7 +158,7 @@ mod tests {
     use candid::Principal;
 
     use super::{get_deal, insert_new_deal, release_lock, try_acquire_lock, with_deal, with_deals};
-    use crate::types::deal::{Deal, DealStatus};
+    use crate::types::deal::{Consent, Deal, DealStatus};
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])
@@ -135,7 +167,7 @@ mod tests {
     fn make_stored_deal(status: DealStatus) -> Deal {
         insert_new_deal(|deal_id| Deal {
             id: deal_id,
-            payer: test_principal(1),
+            payer: Some(test_principal(1)),
             recipient: None,
             token_ledger: test_principal(99),
             token_symbol: None,
@@ -148,12 +180,14 @@ mod tests {
             status,
             escrow_subaccount: vec![0_u8; 32],
             funded_at_ns: None,
-            completed_at_ns: None,
+            settled_at_ns: None,
             refunded_at_ns: None,
             funding_tx: None,
             payout_tx: None,
             refund_tx: None,
             claim_code: None,
+            payer_consent: Consent::Accepted,
+            recipient_consent: Consent::Pending,
             metadata: None,
         })
     }
@@ -191,7 +225,7 @@ mod tests {
     fn builder_cannot_forge_id() {
         let deal = insert_new_deal(|_deal_id| Deal {
             id: 999_999_999,
-            payer: test_principal(1),
+            payer: Some(test_principal(1)),
             recipient: None,
             token_ledger: test_principal(99),
             token_symbol: None,
@@ -204,15 +238,16 @@ mod tests {
             status: DealStatus::Created,
             escrow_subaccount: vec![0_u8; 32],
             funded_at_ns: None,
-            completed_at_ns: None,
+            settled_at_ns: None,
             refunded_at_ns: None,
             funding_tx: None,
             payout_tx: None,
             refund_tx: None,
             claim_code: None,
+            payer_consent: Consent::Accepted,
+            recipient_consent: Consent::Pending,
             metadata: None,
         });
-        // The store overrides whatever the builder returned
         assert_ne!(deal.id, 999_999_999);
         assert!(get_deal(deal.id).is_some());
         assert!(get_deal(999_999_999).is_none());
@@ -236,6 +271,14 @@ mod tests {
         let deal = make_stored_deal(DealStatus::Created);
         let found = with_deals(|deals: &BTreeMap<_, _>| deals.values().any(|d| d.id == deal.id));
         assert!(found);
+    }
+
+    #[test]
+    fn deal_count_reflects_insertions() {
+        let before = super::deal_count();
+        make_stored_deal(DealStatus::Created);
+        make_stored_deal(DealStatus::Funded);
+        assert_eq!(super::deal_count(), before + 2);
     }
 
     #[test]

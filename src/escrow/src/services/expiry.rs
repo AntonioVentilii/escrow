@@ -49,10 +49,11 @@ async fn try_refund_deal(deal_id: DealId) -> Result<(), EscrowError> {
         if deal.status != DealStatus::Funded {
             return Err(EscrowError::AlreadyFinalised);
         }
+        let payer = deal.payer.ok_or(EscrowError::PayerNotSet)?;
         Ok((
             deal.token_ledger,
             deal.escrow_subaccount.clone(),
-            deal.payer,
+            payer,
             deal.amount,
         ))
     })

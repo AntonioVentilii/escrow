@@ -2,7 +2,7 @@ use candid::{CandidType, Deserialize, Principal};
 
 use super::errors::EscrowError;
 use crate::types::{
-    deal::{Deal, DealId, DealStatus},
+    deal::{Consent, Deal, DealId, DealStatus},
     ledger_types::Account,
 };
 
@@ -30,6 +30,8 @@ candid_result!(FundDealResult, DealView);
 candid_result!(AcceptDealResult, DealView);
 candid_result!(ReclaimDealResult, DealView);
 candid_result!(CancelDealResult, DealView);
+candid_result!(ConsentDealResult, DealView);
+candid_result!(RejectDealResult, DealView);
 candid_result!(GetDealResult, DealView);
 candid_result!(GetClaimableDealResult, ClaimableDealView);
 candid_result!(GetEscrowAccountResult, Account);
@@ -40,8 +42,8 @@ candid_result!(ProcessExpiredDealsResult, Vec<DealId>);
 pub struct DealView {
     /// Unique deal identifier.
     pub id: DealId,
-    /// Principal of the payer.
-    pub payer: Principal,
+    /// Principal of the payer, or `None` if not yet assigned.
+    pub payer: Option<Principal>,
     /// Principal of the recipient, or `None` if not yet bound.
     pub recipient: Option<Principal>,
     /// Escrowed token amount.
@@ -68,10 +70,17 @@ pub struct DealView {
     pub note: Option<String>,
     /// Timestamp when the deal was funded, if applicable.
     pub funded_at_ns: Option<u64>,
-    /// Timestamp when the deal was completed (funds released), if applicable.
-    pub completed_at_ns: Option<u64>,
+    /// Timestamp when the deal was settled (funds released), if applicable.
+    pub settled_at_ns: Option<u64>,
     /// Timestamp when the deal was refunded, if applicable.
     pub refunded_at_ns: Option<u64>,
+    /// Payer's consent to the deal terms.
+    pub payer_consent: Consent,
+    /// Recipient's consent to the deal terms.
+    pub recipient_consent: Consent,
+    /// Claim code for sharing via QR / link. Only visible to authorised
+    /// participants; never exposed in the public claimable view.
+    pub claim_code: Option<String>,
 }
 
 impl From<&Deal> for DealView {
@@ -92,13 +101,17 @@ impl From<&Deal> for DealView {
             title: deal.metadata.as_ref().and_then(|m| m.title.clone()),
             note: deal.metadata.as_ref().and_then(|m| m.note.clone()),
             funded_at_ns: deal.funded_at_ns,
-            completed_at_ns: deal.completed_at_ns,
+            settled_at_ns: deal.settled_at_ns,
             refunded_at_ns: deal.refunded_at_ns,
+            payer_consent: deal.payer_consent.clone(),
+            recipient_consent: deal.recipient_consent.clone(),
+            claim_code: deal.claim_code.clone(),
         }
     }
 }
 
-/// Reduced view for public claim pages — does not expose payer or internal fields.
+/// Reduced view for public claim pages — does not expose payer, claim code,
+/// or internal fields.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct ClaimableDealView {
     /// Unique deal identifier.
@@ -139,7 +152,7 @@ mod tests {
     use candid::Principal;
 
     use super::{ClaimableDealView, DealView};
-    use crate::types::deal::{Deal, DealMetadata, DealStatus};
+    use crate::types::deal::{Consent, Deal, DealMetadata, DealStatus};
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])
@@ -149,7 +162,7 @@ mod tests {
     fn deal_view_maps_metadata() {
         let deal = Deal {
             id: 1,
-            payer: test_principal(1),
+            payer: Some(test_principal(1)),
             recipient: None,
             token_ledger: test_principal(99),
             token_symbol: None,
@@ -162,12 +175,14 @@ mod tests {
             status: DealStatus::Created,
             escrow_subaccount: vec![0_u8; 32],
             funded_at_ns: None,
-            completed_at_ns: None,
+            settled_at_ns: None,
             refunded_at_ns: None,
             funding_tx: None,
             payout_tx: None,
             refund_tx: None,
-            claim_code: None,
+            claim_code: Some("abc123".to_owned()),
+            payer_consent: Consent::Accepted,
+            recipient_consent: Consent::Pending,
             metadata: Some(DealMetadata {
                 title: Some("Test tip".to_owned()),
                 note: None,
@@ -180,13 +195,16 @@ mod tests {
         assert_eq!(view.created_by, test_principal(1));
         assert!(view.updated_at_ns.is_none());
         assert!(view.updated_by.is_none());
+        assert_eq!(view.payer_consent, Consent::Accepted);
+        assert_eq!(view.recipient_consent, Consent::Pending);
+        assert_eq!(view.claim_code.as_deref(), Some("abc123"));
     }
 
     #[test]
-    fn claimable_view_hides_payer() {
+    fn claimable_view_hides_payer_and_claim_code() {
         let deal = Deal {
             id: 1,
-            payer: test_principal(1),
+            payer: Some(test_principal(1)),
             recipient: Some(test_principal(2)),
             token_ledger: test_principal(99),
             token_symbol: None,
@@ -199,12 +217,14 @@ mod tests {
             status: DealStatus::Funded,
             escrow_subaccount: vec![0_u8; 32],
             funded_at_ns: Some(200),
-            completed_at_ns: None,
+            settled_at_ns: None,
             refunded_at_ns: None,
             funding_tx: None,
             payout_tx: None,
             refund_tx: None,
-            claim_code: None,
+            claim_code: Some("secret".to_owned()),
+            payer_consent: Consent::Accepted,
+            recipient_consent: Consent::Accepted,
             metadata: None,
         };
         let view = ClaimableDealView::from(&deal);

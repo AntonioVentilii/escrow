@@ -14,7 +14,7 @@ pub enum EscrowError {
         /// The state the deal is actually in.
         actual: String,
     },
-    /// The deal has already reached a terminal state (`Completed`, `Refunded`, or `Cancelled`).
+    /// The deal has already reached a terminal state (`Settled`, `Refunded`, or `Cancelled`).
     AlreadyFinalised,
     /// A reclaim was attempted before the deal's expiry deadline.
     NotExpired,
@@ -32,4 +32,24 @@ pub enum EscrowError {
     RecipientMismatch,
     /// A generic validation error with a human-readable message.
     ValidationError(String),
+    /// The supplied claim code does not match the deal's claim code.
+    InvalidClaimCode,
+    /// A claim code is required for open (unbound-recipient) deals.
+    MissingClaimCode,
+    /// Both parties must consent before this operation can proceed.
+    ConsentRequired,
+    /// At least one of payer or recipient must be specified.
+    NeitherPartySet,
+    /// The payer principal is not set for this deal.
+    PayerNotSet,
+    /// Payer and recipient cannot be the same principal.
+    SelfDeal,
+    /// The anonymous principal cannot be used as a deal party.
+    AnonymousParty,
+    /// A metadata field exceeds its maximum allowed length.
+    MetadataTooLong { field: String, max: u32 },
+    /// The expiry timestamp is too far in the future.
+    ExpiryTooFar,
+    /// The caller has too many active (non-terminal) deals.
+    TooManyActiveDeals { max: u32 },
 }

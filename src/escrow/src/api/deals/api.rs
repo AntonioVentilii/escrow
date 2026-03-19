@@ -3,13 +3,13 @@ use ic_cdk_macros::{query, update};
 
 use super::{
     params::{
-        AcceptDealArgs, CancelDealArgs, CreateDealArgs, FundDealArgs, ListMyDealsArgs,
-        ReclaimDealArgs,
+        AcceptDealArgs, CancelDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs,
+        ListMyDealsArgs, ReclaimDealArgs, RejectDealArgs,
     },
     results::{
-        AcceptDealResult, CancelDealResult, CreateDealResult, DealView, FundDealResult,
-        GetClaimableDealResult, GetDealResult, GetEscrowAccountResult, ProcessExpiredDealsResult,
-        ReclaimDealResult,
+        AcceptDealResult, CancelDealResult, ConsentDealResult, CreateDealResult, DealView,
+        FundDealResult, GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
+        ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
     },
 };
 use crate::{guards::caller_is_not_anonymous, services, types::deal::DealId};
@@ -18,22 +18,27 @@ use crate::{guards::caller_is_not_anonymous, services, types::deal::DealId};
 // Update methods
 // ---------------------------------------------------------------------------
 
-/// Creates a new escrow deal with the caller as the payer.
+/// Creates a new escrow deal.
 ///
-/// The deal starts in `Created` state and must be funded separately via
-/// [`fund_deal`]. An optional recipient can be specified upfront; if omitted,
-/// the recipient is bound on first acceptance (share-link / QR flow).
+/// The caller is automatically assigned as one of the parties based on the
+/// supplied `payer` and `recipient` fields. Their consent is set to `Accepted`;
+/// the counterparty's consent starts as `Pending`.
+///
+/// A cryptographically random claim code is generated and returned in the
+/// `DealView`. This code must be included in QR / share links so that an
+/// unbound recipient can later claim the deal.
 #[update(guard = "caller_is_not_anonymous")]
 #[must_use]
-pub fn create_deal(args: CreateDealArgs) -> CreateDealResult {
-    services::deals::create(caller(), args, time()).into()
+pub async fn create_deal(args: CreateDealArgs) -> CreateDealResult {
+    services::deals::create(caller(), args, time()).await.into()
 }
 
 /// Funds a previously created deal by transferring tokens from the payer's
 /// account into the deal's escrow subaccount via ICRC-2 `transfer_from`.
 ///
-/// The deal transitions from `Created` to `Funded`. If the deal is already
-/// funded, the current state is returned without performing a second transfer.
+/// The deal transitions from `Created` to `Funded`. Funding implicitly sets
+/// the payer's consent to `Accepted`. For deals with a known recipient, the
+/// recipient must have consented first.
 #[update(guard = "caller_is_not_anonymous")]
 pub async fn fund_deal(args: FundDealArgs) -> FundDealResult {
     services::deals::fund(caller(), args.deal_id).await.into()
@@ -41,11 +46,13 @@ pub async fn fund_deal(args: FundDealArgs) -> FundDealResult {
 
 /// Accepts (claims) a funded deal, releasing the escrowed tokens to the caller.
 ///
-/// If the deal has no bound recipient, the caller is bound as the recipient on
-/// first acceptance. The deal transitions from `Funded` to `Completed`.
+/// If the deal has no bound recipient, the caller must supply the correct
+/// `claim_code`. The caller is bound as the recipient and their consent is
+/// automatically set to `Accepted`. The deal transitions from `Funded` to
+/// `Settled`.
 #[update(guard = "caller_is_not_anonymous")]
 pub async fn accept_deal(args: AcceptDealArgs) -> AcceptDealResult {
-    services::deals::accept(caller(), args.deal_id, time())
+    services::deals::accept(caller(), args.deal_id, time(), args.claim_code)
         .await
         .into()
 }
@@ -63,7 +70,7 @@ pub async fn reclaim_deal(args: ReclaimDealArgs) -> ReclaimDealResult {
 
 /// Cancels a deal that has not yet been funded.
 ///
-/// Only the original payer may cancel. The deal transitions from `Created` to
+/// Either party may cancel. The deal transitions from `Created` to
 /// `Cancelled`. Funded deals cannot be cancelled — use [`reclaim_deal`] after
 /// expiry instead.
 #[update(guard = "caller_is_not_anonymous")]
@@ -71,6 +78,29 @@ pub async fn reclaim_deal(args: ReclaimDealArgs) -> ReclaimDealResult {
 #[must_use]
 pub fn cancel_deal(args: CancelDealArgs) -> CancelDealResult {
     services::deals::cancel(caller(), args.deal_id, time()).into()
+}
+
+/// Explicitly consents to a deal's terms.
+///
+/// The caller must be the payer or recipient. Sets their consent to `Accepted`.
+/// Both parties must consent before the payer can fund a deal with a known
+/// recipient.
+#[update(guard = "caller_is_not_anonymous")]
+#[expect(clippy::needless_pass_by_value)]
+#[must_use]
+pub fn consent_deal(args: ConsentDealArgs) -> ConsentDealResult {
+    services::deals::consent(caller(), args.deal_id, time()).into()
+}
+
+/// Rejects a deal's terms. The deal transitions to `Rejected` (terminal).
+///
+/// The caller must be the payer or recipient. Their consent is set to
+/// `Rejected` and the deal becomes final.
+#[update(guard = "caller_is_not_anonymous")]
+#[expect(clippy::needless_pass_by_value)]
+#[must_use]
+pub fn reject_deal(args: RejectDealArgs) -> RejectDealResult {
+    services::deals::reject(caller(), args.deal_id, time()).into()
 }
 
 /// Batch-processes expired deals by refunding escrowed tokens back to their
@@ -103,14 +133,14 @@ pub fn get_deal(deal_id: DealId) -> GetDealResult {
 #[must_use]
 pub fn list_my_deals(args: ListMyDealsArgs) -> Vec<DealView> {
     let offset = args.offset.unwrap_or(0) as usize;
-    let limit = args.limit.unwrap_or(50) as usize;
+    let limit = (args.limit.unwrap_or(50)).min(100) as usize;
     services::deals::list_for_caller(caller(), offset, limit)
 }
 
 /// Reduced public view for claim/share-link pages.
-/// Returns limited info (no payer, no internal fields). Any authenticated
-/// caller may query this — authorization is intentionally open so a
-/// not-yet-bound recipient can preview the tip before accepting.
+/// Returns limited info (no payer, no claim code, no internal fields). Any
+/// authenticated caller may query this — authorization is intentionally open
+/// so a not-yet-bound recipient can preview the deal before accepting.
 #[query(guard = "caller_is_not_anonymous")]
 #[must_use]
 pub fn get_claimable_deal(deal_id: DealId) -> GetClaimableDealResult {
