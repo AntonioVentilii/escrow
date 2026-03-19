@@ -107,7 +107,7 @@ type ListMyDealsArgs = record { offset : opt nat64; limit : opt nat64 };
 type ProcessExpiredDealsResult = variant { Ok : vec nat64; Err : EscrowError };
 type ReliabilityView = record {
 	concluded : nat32;
-	score : nat32;
+	score : opt nat32;
 	positive : nat32
 };
 type SupportedStandard = record { url : text; name : text };

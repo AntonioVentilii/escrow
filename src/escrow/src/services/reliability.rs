@@ -7,8 +7,9 @@ const MIN_RELIABILITY_PERCENT: u32 = 25;
 
 /// Reliability score for a principal, computed from concluded deal outcomes.
 pub struct ReliabilityScore {
-    /// Percentage 0–100 (100 for new users with fewer than `MIN_CONCLUDED_DEALS`).
-    pub score: u32,
+    /// Percentage 0–100, or `None` when fewer than [`MIN_CONCLUDED_DEALS`]
+    /// deals have been concluded (not enough data to judge).
+    pub score: Option<u32>,
     /// Deals that ended positively (Settled or Refunded).
     pub positive: u32,
     /// Total concluded deals (positive + counterparty rejections).
@@ -21,14 +22,16 @@ pub struct ReliabilityScore {
 /// - **positive**: `Settled` or `Refunded`
 /// - **concluded**: positive + rejections performed by the counterparty
 ///
-/// Users with fewer than [`MIN_CONCLUDED_DEALS`] concluded deals get 100%.
+/// Returns `score: None` when the principal has fewer than
+/// [`MIN_CONCLUDED_DEALS`] concluded deals — there is not enough history
+/// to produce a meaningful percentage.
 #[must_use]
 pub fn compute(principal: Principal) -> ReliabilityScore {
     let (positive, concluded) = memory::compute_reliability_for(principal);
     let score = if concluded < MIN_CONCLUDED_DEALS {
-        100
+        None
     } else {
-        positive * 100 / concluded
+        Some(positive * 100 / concluded)
     };
     ReliabilityScore {
         score,
@@ -38,13 +41,17 @@ pub fn compute(principal: Principal) -> ReliabilityScore {
 }
 
 /// Blocks deal creation when the caller's reliability drops below the threshold.
+///
+/// Users without enough concluded deals (`score` is `None`) are allowed through.
 pub fn validate(caller: Principal) -> Result<(), EscrowError> {
     let reliability = compute(caller);
-    if reliability.concluded >= MIN_CONCLUDED_DEALS && reliability.score < MIN_RELIABILITY_PERCENT {
-        return Err(EscrowError::ReliabilityTooLow {
-            score: reliability.score,
-            threshold: MIN_RELIABILITY_PERCENT,
-        });
+    if let Some(score) = reliability.score {
+        if score < MIN_RELIABILITY_PERCENT {
+            return Err(EscrowError::ReliabilityTooLow {
+                score,
+                threshold: MIN_RELIABILITY_PERCENT,
+            });
+        }
     }
     Ok(())
 }
@@ -94,15 +101,15 @@ mod tests {
     }
 
     #[test]
-    fn new_user_scores_100() {
+    fn new_user_has_no_score() {
         let creator = test_principal(210);
         let r = compute(creator);
-        assert_eq!(r.score, 100);
+        assert!(r.score.is_none());
         assert_eq!(r.concluded, 0);
     }
 
     #[test]
-    fn under_min_concluded_scores_100() {
+    fn under_min_concluded_has_no_score() {
         let creator = test_principal(211);
         let other = test_principal(212);
         for _ in 0..2 {
@@ -112,7 +119,7 @@ mod tests {
             store_concluded_deal(creator, DealStatus::Rejected, other);
         }
         let r = compute(creator);
-        assert_eq!(r.score, 100);
+        assert!(r.score.is_none());
         assert_eq!(r.concluded, 4);
     }
 
@@ -125,7 +132,7 @@ mod tests {
         }
         store_concluded_deal(creator, DealStatus::Rejected, other);
         let r = compute(creator);
-        assert_eq!(r.score, 80);
+        assert_eq!(r.score, Some(80));
         assert!(validate(creator).is_ok());
     }
 
@@ -138,7 +145,7 @@ mod tests {
             store_concluded_deal(creator, DealStatus::Rejected, other);
         }
         let r = compute(creator);
-        assert_eq!(r.score, 20);
+        assert_eq!(r.score, Some(20));
         assert!(matches!(
             validate(creator),
             Err(EscrowError::ReliabilityTooLow { score, threshold })
@@ -156,7 +163,7 @@ mod tests {
         }
         let r = compute(creator);
         assert_eq!(r.concluded, 1);
-        assert_eq!(r.score, 100);
+        assert!(r.score.is_none());
     }
 
     #[test]
@@ -177,7 +184,7 @@ mod tests {
             }
         }
         let r = compute(creator);
-        assert_eq!(r.score, 20);
+        assert_eq!(r.score, Some(20));
         assert_eq!(r.concluded, 5);
     }
 
@@ -192,7 +199,7 @@ mod tests {
             store_concluded_deal(creator, DealStatus::Rejected, other);
         }
         let r = compute(creator);
-        assert_eq!(r.score, 60);
+        assert_eq!(r.score, Some(60));
         assert_eq!(r.positive, 3);
         assert_eq!(r.concluded, 5);
     }
