@@ -1,6 +1,7 @@
+use core::fmt::Write;
+
 use candid::Principal;
 use ic_cdk::{api::time, id};
-    use core::fmt::Write;
 
 use crate::{
     api::deals::{
@@ -83,14 +84,6 @@ pub async fn fund(caller: Principal, deal_id: DealId) -> Result<DealView, Escrow
         return Ok(DealView::from(&deal));
     }
 
-    // Bind the payer if this is an open-payer deal (invoice flow).
-    if deal.payer.is_none() {
-        with_deal(deal_id, |d| {
-            d.payer = Some(caller);
-            d.payer_consent = Consent::Accepted;
-        });
-    }
-
     try_acquire_lock(deal_id)?;
     let result = execute_fund(deal_id, &deal, caller).await;
     release_lock(deal_id);
@@ -105,8 +98,7 @@ pub async fn accept(
 ) -> Result<DealView, EscrowError> {
     let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
 
-    let already_done =
-        validation::validate_can_accept(&deal, caller, now, claim_code.as_deref())?;
+    let already_done = validation::validate_can_accept(&deal, caller, now, claim_code.as_deref())?;
     if already_done {
         return Ok(DealView::from(&deal));
     }
@@ -177,7 +169,7 @@ pub fn consent(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView,
 pub fn reject(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, EscrowError> {
     let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
 
-    let is_payer = validation::validate_can_consent(&deal, caller)?;
+    let is_payer = validation::validate_can_reject(&deal, caller)?;
 
     with_deal(deal_id, |d| {
         if is_payer {
@@ -212,9 +204,7 @@ pub fn list_for_caller(caller: Principal, offset: usize, limit: usize) -> Vec<De
         let mut matched: Vec<DealView> = deals
             .values()
             .filter(|d| {
-                d.created_by == caller
-                    || d.payer == Some(caller)
-                    || d.recipient == Some(caller)
+                d.created_by == caller || d.payer == Some(caller) || d.recipient == Some(caller)
             })
             .map(DealView::from)
             .collect();
@@ -241,10 +231,7 @@ pub fn get_escrow_account(caller: Principal, deal_id: DealId) -> Result<Account,
 }
 
 fn authorize_deal_participant(deal: &Deal, caller: Principal) -> Result<(), EscrowError> {
-    if deal.created_by == caller
-        || deal.payer == Some(caller)
-        || deal.recipient == Some(caller)
-    {
+    if deal.created_by == caller || deal.payer == Some(caller) || deal.recipient == Some(caller) {
         return Ok(());
     }
     Err(EscrowError::NotAuthorised)
@@ -255,17 +242,15 @@ fn authorize_deal_participant(deal: &Deal, caller: Principal) -> Result<(), Escr
 // ---------------------------------------------------------------------------
 
 async fn generate_claim_code() -> Result<String, EscrowError> {
-
-
     let (random_bytes,): (Vec<u8>,) = ledger::raw_rand().await?;
 
-    let hex = random_bytes.iter().take(16).fold(
-        String::with_capacity(32),
-        |mut acc, b| {
+    let hex = random_bytes
+        .iter()
+        .take(16)
+        .fold(String::with_capacity(32), |mut acc, b| {
             let _ = write!(acc, "{b:02x}");
             acc
-        },
-    );
+        });
 
     Ok(hex)
 }
@@ -279,6 +264,15 @@ async fn execute_fund(
     deal: &Deal,
     caller: Principal,
 ) -> Result<DealView, EscrowError> {
+    // Bind the payer if this is an open-payer deal (invoice flow).
+    // Done inside the lock so no partial mutation if the transfer fails.
+    if deal.payer.is_none() {
+        with_deal(deal_id, |d| {
+            d.payer = Some(caller);
+            d.payer_consent = Consent::Accepted;
+        });
+    }
+
     let payer = deal.payer.unwrap_or(caller);
 
     let escrow_account = Account {

@@ -82,10 +82,7 @@ pub const MAX_QUERY_BATCH_SIZE: u64 = 100;
 #[must_use]
 pub fn token_owner(deal: &Deal) -> Account {
     let owner = match deal.status {
-        DealStatus::Settled => deal
-            .recipient
-            .or(deal.payer)
-            .unwrap_or(deal.created_by),
+        DealStatus::Settled => deal.recipient.or(deal.payer).unwrap_or(deal.created_by),
         DealStatus::Created
         | DealStatus::Funded
         | DealStatus::Refunded
@@ -256,7 +253,11 @@ mod tests {
         Principal::from_slice(&[id])
     }
 
-    fn make_deal(status: DealStatus, payer: Option<Principal>, recipient: Option<Principal>) -> Deal {
+    fn make_deal(
+        status: DealStatus,
+        payer: Option<Principal>,
+        recipient: Option<Principal>,
+    ) -> Deal {
         Deal {
             id: 1,
             payer,

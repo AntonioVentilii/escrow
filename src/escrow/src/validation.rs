@@ -65,10 +65,7 @@ pub fn resolve_parties(
 /// - Caller is the payer (or becomes the payer for open-payer deals).
 /// - Payer consent is `Accepted` (auto-set by funding).
 /// - If a recipient is bound, their consent must be `Accepted`.
-pub fn validate_can_fund(
-    deal: &Deal,
-    caller: Principal,
-) -> Result<bool, EscrowError> {
+pub fn validate_can_fund(deal: &Deal, caller: Principal) -> Result<bool, EscrowError> {
     if let Some(p) = deal.payer {
         if p != caller {
             return Err(EscrowError::NotAuthorised);
@@ -186,7 +183,10 @@ pub fn validate_can_cancel(deal: &Deal, caller: Principal) -> Result<bool, Escro
     }
 }
 
-/// Validates that the caller can consent to (or reject) a deal.
+/// Validates that the caller can consent to a deal.
+///
+/// Consent is allowed in `Created` or `Funded` states (a counterparty may
+/// consent after the other party has already funded).
 ///
 /// Returns the caller's role: `true` if payer, `false` if recipient.
 pub fn validate_can_consent(deal: &Deal, caller: Principal) -> Result<bool, EscrowError> {
@@ -200,6 +200,33 @@ pub fn validate_can_consent(deal: &Deal, caller: Principal) -> Result<bool, Escr
         }
     }
 
+    resolve_caller_role(deal, caller)
+}
+
+/// Validates that the caller can reject a deal.
+///
+/// Rejection is only allowed in the `Created` state — once funds are in
+/// escrow, the deal must be settled or refunded, not rejected.
+///
+/// Returns the caller's role: `true` if payer, `false` if recipient.
+pub fn validate_can_reject(deal: &Deal, caller: Principal) -> Result<bool, EscrowError> {
+    match deal.status {
+        DealStatus::Created => {}
+        DealStatus::Rejected => {
+            return Err(EscrowError::AlreadyFinalised);
+        }
+        _ => {
+            return Err(EscrowError::InvalidState {
+                expected: "Created".to_owned(),
+                actual: format!("{:?}", deal.status),
+            })
+        }
+    }
+
+    resolve_caller_role(deal, caller)
+}
+
+fn resolve_caller_role(deal: &Deal, caller: Principal) -> Result<bool, EscrowError> {
     if deal.payer == Some(caller) {
         Ok(true)
     } else if deal.recipient == Some(caller) {
@@ -215,7 +242,7 @@ mod tests {
 
     use super::{
         resolve_parties, validate_can_accept, validate_can_cancel, validate_can_consent,
-        validate_can_fund, validate_can_reclaim, validate_create,
+        validate_can_fund, validate_can_reclaim, validate_can_reject, validate_create,
     };
     use crate::{
         api::deals::errors::EscrowError,
@@ -226,7 +253,11 @@ mod tests {
         Principal::from_slice(&[id])
     }
 
-    fn make_deal(status: DealStatus, payer: Option<Principal>, recipient: Option<Principal>) -> Deal {
+    fn make_deal(
+        status: DealStatus,
+        payer: Option<Principal>,
+        recipient: Option<Principal>,
+    ) -> Deal {
         Deal {
             id: 1,
             payer,
@@ -559,6 +590,50 @@ mod tests {
         assert!(matches!(
             validate_can_consent(&deal, payer),
             Err(EscrowError::InvalidState { .. })
+        ));
+    }
+
+    // --- reject ---
+
+    #[test]
+    fn reject_ok_for_created_deal() {
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::Created, Some(payer), Some(recip));
+        let is_payer = validate_can_reject(&deal, recip).unwrap();
+        assert!(!is_payer);
+    }
+
+    #[test]
+    fn reject_not_allowed_on_funded_deal() {
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
+        assert!(matches!(
+            validate_can_reject(&deal, recip),
+            Err(EscrowError::InvalidState { .. })
+        ));
+    }
+
+    #[test]
+    fn reject_idempotent_returns_already_finalised() {
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::Rejected, Some(payer), Some(recip));
+        assert!(matches!(
+            validate_can_reject(&deal, recip),
+            Err(EscrowError::AlreadyFinalised)
+        ));
+    }
+
+    #[test]
+    fn reject_rejects_stranger() {
+        let payer = test_principal(1);
+        let stranger = test_principal(3);
+        let deal = make_deal(DealStatus::Created, Some(payer), None);
+        assert!(matches!(
+            validate_can_reject(&deal, stranger),
+            Err(EscrowError::NotAuthorised)
         ));
     }
 }
