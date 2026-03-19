@@ -84,6 +84,35 @@ pub fn count_active_deals_for(principal: Principal) -> u32 {
     })
 }
 
+/// Returns `(positive, concluded)` deal counts for a principal's reliability.
+///
+/// - **positive**: deals with status `Settled` or `Refunded`.
+/// - **concluded**: positive + counterparty rejections (where `updated_by != created_by`).
+///
+/// Deals that are `Created`, `Funded`, `Cancelled`, or self-rejected are excluded.
+#[must_use]
+pub fn compute_reliability_for(principal: Principal) -> (u32, u32) {
+    DEALS.with(|d| {
+        let (mut positive, mut concluded) = (0_u32, 0_u32);
+        for deal in d.borrow().values() {
+            if deal.created_by != principal {
+                continue;
+            }
+            match deal.status {
+                DealStatus::Settled | DealStatus::Refunded => {
+                    positive = positive.saturating_add(1);
+                    concluded = concluded.saturating_add(1);
+                }
+                DealStatus::Rejected if deal.updated_by.is_some_and(|by| by != principal) => {
+                    concluded = concluded.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+        (positive, concluded)
+    })
+}
+
 fn allocate_deal_id() -> DealId {
     NEXT_DEAL_ID.with(|id| {
         let mut id = id.borrow_mut();

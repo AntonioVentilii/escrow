@@ -67,6 +67,7 @@ type EscrowError = variant {
 	MissingClaimCode;
 	LedgerError : text;
 	ExpiryTooFar;
+	ReliabilityTooLow : record { threshold : nat32; score : nat32 };
 	InvalidClaimCode;
 	MetadataTooLong : record { max : nat32; field : text };
 	RecipientMismatch;
@@ -104,6 +105,11 @@ type Icrc7TransferError = variant {
 type Icrc7TransferResponse = variant { Ok : nat; Err : Icrc7TransferError };
 type ListMyDealsArgs = record { offset : opt nat64; limit : opt nat64 };
 type ProcessExpiredDealsResult = variant { Ok : vec nat64; Err : EscrowError };
+type ReliabilityView = record {
+	concluded : nat32;
+	score : opt nat32;
+	positive : nat32
+};
 type SupportedStandard = record { url : text; name : text };
 type Value = variant {
 	Int : int;
@@ -176,6 +182,11 @@ service : {
 	get_deal : (nat64) -> (GetDealResult) query;
 	// Returns the escrow `Account` (canister principal + deal subaccount) for a deal.
 	get_escrow_account : (nat64) -> (GetEscrowAccountResult) query;
+	// Returns the reliability score for any principal.
+	//
+	// This is a public query — any authenticated caller may check any
+	// principal's score. No authorization required beyond being non-anonymous.
+	get_reliability : (principal) -> (ReliabilityView) query;
 	// Returns the list of ICRC standards supported by this canister.
 	//
 	// Currently reports ICRC-7 (NFT) and ICRC-10 (supported-standards discovery).

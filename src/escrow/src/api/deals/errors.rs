@@ -52,4 +52,6 @@ pub enum EscrowError {
     ExpiryTooFar,
     /// The caller has too many active (non-terminal) deals.
     TooManyActiveDeals { max: u32 },
+    /// The caller's reliability score is below the minimum threshold.
+    ReliabilityTooLow { score: u32, threshold: u32 },
 }
