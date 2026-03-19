@@ -403,7 +403,7 @@ mod tests {
 
     use super::{cancel, consent, get, get_claimable, get_escrow_account, list_for_caller, reject};
     use crate::{
-        api::deals::{errors::EscrowError, params::CreateDealArgs},
+        api::deals::errors::EscrowError,
         memory::insert_new_deal,
         subaccounts::derive_deal_subaccount,
         types::deal::{Consent, Deal, DealMetadata, DealStatus},

@@ -134,7 +134,7 @@ mod tests {
     use candid::Principal;
 
     use super::{get_deal, insert_new_deal, release_lock, try_acquire_lock, with_deal, with_deals};
-    use crate::types::deal::{Deal, DealStatus};
+    use crate::types::deal::{Consent, Deal, DealStatus};
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])
@@ -143,7 +143,7 @@ mod tests {
     fn make_stored_deal(status: DealStatus) -> Deal {
         insert_new_deal(|deal_id| Deal {
             id: deal_id,
-            payer: test_principal(1),
+            payer: Some(test_principal(1)),
             recipient: None,
             token_ledger: test_principal(99),
             token_symbol: None,
@@ -156,12 +156,14 @@ mod tests {
             status,
             escrow_subaccount: vec![0_u8; 32],
             funded_at_ns: None,
-            completed_at_ns: None,
+            settled_at_ns: None,
             refunded_at_ns: None,
             funding_tx: None,
             payout_tx: None,
             refund_tx: None,
             claim_code: None,
+            payer_consent: Consent::Accepted,
+            recipient_consent: Consent::Pending,
             metadata: None,
         })
     }
@@ -199,7 +201,7 @@ mod tests {
     fn builder_cannot_forge_id() {
         let deal = insert_new_deal(|_deal_id| Deal {
             id: 999_999_999,
-            payer: test_principal(1),
+            payer: Some(test_principal(1)),
             recipient: None,
             token_ledger: test_principal(99),
             token_symbol: None,
@@ -212,15 +214,16 @@ mod tests {
             status: DealStatus::Created,
             escrow_subaccount: vec![0_u8; 32],
             funded_at_ns: None,
-            completed_at_ns: None,
+            settled_at_ns: None,
             refunded_at_ns: None,
             funding_tx: None,
             payout_tx: None,
             refund_tx: None,
             claim_code: None,
+            payer_consent: Consent::Accepted,
+            recipient_consent: Consent::Pending,
             metadata: None,
         });
-        // The store overrides whatever the builder returned
         assert_ne!(deal.id, 999_999_999);
         assert!(get_deal(deal.id).is_some());
         assert!(get_deal(999_999_999).is_none());

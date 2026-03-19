@@ -295,7 +295,7 @@ mod tests {
     use crate::{
         memory::insert_new_deal,
         types::{
-            deal::{Deal, DealMetadata, DealStatus},
+            deal::{Consent, Deal, DealMetadata, DealStatus},
             icrc7::{Icrc7TransferArg, Icrc7TransferResponse, Value, COLLECTION_NAME},
             ledger_types::Account,
         },
@@ -308,7 +308,7 @@ mod tests {
     fn store_deal(status: DealStatus, payer: Principal, recipient: Option<Principal>) -> Deal {
         insert_new_deal(|deal_id| Deal {
             id: deal_id,
-            payer,
+            payer: Some(payer),
             recipient,
             token_ledger: test_principal(99),
             token_symbol: None,
@@ -321,12 +321,14 @@ mod tests {
             status,
             escrow_subaccount: vec![0_u8; 32],
             funded_at_ns: None,
-            completed_at_ns: None,
+            settled_at_ns: None,
             refunded_at_ns: None,
             funding_tx: None,
             payout_tx: None,
             refund_tx: None,
             claim_code: None,
+            payer_consent: Consent::Accepted,
+            recipient_consent: Consent::Pending,
             metadata: Some(DealMetadata {
                 title: Some("Tip".to_owned()),
                 note: None,
@@ -404,10 +406,10 @@ mod tests {
     }
 
     #[test]
-    fn owner_of_completed_deal() {
+    fn owner_of_settled_deal() {
         let payer = test_principal(14);
         let recip = test_principal(15);
-        let deal = store_deal(DealStatus::Completed, payer, Some(recip));
+        let deal = store_deal(DealStatus::Settled, payer, Some(recip));
         let result = owner_of(&[Nat::from(deal.id)]);
         assert_eq!(result[0].as_ref().unwrap().owner, recip);
     }
