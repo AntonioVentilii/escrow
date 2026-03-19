@@ -69,10 +69,10 @@ pub fn validate_can_fund(
     deal: &Deal,
     caller: Principal,
 ) -> Result<bool, EscrowError> {
-    match deal.payer {
-        Some(p) if p != caller => return Err(EscrowError::NotAuthorised),
-        None => {}
-        Some(_) => {}
+    if let Some(p) = deal.payer {
+        if p != caller {
+            return Err(EscrowError::NotAuthorised);
+        }
     }
 
     match deal.status {

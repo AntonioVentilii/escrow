@@ -1,5 +1,6 @@
 use candid::Principal;
 use ic_cdk::{api::time, id};
+    use core::fmt::Write;
 
 use crate::{
     api::deals::{
@@ -254,21 +255,19 @@ fn authorize_deal_participant(deal: &Deal, caller: Principal) -> Result<(), Escr
 // ---------------------------------------------------------------------------
 
 async fn generate_claim_code() -> Result<String, EscrowError> {
-    let (random_bytes,): (Vec<u8>,) = ic_cdk::call(
-        Principal::management_canister(),
-        "raw_rand",
-        (),
-    )
-    .await
-    .map_err(|(code, msg)| {
-        EscrowError::ValidationError(format!("Failed to generate claim code: {code:?}: {msg}"))
-    })?;
 
-    Ok(random_bytes
-        .iter()
-        .take(16)
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>())
+
+    let (random_bytes,): (Vec<u8>,) = ledger::raw_rand().await?;
+
+    let hex = random_bytes.iter().take(16).fold(
+        String::with_capacity(32),
+        |mut acc, b| {
+            let _ = write!(acc, "{b:02x}");
+            acc
+        },
+    );
+
+    Ok(hex)
 }
 
 // ---------------------------------------------------------------------------

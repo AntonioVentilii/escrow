@@ -67,6 +67,16 @@ pub async fn transfer(
     }
 }
 
+/// Calls the IC management canister to obtain 32 bytes of cryptographic randomness.
+pub async fn raw_rand() -> Result<(Vec<u8>,), EscrowError> {
+    let result: Result<(Vec<u8>,), _> =
+        call(Principal::management_canister(), "raw_rand", ()).await;
+
+    result.map_err(|(code, msg)| {
+        EscrowError::LedgerError(format!("raw_rand failed: {code:?}: {msg}"))
+    })
+}
+
 fn nat_to_u128(nat: &Nat) -> Result<u128, EscrowError> {
     let s = nat.0.to_string();
     s.parse::<u128>()
