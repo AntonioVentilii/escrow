@@ -107,6 +107,46 @@ Cancelled        Refunded
 | `validation.rs`         | State transition and input validation                                            |
 | `guards.rs`             | Caller authentication/authorization guards                                       |
 
+## Scalability & limitations
+
+### Current storage model
+
+The canister stores all deals in a heap-allocated `BTreeMap` that is serialized to stable memory on each upgrade (`stable_save` / `stable_restore`). This is simple and correct for MVP volumes, but it has two hard ceilings:
+
+| Constraint       | Limit          | Bottleneck                                                            |
+| ---------------- | -------------- | --------------------------------------------------------------------- |
+| Wasm heap memory | ~2–3 GB usable | Serialization of the full `BTreeMap` on every upgrade                 |
+| Upgrade cost     | O(n) per deal  | Every upgrade must serialize and then deserialize the entire deal map |
+
+With each `Deal` struct weighing roughly 300–500 bytes, the heap approach supports approximately **4–8 million deals** before memory pressure becomes a concern.
+
+### ICRC-7 does not shard token state
+
+The ICRC-7 standard defines a **query interface** for non-fungible tokens, but it has **no built-in mechanism for sharding or archiving token state** across multiple canisters. All token ownership and metadata lives in the single canister that implements the standard.
+
+ICRC-3 (the transaction log standard used by ICRC-1 and ICRC-7 ledgers) only archives the **transaction history** — the append-only log of mints, transfers, and burns — not the live token data. So even with ICRC-3, the ownership map and metadata for every token must fit inside one canister.
+
+This is a known limitation of the current IC NFT ecosystem. There is no standardized cross-canister NFT sharding protocol.
+
+### Scaling roadmap
+
+The following steps are listed in order of increasing effort and capacity:
+
+| Phase | Change                                  | Capacity                      | Effort |
+| ----- | --------------------------------------- | ----------------------------- | ------ |
+| 0     | Current (`BTreeMap + stable_save`)      | ~4–8 M deals                  | —      |
+| 1     | `ic-stable-structures` `StableBTreeMap` | ~100 M+ deals (stable memory) | Low    |
+| 2     | Separate ICRC-7 deal ledger canister    | Same, but isolates concerns   | Medium |
+| 3     | Sharded deal ledger (router + shards)   | Effectively unbounded         | High   |
+
+**Phase 1** is the highest-impact change. `StableBTreeMap` stores deals directly in stable memory, eliminating the serialize-everything-on-upgrade bottleneck and giving access to the full stable memory budget (up to hundreds of GB on some subnets). The `memory.rs` accessor API (`get_deal`, `with_deal`, `with_deals`) already isolates callers from the storage backend, making this migration transparent.
+
+**Phase 2** extracts the deal ledger into a standalone canister with its own memory and cycles budget. The escrow canister would make inter-canister calls to the deal ledger for every deal operation. This adds ~1–2 s of latency per call but cleanly separates escrow logic from token storage.
+
+**Phase 3** introduces manual sharding: a thin router canister maps token-ID ranges to multiple shard canisters, each implementing ICRC-7 independently. Aggregation queries (`balance_of`, `tokens_of`) fan out across shards and merge results. This is complex and not standardized, but it removes the single-canister ceiling entirely.
+
+> **Bottom line:** with Phase 1 alone, the canister can comfortably support hundreds of millions of deals. Phases 2–3 are only needed at truly massive scale or when operational isolation is desired.
+
 ## Future expansion
 
 The design is structured to accommodate the following without breaking changes:
@@ -133,17 +173,13 @@ Introduce a `Resolver` trait or enum (`Admin`, `Oracle(Principal)`, `DaoVote { .
 
 ### Storage at scale
 
-The current `BTreeMap + stable_save` approach works for MVP volumes. For production scale, migrate the deal map to `ic-stable-structures` `StableBTreeMap` for O(1) upgrade cost. The `memory.rs` accessor API (`get_deal`, `with_deal`, `with_deals`) isolates callers from the storage backend, making this migration transparent.
+See the [Scalability & limitations](#scalability--limitations) section for the full analysis and phased roadmap. The `memory.rs` accessor API makes the migration from `BTreeMap` to `StableBTreeMap` transparent to all callers.
 
 ### Deal ledger — deals as ICRC-7 NFTs ✅ (implemented)
 
 Each deal is exposed as a non-fungible token via the **ICRC-7** standard query interface. The canister natively implements all ICRC-7 query methods plus ICRC-10 supported-standards discovery. Ownership follows deal lifecycle: the payer owns the token until completion, at which point the recipient becomes the owner.
 
 Direct `icrc7_transfer` calls are rejected — ownership transitions are managed exclusively through escrow operations (`accept_deal`, `reclaim_deal`, etc.).
-
-**Next steps** for further scalability: extract the deal ledger into a dedicated canister and move to `ic-stable-structures` `StableBTreeMap`. The groundwork is in place:
-
-**How it maps:**
 
 | Deal concept                                            | ICRC-7 equivalent                                            |
 | ------------------------------------------------------- | ------------------------------------------------------------ |
@@ -153,17 +189,10 @@ Direct `icrc7_transfer` calls are rejected — ownership transitions are managed
 | Deal details (amount, status, expiry, payer, recipient) | Token metadata fields (ICRC-16 value map)                    |
 | Deal history / audit trail                              | ICRC-3 transaction log (built into compliant ledgers)        |
 
-**Benefits:**
-
-- **Scalability** — deal storage moves out of the escrow canister into a purpose-built ledger canister (or canister group) with its own memory, effectively removing the single-canister memory ceiling.
-- **Composability** — deals become first-class IC assets queryable via standard ICRC-7 methods; wallets, explorers, and other canisters can display and interact with deals without custom integration.
-- **Auditability** — ICRC-3 provides an immutable, append-only transaction log of every mint, transfer, and burn at no extra development cost.
-- **Transferability** — representing a deal as an NFT opens the door to secondary-market scenarios (e.g. selling or assigning a claim before settlement).
+**Next steps:** extracting the deal ledger into a dedicated canister and adding ICRC-3 transaction logging. See Phase 2 and Phase 3 in the [scaling roadmap](#scaling-roadmap).
 
 **Open challenges:**
 
 - ICRC-7 does not standardize metadata _updates_ after minting; status transitions would require a custom extension method on the deal ledger (e.g. `update_deal_status`).
-- Every deal lifecycle action becomes an inter-canister call (escrow canister -> deal ledger), adding ~1-2 seconds of latency per step.
 - The deal ledger canister itself must be upgradeable and its cycles balance managed.
-
-**Migration path:** the escrow canister already isolates storage behind the `memory.rs` accessor API. A phased rollout could (1) deploy the ICRC-7 deal ledger, (2) dual-write new deals to both local memory and the ledger, (3) backfill existing deals, and (4) remove the local deal map once the ledger is the source of truth.
+- There is no standardized ICRC protocol for NFT sharding across multiple canisters.

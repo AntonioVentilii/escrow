@@ -21,6 +21,10 @@ Payers lock tokens into deal-specific subaccounts; recipients claim them before 
 
 More use cases (disputes, instalment payments, multi-party escrow, ...) are planned — see the [future expansion](src/escrow/README.md#future-expansion) section.
 
+## Scalability
+
+The canister currently stores all deals in heap memory (~4–8 M deals). ICRC-7 has no built-in token-state sharding, so all deal NFTs live in one canister. A phased migration to `ic-stable-structures` (hundreds of millions of deals) and optional canister sharding (unbounded) is documented in the [scalability & limitations](src/escrow/README.md#scalability--limitations) section.
+
 ## Technical documentation
 
 For the full API reference, deal lifecycle, module structure, and ICRC-7 NFT interface, see the [escrow canister README](src/escrow/README.md).
