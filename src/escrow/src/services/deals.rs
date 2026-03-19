@@ -31,6 +31,7 @@ pub async fn create(
     args: CreateDealArgs,
     now: u64,
 ) -> Result<DealView, EscrowError> {
+    validation::validate_caller_deal_limit(caller)?;
     validation::validate_create(args.amount, args.expires_at_ns, now)?;
     validation::validate_metadata(args.title.as_deref(), args.note.as_deref())?;
 

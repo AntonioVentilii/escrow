@@ -2,14 +2,25 @@ use candid::Principal;
 
 use crate::{
     api::deals::errors::EscrowError,
+    memory,
     types::deal::{Consent, Deal, DealStatus},
 };
 
 const MAX_TITLE_LEN: u32 = 200;
 const MAX_NOTE_LEN: u32 = 1000;
+const MAX_ACTIVE_DEALS_PER_PRINCIPAL: u32 = 50;
 
 /// ~500 years in nanoseconds — the practical u64 ceiling.
 const MAX_EXPIRY_WINDOW_NS: u64 = 500 * 365 * 24 * 60 * 60 * 1_000_000_000;
+
+pub fn validate_caller_deal_limit(caller: Principal) -> Result<(), EscrowError> {
+    if memory::count_active_deals_for(caller) >= MAX_ACTIVE_DEALS_PER_PRINCIPAL {
+        return Err(EscrowError::TooManyActiveDeals {
+            max: MAX_ACTIVE_DEALS_PER_PRINCIPAL,
+        });
+    }
+    Ok(())
+}
 
 pub fn validate_create(amount: u128, expires_at_ns: u64, now_ns: u64) -> Result<(), EscrowError> {
     if amount == 0 {
@@ -282,12 +293,14 @@ mod tests {
     use candid::Principal;
 
     use super::{
-        resolve_parties, validate_can_accept, validate_can_cancel, validate_can_consent,
-        validate_can_fund, validate_can_reclaim, validate_can_reject, validate_create,
-        validate_metadata, MAX_EXPIRY_WINDOW_NS,
+        resolve_parties, validate_caller_deal_limit, validate_can_accept, validate_can_cancel,
+        validate_can_consent, validate_can_fund, validate_can_reclaim, validate_can_reject,
+        validate_create, validate_metadata, MAX_ACTIVE_DEALS_PER_PRINCIPAL, MAX_EXPIRY_WINDOW_NS,
     };
     use crate::{
         api::deals::errors::EscrowError,
+        memory::{insert_new_deal, with_deal, with_deals},
+        subaccounts::derive_deal_subaccount,
         types::deal::{Consent, Deal, DealMetadata, DealStatus},
     };
 
@@ -751,5 +764,73 @@ mod tests {
         let now = 100;
         let at_limit = now + MAX_EXPIRY_WINDOW_NS;
         assert!(validate_create(100, at_limit, now).is_ok());
+    }
+
+    // --- active deal cap ---
+
+    fn store_active_deal(creator: Principal) {
+        insert_new_deal(|deal_id| Deal {
+            id: deal_id,
+            payer: Some(creator),
+            recipient: None,
+            token_ledger: test_principal(99),
+            token_symbol: None,
+            amount: 1000,
+            created_at_ns: 100,
+            created_by: creator,
+            updated_at_ns: None,
+            updated_by: None,
+            expires_at_ns: 200,
+            status: DealStatus::Created,
+            escrow_subaccount: derive_deal_subaccount(deal_id),
+            funded_at_ns: None,
+            settled_at_ns: None,
+            refunded_at_ns: None,
+            funding_tx: None,
+            payout_tx: None,
+            refund_tx: None,
+            claim_code: None,
+            payer_consent: Consent::Accepted,
+            recipient_consent: Consent::Pending,
+            metadata: None,
+        });
+    }
+
+    #[test]
+    fn deal_limit_allows_under_cap() {
+        let creator = test_principal(200);
+        store_active_deal(creator);
+        assert!(validate_caller_deal_limit(creator).is_ok());
+    }
+
+    #[test]
+    fn deal_limit_rejects_at_cap() {
+        let creator = test_principal(201);
+        for _ in 0..MAX_ACTIVE_DEALS_PER_PRINCIPAL {
+            store_active_deal(creator);
+        }
+        assert!(matches!(
+            validate_caller_deal_limit(creator),
+            Err(EscrowError::TooManyActiveDeals { max }) if max == MAX_ACTIVE_DEALS_PER_PRINCIPAL
+        ));
+    }
+
+    #[test]
+    fn deal_limit_does_not_count_terminal_deals() {
+        let creator = test_principal(202);
+        for _ in 0..MAX_ACTIVE_DEALS_PER_PRINCIPAL {
+            store_active_deal(creator);
+        }
+        assert!(validate_caller_deal_limit(creator).is_err());
+
+        let first_id = with_deals(|deals| {
+            deals
+                .values()
+                .find(|d| d.created_by == creator && d.status == DealStatus::Created)
+                .unwrap()
+                .id
+        });
+        with_deal(first_id, |d| d.status = DealStatus::Cancelled);
+        assert!(validate_caller_deal_limit(creator).is_ok());
     }
 }

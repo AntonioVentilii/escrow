@@ -50,4 +50,6 @@ pub enum EscrowError {
     MetadataTooLong { field: String, max: u32 },
     /// The expiry timestamp is too far in the future.
     ExpiryTooFar,
+    /// The caller has too many active (non-terminal) deals.
+    TooManyActiveDeals { max: u32 },
 }

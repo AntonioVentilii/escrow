@@ -133,7 +133,7 @@ pub fn get_deal(deal_id: DealId) -> GetDealResult {
 #[must_use]
 pub fn list_my_deals(args: ListMyDealsArgs) -> Vec<DealView> {
     let offset = args.offset.unwrap_or(0) as usize;
-    let limit = args.limit.unwrap_or(50) as usize;
+    let limit = (args.limit.unwrap_or(50)).min(100) as usize;
     services::deals::list_for_caller(caller(), offset, limit)
 }
 

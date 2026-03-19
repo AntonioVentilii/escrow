@@ -1,12 +1,13 @@
 use core::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
+use candid::Principal;
 use ic_cdk::{storage, trap};
 
 use crate::{
     api::deals::errors::EscrowError,
     types::{
-        deal::{Deal, DealId},
+        deal::{Deal, DealId, DealStatus},
         state::{Config, StableState},
     },
 };
@@ -58,6 +59,29 @@ pub fn with_deals<R>(f: impl FnOnce(&BTreeMap<DealId, Deal>) -> R) -> R {
 #[must_use]
 pub fn deal_count() -> u64 {
     DEALS.with(|d| d.borrow().len() as u64)
+}
+
+/// Counts non-terminal deals created by `principal`.
+#[must_use]
+pub fn count_active_deals_for(principal: Principal) -> u32 {
+    DEALS.with(|d| {
+        u32::try_from(
+            d.borrow()
+                .values()
+                .filter(|deal| {
+                    deal.created_by == principal
+                        && !matches!(
+                            deal.status,
+                            DealStatus::Settled
+                                | DealStatus::Refunded
+                                | DealStatus::Cancelled
+                                | DealStatus::Rejected
+                        )
+                })
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
+    })
 }
 
 fn allocate_deal_id() -> DealId {

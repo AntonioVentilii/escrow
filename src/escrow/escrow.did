@@ -71,6 +71,7 @@ type EscrowError = variant {
 	MetadataTooLong : record { max : nat32; field : text };
 	RecipientMismatch;
 	TransferFailed : text;
+	TooManyActiveDeals : record { max : nat32 };
 	NotExpired;
 	InvalidState : record { actual : text; expected : text };
 	Expired
