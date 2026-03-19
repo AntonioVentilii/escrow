@@ -9,6 +9,8 @@ use crate::{
 const MAX_TITLE_LEN: u32 = 200;
 const MAX_NOTE_LEN: u32 = 1000;
 const MAX_ACTIVE_DEALS_PER_PRINCIPAL: u32 = 50;
+const MIN_CONCLUDED_DEALS_FOR_RELIABILITY: u32 = 5;
+const MIN_RELIABILITY_PERCENT: u32 = 25;
 
 /// ~500 years in nanoseconds — the practical u64 ceiling.
 const MAX_EXPIRY_WINDOW_NS: u64 = 500 * 365 * 24 * 60 * 60 * 1_000_000_000;
@@ -17,6 +19,21 @@ pub fn validate_caller_deal_limit(caller: Principal) -> Result<(), EscrowError> 
     if memory::count_active_deals_for(caller) >= MAX_ACTIVE_DEALS_PER_PRINCIPAL {
         return Err(EscrowError::TooManyActiveDeals {
             max: MAX_ACTIVE_DEALS_PER_PRINCIPAL,
+        });
+    }
+    Ok(())
+}
+
+pub fn validate_caller_reputation(caller: Principal) -> Result<(), EscrowError> {
+    let (positive, concluded) = memory::compute_reliability_for(caller);
+    if concluded < MIN_CONCLUDED_DEALS_FOR_RELIABILITY {
+        return Ok(());
+    }
+    let score = positive * 100 / concluded;
+    if score < MIN_RELIABILITY_PERCENT {
+        return Err(EscrowError::ReliabilityTooLow {
+            score,
+            threshold: MIN_RELIABILITY_PERCENT,
         });
     }
     Ok(())
@@ -293,9 +310,10 @@ mod tests {
     use candid::Principal;
 
     use super::{
-        resolve_parties, validate_caller_deal_limit, validate_can_accept, validate_can_cancel,
-        validate_can_consent, validate_can_fund, validate_can_reclaim, validate_can_reject,
-        validate_create, validate_metadata, MAX_ACTIVE_DEALS_PER_PRINCIPAL, MAX_EXPIRY_WINDOW_NS,
+        resolve_parties, validate_caller_deal_limit, validate_caller_reputation,
+        validate_can_accept, validate_can_cancel, validate_can_consent, validate_can_fund,
+        validate_can_reclaim, validate_can_reject, validate_create, validate_metadata,
+        MAX_ACTIVE_DEALS_PER_PRINCIPAL, MAX_EXPIRY_WINDOW_NS, MIN_RELIABILITY_PERCENT,
     };
     use crate::{
         api::deals::errors::EscrowError,
@@ -832,5 +850,117 @@ mod tests {
         });
         with_deal(first_id, |d| d.status = DealStatus::Cancelled);
         assert!(validate_caller_deal_limit(creator).is_ok());
+    }
+
+    // --- reliability score ---
+
+    fn store_concluded_deal(creator: Principal, status: DealStatus, updated_by: Principal) {
+        insert_new_deal(|deal_id| Deal {
+            id: deal_id,
+            payer: Some(creator),
+            recipient: Some(test_principal(250)),
+            token_ledger: test_principal(99),
+            token_symbol: None,
+            amount: 1000,
+            created_at_ns: 100,
+            created_by: creator,
+            updated_at_ns: Some(200),
+            updated_by: Some(updated_by),
+            expires_at_ns: 300,
+            status,
+            escrow_subaccount: derive_deal_subaccount(deal_id),
+            funded_at_ns: None,
+            settled_at_ns: None,
+            refunded_at_ns: None,
+            funding_tx: None,
+            payout_tx: None,
+            refund_tx: None,
+            claim_code: None,
+            payer_consent: Consent::Accepted,
+            recipient_consent: Consent::Accepted,
+            metadata: None,
+        });
+    }
+
+    #[test]
+    fn reputation_allows_new_user() {
+        let creator = test_principal(210);
+        assert!(validate_caller_reputation(creator).is_ok());
+    }
+
+    #[test]
+    fn reputation_allows_under_min_concluded() {
+        let creator = test_principal(211);
+        let other = test_principal(212);
+        // 2 positive + 2 rejected = 4 concluded (under the 5-deal minimum)
+        for _ in 0..2 {
+            store_concluded_deal(creator, DealStatus::Settled, other);
+        }
+        for _ in 0..2 {
+            store_concluded_deal(creator, DealStatus::Rejected, other);
+        }
+        // 50% reliability, but under min concluded — still allowed
+        assert!(validate_caller_reputation(creator).is_ok());
+    }
+
+    #[test]
+    fn reputation_allows_above_threshold() {
+        let creator = test_principal(213);
+        let other = test_principal(214);
+        // 4 positive + 1 rejected = 80%
+        for _ in 0..4 {
+            store_concluded_deal(creator, DealStatus::Settled, other);
+        }
+        store_concluded_deal(creator, DealStatus::Rejected, other);
+        assert!(validate_caller_reputation(creator).is_ok());
+    }
+
+    #[test]
+    fn reputation_blocks_below_threshold() {
+        let creator = test_principal(215);
+        let other = test_principal(216);
+        // 1 positive + 4 rejected = 20%
+        store_concluded_deal(creator, DealStatus::Settled, other);
+        for _ in 0..4 {
+            store_concluded_deal(creator, DealStatus::Rejected, other);
+        }
+        assert!(matches!(
+            validate_caller_reputation(creator),
+            Err(EscrowError::ReliabilityTooLow { score, threshold })
+                if score == 20 && threshold == MIN_RELIABILITY_PERCENT
+        ));
+    }
+
+    #[test]
+    fn reputation_ignores_self_rejections() {
+        let creator = test_principal(217);
+        let other = test_principal(218);
+        // 1 positive + 10 self-rejected → only 1 concluded → under minimum
+        store_concluded_deal(creator, DealStatus::Settled, other);
+        for _ in 0..10 {
+            store_concluded_deal(creator, DealStatus::Rejected, creator);
+        }
+        assert!(validate_caller_reputation(creator).is_ok());
+    }
+
+    #[test]
+    fn reputation_ignores_in_progress_deals() {
+        let creator = test_principal(219);
+        let other = test_principal(220);
+        // 1 positive + 4 rejected = 20%, but also 100 Created/Funded/Cancelled
+        store_concluded_deal(creator, DealStatus::Settled, other);
+        for _ in 0..4 {
+            store_concluded_deal(creator, DealStatus::Rejected, other);
+        }
+        for status in [DealStatus::Created, DealStatus::Funded, DealStatus::Cancelled] {
+            for _ in 0..33 {
+                store_concluded_deal(creator, status.clone(), other);
+            }
+        }
+        // Score is still 20% (only concluded deals matter)
+        assert!(matches!(
+            validate_caller_reputation(creator),
+            Err(EscrowError::ReliabilityTooLow { score, .. }) if score == 20
+        ));
     }
 }

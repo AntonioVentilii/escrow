@@ -72,6 +72,7 @@ type EscrowError = variant {
 	RecipientMismatch;
 	TransferFailed : text;
 	TooManyActiveDeals : record { max : nat32 };
+	ReliabilityTooLow : record { score : nat32; threshold : nat32 };
 	NotExpired;
 	InvalidState : record { actual : text; expected : text };
 	Expired
