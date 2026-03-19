@@ -1,6 +1,6 @@
 use candid::{Nat, Principal};
 use ic_cdk::export_candid;
-use ic_cdk_macros::{post_upgrade, pre_upgrade};
+use ic_cdk_macros::{init, post_upgrade, pre_upgrade};
 
 use crate::{
     api::{
@@ -34,6 +34,11 @@ pub mod subaccounts;
 pub mod types;
 pub mod validation;
 
+#[init]
+fn init() {
+    services::housekeeping::start_expiry_sweep();
+}
+
 #[pre_upgrade]
 fn pre_upgrade() {
     memory::save_state();
@@ -42,6 +47,8 @@ fn pre_upgrade() {
 #[post_upgrade]
 fn post_upgrade() {
     memory::restore_state();
+
+    services::housekeeping::start_expiry_sweep();
 }
 
 export_candid!();

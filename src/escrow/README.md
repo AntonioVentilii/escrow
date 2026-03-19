@@ -149,6 +149,8 @@ Rejected                  Cancelled          Refunded
 
 `Settled`, `Refunded`, `Cancelled`, and `Rejected` are terminal states.
 
+> **Automatic refund:** A repeating timer (every 5 minutes) sweeps expired funded deals and refunds them automatically. The `reclaim_deal` endpoint serves as a manual fallback. Both paths are idempotent.
+
 ### Flows
 
 **Tip flow** (payer → unknown recipient):
@@ -174,26 +176,27 @@ Rejected                  Cancelled          Refunded
 
 ## Module structure
 
-| Module                  | Responsibility                                                                    |
-| ----------------------- | --------------------------------------------------------------------------------- |
-| `types/deal.rs`         | Internal `Deal`, `DealStatus`, `Consent`, `DealMetadata` types                    |
-| `types/ledger_types.rs` | ICRC-1/ICRC-2 Account and transfer types                                          |
-| `types/icrc7.rs`        | ICRC-7/ICRC-16 `Value` type, ownership helpers, metadata builders                 |
-| `types/state.rs`        | Config, StableState for persistence                                               |
-| `api/deals/api.rs`      | Thin deal endpoint layer (delegates to services)                                  |
-| `api/deals/params.rs`   | Public argument structs (`CreateDealArgs`, `AcceptDealArgs`, …)                   |
-| `api/deals/results.rs`  | Public view structs (`DealView`, `ClaimableDealView`)                             |
-| `api/deals/errors.rs`   | Typed `EscrowError` enum                                                          |
-| `api/icrc7/api.rs`      | ICRC-7 NFT standard query/update endpoints + ICRC-10 supported standards          |
-| `api/admin/api.rs`      | Controller-only admin endpoints                                                   |
-| `services/deals.rs`     | Core deal business logic (create, fund, accept, reclaim, cancel, consent, reject) |
-| `services/expiry.rs`    | Batch expired-deal refund processing                                              |
-| `services/icrc7.rs`     | ICRC-7 service logic (token metadata, ownership, pagination, transfer rejection)  |
-| `memory.rs`             | Thread-local storage, atomic deal-ID allocation, save/restore, processing locks   |
-| `ledger.rs`             | ICRC inter-canister call helpers (transfer, transfer_from, raw_rand)              |
-| `subaccounts.rs`        | Deterministic deal subaccount derivation                                          |
-| `validation.rs`         | State transition, consent, and input validation                                   |
-| `guards.rs`             | Caller authentication/authorization guards                                        |
+| Module                     | Responsibility                                                                    |
+| -------------------------- | --------------------------------------------------------------------------------- |
+| `types/deal.rs`            | Internal `Deal`, `DealStatus`, `Consent`, `DealMetadata` types                    |
+| `types/ledger_types.rs`    | ICRC-1/ICRC-2 Account and transfer types                                          |
+| `types/icrc7.rs`           | ICRC-7/ICRC-16 `Value` type, ownership helpers, metadata builders                 |
+| `types/state.rs`           | Config, StableState for persistence                                               |
+| `api/deals/api.rs`         | Thin deal endpoint layer (delegates to services)                                  |
+| `api/deals/params.rs`      | Public argument structs (`CreateDealArgs`, `AcceptDealArgs`, …)                   |
+| `api/deals/results.rs`     | Public view structs (`DealView`, `ClaimableDealView`)                             |
+| `api/deals/errors.rs`      | Typed `EscrowError` enum                                                          |
+| `api/icrc7/api.rs`         | ICRC-7 NFT standard query/update endpoints + ICRC-10 supported standards          |
+| `api/admin/api.rs`         | Controller-only admin endpoints                                                   |
+| `services/deals.rs`        | Core deal business logic (create, fund, accept, reclaim, cancel, consent, reject) |
+| `services/expiry.rs`       | Batch expired-deal refund processing                                              |
+| `services/housekeeping.rs` | Repeating timer that auto-refunds expired deals every 5 minutes                   |
+| `services/icrc7.rs`        | ICRC-7 service logic (token metadata, ownership, pagination, transfer rejection)  |
+| `memory.rs`                | Thread-local storage, atomic deal-ID allocation, save/restore, processing locks   |
+| `ledger.rs`                | ICRC inter-canister call helpers (transfer, transfer_from, raw_rand)              |
+| `subaccounts.rs`           | Deterministic deal subaccount derivation                                          |
+| `validation.rs`            | State transition, consent, and input validation                                   |
+| `guards.rs`                | Caller authentication/authorization guards                                        |
 
 ## Scalability & limitations
 

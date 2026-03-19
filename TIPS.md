@@ -27,17 +27,16 @@ For two-party deals where both parties are known upfront, both must explicitly c
 
 ### Expiry & Refund Mechanism
 
-Refunds after expiry can be handled in two ways (implementation choice):
+Refunds after expiry are handled in two complementary ways:
 
-- **Manual reclaim (lazy execution)**
-  - the payer explicitly calls `reclaim(deal_id)` after expiry
-  - simplest and safest MVP approach
+- **Automatic refund (cron timer)**
+  - the escrow canister runs a repeating timer (every 5 minutes) that scans for expired funded deals and refunds them automatically — no user interaction needed
+  - the timer is started on canister install (`#[init]`) and restarted on every upgrade (`#[post_upgrade]`)
+  - a re-entrancy guard ensures at most one sweep is in-flight at a time
 
-- **Automatic refund (cron / heartbeat)**
-  - the escrow canister periodically scans expired deals
-  - automatically refunds without user interaction
-
-Both approaches can coexist: cron for convenience, manual reclaim as fallback.
+- **Manual reclaim (fallback)**
+  - the payer can always explicitly call `reclaim(deal_id)` after expiry
+  - useful as a fallback if a specific deal was missed by the sweep batch limit
 
 > [!WARNING]
 > All funding, settlement, and refund operations **must be idempotent**.
@@ -87,12 +86,12 @@ sequenceDiagram
 
     %% --- EXPIRY PATH ---
     alt Not claimed before expiry
-        opt Manual reclaim
+        opt Automatic (cron timer)
+            E->>E: detect expired deal (every 5 min)
+        end
+        opt Manual reclaim (fallback)
             P->>F: reclaim(deal_id)
             F->>E: reclaim(deal_id)
-        end
-        opt Cron / heartbeat
-            E->>E: detect expired deal
         end
         E->>L: transfer(escrow_subaccount -> P)
         E-->>F: status = REFUNDED
@@ -169,8 +168,8 @@ flowchart TD
     H --> R{Expiry reached before claim?}
     R -- No --> J
     R -- Yes --> S{Refund mechanism}
+    S -- Automatic --> U[Canister detects expiry via timer]
     S -- Manual --> T[Payer calls reclaim]
-    S -- Cron --> U[Canister detects expiry]
     T --> V[Escrow refunds payer]
     U --> V
     V --> W[Deal status = Refunded]

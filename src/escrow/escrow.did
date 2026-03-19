@@ -130,7 +130,7 @@ type Vec = vec record {
 		Array : vec Value
 	}
 };
-service : {
+service : () -> {
 	// Accepts (claims) a funded deal, releasing the escrowed tokens to the caller.
 	//
 	// If the deal has no bound recipient, the caller must supply the correct
