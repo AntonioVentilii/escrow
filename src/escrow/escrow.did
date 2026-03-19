@@ -226,7 +226,7 @@ service : {
 	// Returns the owner account for each requested token ID.
 	//
 	// Ownership follows deal lifecycle: the payer owns the token in all states
-	// except `Completed`, where the recipient becomes the owner.
+	// except `Settled`, where the recipient becomes the owner.
 	// Unknown IDs produce `None`.
 	icrc7_owner_of : (vec nat) -> (vec opt Account) query;
 	// Returns the permitted time drift for deduplication. Currently `None`.

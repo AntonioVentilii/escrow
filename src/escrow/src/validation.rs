@@ -59,9 +59,9 @@ pub fn validate_metadata(title: Option<&str>, note: Option<&str>) -> Result<(), 
 /// supplied args.
 ///
 /// Rules:
-/// - At least one of `payer` / `recipient` must be `Some`.
-/// - If neither is set, the caller defaults to payer.
-/// - The caller must be one of the parties.
+/// - `payer` and `recipient` may both be `None`; in that case the caller defaults to payer and the
+///   recipient remains unset.
+/// - The caller must be one of the resolved parties.
 /// - The caller's consent is `Accepted`; the counterparty's is `Pending`.
 pub fn resolve_parties(
     caller: Principal,

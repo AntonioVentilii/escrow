@@ -148,7 +148,7 @@ pub fn icrc7_token_metadata(token_ids: Vec<Nat>) -> Vec<Option<Vec<(String, Valu
 /// Returns the owner account for each requested token ID.
 ///
 /// Ownership follows deal lifecycle: the payer owns the token in all states
-/// except `Completed`, where the recipient becomes the owner.
+/// except `Settled`, where the recipient becomes the owner.
 /// Unknown IDs produce `None`.
 #[query]
 #[expect(clippy::needless_pass_by_value)]

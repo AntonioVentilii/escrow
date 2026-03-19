@@ -14,7 +14,8 @@ pub enum EscrowError {
         /// The state the deal is actually in.
         actual: String,
     },
-    /// The deal has already reached a terminal state (`Settled`, `Refunded`, or `Cancelled`).
+    /// The deal has already reached a terminal state (`Settled`, `Refunded`, `Cancelled`, or
+    /// `Rejected`).
     AlreadyFinalised,
     /// A reclaim was attempted before the deal's expiry deadline.
     NotExpired,

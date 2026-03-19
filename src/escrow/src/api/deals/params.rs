@@ -4,9 +4,11 @@ use crate::types::deal::DealId;
 
 /// Arguments for creating a new deal.
 ///
-/// At least one of `payer` or `recipient` must be `Some`. If neither is the
-/// caller, the call is rejected. The caller's consent is automatically set to
-/// `Accepted`; the counterparty's consent starts as `Pending`.
+/// If both `payer` and `recipient` are `None`, the caller defaults to payer
+/// and the recipient is bound on first acceptance (tip / share-link flow).
+/// If neither resolved party is the caller, the call is rejected. The
+/// caller's consent is automatically set to `Accepted`; the counterparty's
+/// consent starts as `Pending`.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct CreateDealArgs {
     /// Token amount to escrow (must be > 0).

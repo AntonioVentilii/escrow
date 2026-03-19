@@ -146,11 +146,15 @@ pub fn owner_of(token_ids: &[Nat]) -> Vec<Option<Account>> {
 }
 
 /// Returns the number of tokens owned by each requested account.
+///
+/// The input is silently capped at `MAX_QUERY_BATCH_SIZE`.
 #[must_use]
 pub fn balance_of(accounts: &[Account]) -> Vec<Nat> {
+    let max = usize::try_from(MAX_QUERY_BATCH_SIZE).unwrap_or(usize::MAX);
     memory::with_deals(|deals| {
         accounts
             .iter()
+            .take(max)
             .map(|account| {
                 let count = deals
                     .values()
@@ -251,7 +255,19 @@ pub fn supported_standards() -> Vec<SupportedStandard> {
 // ---------------------------------------------------------------------------
 
 fn nat_to_deal_id(nat: &Nat) -> Option<DealId> {
-    nat.0.to_string().parse::<DealId>().ok()
+    let bits = nat.0.bits();
+    if bits == 0 {
+        return Some(0);
+    }
+    if bits > 64 {
+        return None;
+    }
+    let digits = nat.0.to_u64_digits();
+    match digits.len() {
+        0 => Some(0),
+        1 => Some(digits[0]),
+        _ => None,
+    }
 }
 
 fn effective_take(take: Option<&Nat>) -> usize {

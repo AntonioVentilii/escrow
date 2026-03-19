@@ -268,15 +268,9 @@ async fn execute_fund(
     deal: &Deal,
     caller: Principal,
 ) -> Result<DealView, EscrowError> {
-    // Bind the payer if this is an open-payer deal (invoice flow).
-    // Done inside the lock so no partial mutation if the transfer fails.
-    if deal.payer.is_none() {
-        with_deal(deal_id, |d| {
-            d.payer = Some(caller);
-            d.payer_consent = Consent::Accepted;
-        });
-    }
-
+    // For open-payer deals (invoice flow), use the caller as payer for this
+    // transfer attempt but only persist the binding after a successful transfer
+    // so a failed ledger call cannot permanently lock the deal.
     let payer = deal.payer.unwrap_or(caller);
 
     let escrow_account = Account {
@@ -304,6 +298,9 @@ async fn execute_fund(
             d.funding_tx = Some(block_index);
             d.updated_at_ns = Some(now);
             d.updated_by = Some(caller);
+            if d.payer.is_none() {
+                d.payer = Some(payer);
+            }
             d.payer_consent = Consent::Accepted;
         }
     });
