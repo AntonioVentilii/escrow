@@ -3,6 +3,8 @@ use core::fmt::Write;
 use candid::Principal;
 use ic_cdk::{api::time, id};
 
+use super::reliability;
+
 use crate::{
     api::deals::{
         errors::EscrowError,
@@ -32,7 +34,7 @@ pub async fn create(
     now: u64,
 ) -> Result<DealView, EscrowError> {
     validation::validate_caller_deal_limit(caller)?;
-    validation::validate_caller_reputation(caller)?;
+    reliability::validate(caller)?;
     validation::validate_create(args.amount, args.expires_at_ns, now)?;
     validation::validate_metadata(args.title.as_deref(), args.note.as_deref())?;
 

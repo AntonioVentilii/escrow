@@ -103,9 +103,7 @@ pub fn compute_reliability_for(principal: Principal) -> (u32, u32) {
                     positive = positive.saturating_add(1);
                     concluded = concluded.saturating_add(1);
                 }
-                DealStatus::Rejected
-                    if deal.updated_by.is_some_and(|by| by != principal) =>
-                {
+                DealStatus::Rejected if deal.updated_by.is_some_and(|by| by != principal) => {
                     concluded = concluded.saturating_add(1);
                 }
                 _ => {}

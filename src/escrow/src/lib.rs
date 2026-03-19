@@ -1,18 +1,21 @@
-use candid::Nat;
+use candid::{Nat, Principal};
 use ic_cdk::export_candid;
 use ic_cdk_macros::{post_upgrade, pre_upgrade};
 
 use crate::{
-    api::deals::{
-        params::{
-            AcceptDealArgs, CancelDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs,
-            ListMyDealsArgs, ReclaimDealArgs, RejectDealArgs,
+    api::{
+        deals::{
+            params::{
+                AcceptDealArgs, CancelDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs,
+                ListMyDealsArgs, ReclaimDealArgs, RejectDealArgs,
+            },
+            results::{
+                AcceptDealResult, CancelDealResult, ConsentDealResult, CreateDealResult, DealView,
+                FundDealResult, GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
+                ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
+            },
         },
-        results::{
-            AcceptDealResult, CancelDealResult, ConsentDealResult, CreateDealResult, DealView,
-            FundDealResult, GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
-            ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
-        },
+        reliability::results::ReliabilityView,
     },
     types::{
         deal::DealId,
