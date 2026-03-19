@@ -31,7 +31,8 @@ pub fn compute(principal: Principal) -> ReliabilityScore {
     let score = if concluded < MIN_CONCLUDED_DEALS {
         None
     } else {
-        Some(positive * 100 / concluded)
+        let pct = u64::from(positive) * 100 / u64::from(concluded);
+        Some(u32::try_from(pct).unwrap_or(100))
     };
     ReliabilityScore {
         score,
