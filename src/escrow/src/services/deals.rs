@@ -4,7 +4,6 @@ use candid::Principal;
 use ic_cdk::{api::time, id};
 
 use super::reliability;
-
 use crate::{
     api::deals::{
         errors::EscrowError,
