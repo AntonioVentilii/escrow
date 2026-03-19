@@ -42,4 +42,12 @@ pub enum EscrowError {
     NeitherPartySet,
     /// The payer principal is not set for this deal.
     PayerNotSet,
+    /// Payer and recipient cannot be the same principal.
+    SelfDeal,
+    /// The anonymous principal cannot be used as a deal party.
+    AnonymousParty,
+    /// A metadata field exceeds its maximum allowed length.
+    MetadataTooLong { field: String, max: u32 },
+    /// The expiry timestamp is too far in the future.
+    ExpiryTooFar,
 }

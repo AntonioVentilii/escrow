@@ -32,6 +32,7 @@ pub async fn create(
     now: u64,
 ) -> Result<DealView, EscrowError> {
     validation::validate_create(args.amount, args.expires_at_ns, now)?;
+    validation::validate_metadata(args.title.as_deref(), args.note.as_deref())?;
 
     let (payer, recipient, payer_consent, recipient_consent) =
         validation::resolve_parties(caller, args.payer, args.recipient)?;

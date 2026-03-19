@@ -5,12 +5,41 @@ use crate::{
     types::deal::{Consent, Deal, DealStatus},
 };
 
+const MAX_TITLE_LEN: u32 = 200;
+const MAX_NOTE_LEN: u32 = 1000;
+
+/// ~500 years in nanoseconds — the practical u64 ceiling.
+const MAX_EXPIRY_WINDOW_NS: u64 = 500 * 365 * 24 * 60 * 60 * 1_000_000_000;
+
 pub fn validate_create(amount: u128, expires_at_ns: u64, now_ns: u64) -> Result<(), EscrowError> {
     if amount == 0 {
         return Err(EscrowError::InvalidAmount);
     }
     if expires_at_ns <= now_ns {
         return Err(EscrowError::InvalidExpiry);
+    }
+    if expires_at_ns.saturating_sub(now_ns) > MAX_EXPIRY_WINDOW_NS {
+        return Err(EscrowError::ExpiryTooFar);
+    }
+    Ok(())
+}
+
+pub fn validate_metadata(title: Option<&str>, note: Option<&str>) -> Result<(), EscrowError> {
+    if let Some(t) = title {
+        if t.len() > MAX_TITLE_LEN as usize {
+            return Err(EscrowError::MetadataTooLong {
+                field: "title".to_owned(),
+                max: MAX_TITLE_LEN,
+            });
+        }
+    }
+    if let Some(n) = note {
+        if n.len() > MAX_NOTE_LEN as usize {
+            return Err(EscrowError::MetadataTooLong {
+                field: "note".to_owned(),
+                max: MAX_NOTE_LEN,
+            });
+        }
     }
     Ok(())
 }
@@ -28,6 +57,12 @@ pub fn resolve_parties(
     payer: Option<Principal>,
     recipient: Option<Principal>,
 ) -> Result<(Option<Principal>, Option<Principal>, Consent, Consent), EscrowError> {
+    if payer.is_some_and(|p| p == Principal::anonymous())
+        || recipient.is_some_and(|r| r == Principal::anonymous())
+    {
+        return Err(EscrowError::AnonymousParty);
+    }
+
     let (payer, recipient) = match (payer, recipient) {
         (None, None) => (Some(caller), None),
         (None, Some(r)) if r == caller => (None, Some(caller)),
@@ -36,6 +71,12 @@ pub fn resolve_parties(
         (Some(p), None) => (Some(p), Some(caller)),
         (Some(p), Some(r)) => (Some(p), Some(r)),
     };
+
+    if let (Some(p), Some(r)) = (payer, recipient) {
+        if p == r {
+            return Err(EscrowError::SelfDeal);
+        }
+    }
 
     let caller_is_payer = payer == Some(caller);
     let caller_is_recipient = recipient == Some(caller);
@@ -243,6 +284,7 @@ mod tests {
     use super::{
         resolve_parties, validate_can_accept, validate_can_cancel, validate_can_consent,
         validate_can_fund, validate_can_reclaim, validate_can_reject, validate_create,
+        validate_metadata, MAX_EXPIRY_WINDOW_NS,
     };
     use crate::{
         api::deals::errors::EscrowError,
@@ -635,5 +677,79 @@ mod tests {
             validate_can_reject(&deal, stranger),
             Err(EscrowError::NotAuthorised)
         ));
+    }
+
+    // --- self-deal ---
+
+    #[test]
+    fn resolve_rejects_self_deal() {
+        let caller = test_principal(1);
+        let result = resolve_parties(caller, Some(caller), Some(caller));
+        assert!(matches!(result, Err(EscrowError::SelfDeal)));
+    }
+
+    // --- anonymous party ---
+
+    #[test]
+    fn resolve_rejects_anonymous_payer() {
+        let caller = test_principal(1);
+        let result = resolve_parties(caller, Some(Principal::anonymous()), None);
+        assert!(matches!(result, Err(EscrowError::AnonymousParty)));
+    }
+
+    #[test]
+    fn resolve_rejects_anonymous_recipient() {
+        let caller = test_principal(1);
+        let result = resolve_parties(caller, None, Some(Principal::anonymous()));
+        assert!(matches!(result, Err(EscrowError::AnonymousParty)));
+    }
+
+    // --- metadata limits ---
+
+    #[test]
+    fn metadata_accepts_valid_input() {
+        assert!(validate_metadata(Some("Short title"), Some("A note")).is_ok());
+    }
+
+    #[test]
+    fn metadata_accepts_none() {
+        assert!(validate_metadata(None, None).is_ok());
+    }
+
+    #[test]
+    fn metadata_rejects_long_title() {
+        let long_title = "x".repeat(201);
+        assert!(matches!(
+            validate_metadata(Some(&long_title), None),
+            Err(EscrowError::MetadataTooLong { field, max }) if field == "title" && max == 200
+        ));
+    }
+
+    #[test]
+    fn metadata_rejects_long_note() {
+        let long_note = "x".repeat(1001);
+        assert!(matches!(
+            validate_metadata(None, Some(&long_note)),
+            Err(EscrowError::MetadataTooLong { field, max }) if field == "note" && max == 1000
+        ));
+    }
+
+    // --- expiry window ---
+
+    #[test]
+    fn create_rejects_expiry_too_far() {
+        let now = 100;
+        let too_far = now + MAX_EXPIRY_WINDOW_NS + 1;
+        assert!(matches!(
+            validate_create(100, too_far, now),
+            Err(EscrowError::ExpiryTooFar)
+        ));
+    }
+
+    #[test]
+    fn create_accepts_expiry_at_max_window() {
+        let now = 100;
+        let at_limit = now + MAX_EXPIRY_WINDOW_NS;
+        assert!(validate_create(100, at_limit, now).is_ok());
     }
 }
