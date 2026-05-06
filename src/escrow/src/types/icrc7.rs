@@ -42,8 +42,8 @@ pub enum Icrc7TransferError {
     GenericBatchError { error_code: Nat, message: String },
 }
 
-/// Explicit result type for `icrc7_transfer` to avoid generic `Result` names
-/// in the generated Candid interface.
+/// Explicit response variant for `icrc7_transfer` to avoid the generic
+/// fallback name in the generated Candid interface.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub enum Icrc7TransferResponse {
     Ok(Nat),
