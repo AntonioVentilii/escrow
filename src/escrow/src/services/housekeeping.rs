@@ -6,7 +6,7 @@ use ic_cdk_timers::set_timer_interval;
 use crate::services::expiry;
 
 /// How often the automatic expiry sweep runs (5 minutes).
-const SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const SWEEP_INTERVAL: Duration = Duration::from_mins(5);
 
 /// Maximum number of expired deals to process per sweep cycle.
 const SWEEP_BATCH_LIMIT: u32 = 50;

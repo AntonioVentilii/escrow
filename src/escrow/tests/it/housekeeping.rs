@@ -40,7 +40,7 @@ fn process_expired_returns_empty_when_no_deals() {
 fn canister_healthy_after_sweep_timer_fires() {
     let (pic, escrow) = setup();
 
-    pic.advance_time(Duration::from_secs(6 * 60));
+    pic.advance_time(Duration::from_mins(6));
     for _ in 0..10 {
         pic.tick();
     }
@@ -59,7 +59,7 @@ fn canister_healthy_after_sweep_timer_fires() {
 fn survives_upgrade_with_timer_restart() {
     let (pic, escrow) = setup();
 
-    pic.advance_time(Duration::from_secs(6 * 60));
+    pic.advance_time(Duration::from_mins(6));
     for _ in 0..5 {
         pic.tick();
     }
@@ -73,7 +73,7 @@ fn survives_upgrade_with_timer_restart() {
     )
     .expect("upgrade failed");
 
-    pic.advance_time(Duration::from_secs(6 * 60));
+    pic.advance_time(Duration::from_mins(6));
     for _ in 0..10 {
         pic.tick();
     }

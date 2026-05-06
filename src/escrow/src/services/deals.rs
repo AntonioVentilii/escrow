@@ -1,4 +1,4 @@
-use core::fmt::Write;
+use core::{cmp::Reverse, fmt::Write};
 
 use candid::Principal;
 use ic_cdk::{api::time, id};
@@ -212,7 +212,7 @@ pub fn list_for_caller(caller: Principal, offset: usize, limit: usize) -> Vec<De
             })
             .map(DealView::from)
             .collect();
-        matched.sort_by(|a, b| b.created_at_ns.cmp(&a.created_at_ns));
+        matched.sort_by_key(|d| Reverse(d.created_at_ns));
         matched.into_iter().skip(offset).take(limit).collect()
     })
 }
