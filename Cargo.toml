@@ -13,7 +13,7 @@ escrow = { path = "src/escrow" }
 ic-cdk = "0.17"
 ic-cdk-macros = "0.17"
 ic-cdk-timers = "0.11"
-pocket-ic = "12.0.0"
+pocket-ic = "13.0.0"
 
 [workspace.lints.rust]
 warnings = "deny"
