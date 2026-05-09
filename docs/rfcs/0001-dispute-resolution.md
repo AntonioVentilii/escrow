@@ -483,7 +483,11 @@ v2 based on disputed amount.
 **Alternative.** Scale immediately: `min(3 + log2(amount_in_usd),
 9)`. Adds complexity (and a USD oracle) for marginal benefit at MVP.
 
-**Decision:** _<TBD>_
+**Decision:** Default `panel_size = 3`, admin-tunable via
+`DisputeConfig::panel_size: u32` on the existing `Config` struct.
+Validator: `panel_size >= 3 && panel_size % 2 == 1` (odd-only is
+mathematically required by Q7's tie semantics). Bigger panels and
+amount-scaling deferred until a price oracle exists on the canister.
 
 ### Q7. Quorum + tie-breaking
 
@@ -527,7 +531,13 @@ ambiguous on this case — fixed here.)
 loses on a tie because they failed to convince the panel). Keeps
 strictly-decisive arbitration but adds an extra rule.
 
-**Decision:** _<TBD>_
+**Decision:** Quorum = `floor(P/2) + 1` non-abstain votes; majority
+= greater of `cc` / `ic`; ties resolve as `NoQuorum` (fall through
+to Q9's fallback). Odd-panel invariant enforced via Q6's validator.
+Tiebreak-by-disputer rejected: would chill legitimate disputes
+(asymmetric penalty on whoever exercised the dispute lever, which
+is exactly the lever the escrow needs to make freely available to
+either bound party).
 
 ### Q8. Evidence storage
 
@@ -563,7 +573,17 @@ for memory.
 (b) Re-arbitrate with a fresh panel (max 1 retry).
 (c) Escalate to controller / DAO.
 
-**Decision:** _<TBD>_
+**Decision:** Evidence window 3 days default; voting window 2 days
+default; both admin-tunable via `DisputeConfig::evidence_window_ns:
+u64` / `voting_window_ns: u64`. No-quorum fallback: refund payer
+(deal moves to `DealStatus::ArbitratedRefunded` with
+`DisputeOutcome::NoQuorum { … }`). Burden of proof is on the
+recipient (the party who would receive the funds); the escrow's
+status quo ante is "funds with payer", and an indecisive panel
+shouldn't enrich the recipient. Default-to-settle creates a
+perverse incentive to engineer abstentions; re-arbitrate adds a
+phase + timer that's not justified for v1; controller escalation
+breaks the trust model.
 
 ### Q10. Arbitration fee — model + sourcing
 
@@ -812,10 +832,10 @@ proposed schema (stake field can be added later as `Option<u128>`).
 | Q3  | 2026-05-10 | Open-recipient (tip-flow) deals cannot be disputed; gate via new `DisputeRequiresBoundRecipient` variant. | RFC-001 design review (2026-05-10) |
 | Q4  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q5  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
-| Q6  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
-| Q7  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q6  | 2026-05-10 | `panel_size = 3` default, admin-tunable via `DisputeConfig::panel_size: u32`; validator enforces odd and `>= 3`. | RFC-001 design review (2026-05-10) |
+| Q7  | 2026-05-10 | Quorum = `floor(P/2) + 1` non-abstain; majority = greater of `cc`/`ic`; ties resolve as `NoQuorum`. | RFC-001 design review (2026-05-10) |
 | Q8  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
-| Q9  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q9  | 2026-05-10 | Evidence window 3 days, voting window 2 days, both admin-tunable; no-quorum fallback refunds payer (`ArbitratedRefunded`). | RFC-001 design review (2026-05-10) |
 | Q10 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q11 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q12 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
