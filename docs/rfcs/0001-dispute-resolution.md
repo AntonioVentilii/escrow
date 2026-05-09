@@ -1,11 +1,11 @@
 # RFC-001 — Dispute resolution + arbitrators
 
-| Field   | Value                                                  |
-| ------- | ------------------------------------------------------ |
-| Author  | @antonioventilii                                       |
-| Created | 2026-05-09                                             |
-| Targets | escrow `v0.1.x` (next minor — needs schema migration)  |
-| Related | `Pluggable resolvers` sketch in `src/escrow/README.md` |
+| Field   | Value                                                                                                                                         |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Author  | @antonioventilii                                                                                                                              |
+| Created | 2026-05-09                                                                                                                                    |
+| Targets | escrow `v0.1.x` (next minor — adds Candid types but no on-canister data migration; existing `Deal` records deserialise with `dispute = None`) |
+| Related | `Pluggable resolvers` sketch in `src/escrow/README.md`                                                                                        |
 
 > **What is this RFC?** A design proposal that has to be agreed before
 > any implementation lands. Each "Open question" in the document is a
@@ -41,11 +41,19 @@ The current escrow only resolves a `Funded` deal one of two ways:
 
 This is sufficient for the **tip flow** (small amounts, no real
 counterparty negotiation) but inadequate for the **two-party deal
-flow**: a real-life asset exchange where the recipient _has_ claimed
-the funds but the payer believes the asset wasn't delivered (or vice
-versa). Today, both parties have only one lever: refuse to consent /
-refuse to claim. There is no way to **arbitrate** a contested
-delivery.
+flow**: a real-life asset exchange where one party believes the
+counterparty isn't going to deliver. Examples: payer funded a deal
+expecting a physical good and the recipient stalls; recipient is
+about to claim but the payer disputes the delivery beforehand;
+recipient claimed funds and the payer believes the asset wasn't
+delivered (a post-claim challenge). Today both parties have only
+one lever: refuse to consent / refuse to claim. There is no way to
+**arbitrate** a contested delivery.
+
+The v1 scope this RFC pins down is the first of those — disputes
+opened **while the deal is `Funded`** (before the recipient claims).
+Whether to also support post-claim challenges (a "settlement
+challenge window") is open — see [Q2](#q2-who-can-open-a-dispute).
 
 Adding dispute resolution unlocks the v1 product spec
 (`old_escrow/Product.docx`'s "Evaluation" section) and is the first
@@ -58,8 +66,11 @@ in the canister README.
 
 - Either party of a **Funded** deal with a known recipient can open a
   dispute before expiry.
-- Both parties can submit text + binary evidence within a fixed
-  evidence window.
+- Both parties can submit evidence within a fixed evidence window.
+  Evidence is a free-form text note plus a reference to an
+  off-canister artefact (URL + SHA-256 hash); binary blobs are
+  **not** stored on-canister in v1 — see
+  [Q8](#q8-evidence-storage).
 - A randomly-selected panel of arbitrators reviews the evidence and
   votes for one of two outcomes: **CC** (Concluded Correctly →
   release to recipient) or **IC** (Incorrectly Concluded → refund to
@@ -129,6 +140,10 @@ In `src/escrow/src/types/dispute.rs` (new module):
 
 ```rust
 use candid::{CandidType, Deserialize, Principal};
+use crate::types::deal::DealId;
+
+/// New ID type, mirrors `DealId`. Allocated via `memory::insert_new_dispute`.
+pub type DisputeId = u64;
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum DisputePhase {
@@ -155,17 +170,25 @@ pub enum Vote {
 pub struct Evidence {
     pub submitter: Principal,
     pub submitted_at_ns: u64,
-    /// Free-form note (max 4 KiB, see Q8).
+    /// Free-form note (max 4 KiB — `EscrowError::EvidenceTooLarge` if exceeded).
     pub note: Option<String>,
-    /// Off-canister artefact pointer (URL + content hash). On-canister
-    /// blob storage is out of scope for v1 (see Q8).
+    /// Off-canister artefact URL. On-canister blob storage is out of
+    /// scope for v1 (see Q8).
     pub artefact_url: Option<String>,
+    /// SHA-256 of the off-canister artefact. Always exactly 32 bytes
+    /// when `Some`; the validator rejects other lengths
+    /// (`EscrowError::ValidationError("artefact_sha256 must be 32 bytes")`).
+    /// We use `Vec<u8>` rather than `[u8; 32]` because Candid emits
+    /// fixed-size arrays as records of indexed fields, which is
+    /// awkward in TS / didc — the length invariant is enforced at the
+    /// canister boundary instead.
     pub artefact_sha256: Option<Vec<u8>>,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct Dispute {
-    pub deal_id: u64,
+    pub id: DisputeId,
+    pub deal_id: DealId,
     pub opened_by: Principal,
     pub opened_at_ns: u64,
     pub phase: DisputePhase,
@@ -188,11 +211,13 @@ pub struct Dispute {
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum DisputeOutcome {
-    Settled { yes: u32, no: u32, abstain: u32 },
-    Refunded { yes: u32, no: u32, abstain: u32 },
-    /// Quorum not reached by `voting_deadline_ns`. See Q9 for the
-    /// fallback behaviour.
-    NoQuorum { yes: u32, no: u32, abstain: u32 },
+    /// Majority voted CC (Concluded Correctly) — funds released to recipient.
+    Settled { cc: u32, ic: u32, abstain: u32 },
+    /// Majority voted IC (Incorrectly Concluded) — funds refunded to payer.
+    Refunded { cc: u32, ic: u32, abstain: u32 },
+    /// Voting deadline reached without enough non-abstain votes. See Q9
+    /// for the fallback behaviour.
+    NoQuorum { cc: u32, ic: u32, abstain: u32 },
 }
 ```
 
@@ -263,12 +288,27 @@ cast_vote : (CastVoteArgs) -> (CastVoteResult);
 // + outcome propagation + ledger transfers.
 finalize_dispute : (FinalizeDisputeArgs) -> (FinalizeDisputeResult);
 
-// Read a single dispute. Public — anyone can see open disputes.
+// Full dispute view. Caller must be a party to the parent deal or an
+// arbitrator assigned to this dispute (mirrors the auth model of
+// `get_deal`, which is restricted to payer/recipient). Returns party
+// principals + evidence URLs.
 get_dispute : (DisputeId) -> (GetDisputeResult) query;
+
+// Reduced public view for status pages (no party principals, no
+// evidence URLs — just status, phase, deadlines, vote tally).
+// Mirrors the `get_claimable_deal` pattern from the deal flow. Any
+// authenticated caller may query.
+get_public_dispute : (DisputeId) -> (GetPublicDisputeResult) query;
 
 // List disputes the caller is assigned to as arbitrator (or all open
 // ones if the caller is a controller). Pagination.
 list_my_disputes : (ListMyDisputesArgs) -> (vec DisputeView) query;
+
+// (Conditional on Q12 acceptance) Both parties opt out of arbitration
+// and agree on an outcome. Each must call with the same `agreed_outcome`;
+// on match, the dispute resolves with the agreed outcome and a reduced
+// arbitrator fee.
+withdraw_dispute : (WithdrawDisputeArgs) -> (WithdrawDisputeResult);
 ```
 
 New endpoints in `api/arbitrators/api.rs`:
@@ -311,6 +351,8 @@ pub enum EscrowError {
     NotAParty,
     /// A dispute is already open / resolved on this deal.
     DisputeAlreadyExists,
+    /// The requested dispute does not exist.
+    DisputeNotFound,
     /// The action requires the dispute to be in a different phase.
     InvalidDisputePhase { expected: String, actual: String },
     /// The arbitrator is not assigned to this dispute.
@@ -421,12 +463,45 @@ v2 based on disputed amount.
 
 ### Q7. Quorum + tie-breaking
 
-**Current proposal.** Simple majority (≥ 50% + 1 of non-abstain
-votes) decides. With panel of 3: 2 votes decide, abstentions count
-toward "no quorum" if too many abstain.
+**Current proposal.** Quorum and majority share a single formula. Let
+`P` be the panel size (Q6, currently 3), and let `cc`, `ic`, `abstain`
+be the per-outcome vote counts at `voting_deadline_ns`. Define
+`non_abstain = cc + ic`.
 
-**Tie possible if panel is even (4, 6, 8, …).** Avoid by mandating
-odd panel sizes.
+- **Quorum reached** ⇔ `non_abstain >= floor(P / 2) + 1`. For
+  panel of 3 that's **≥ 2 non-abstain votes**.
+- **If quorum reached:** majority = whichever of `cc` / `ic` is
+  greater. (Ties are impossible while panel size stays odd — see
+  below.)
+- **If quorum not reached:** dispute resolves to `NoQuorum`; the
+  fallback (refund payer / re-arbitrate / etc.) is decided in [Q9](#q9-evidence--voting-windows).
+
+**Examples (panel = 3):**
+
+| `cc` | `ic` | `abstain` | Outcome                                                                                                                                                        |
+| ---- | ---- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2    | 0    | 1         | `Settled`                                                                                                                                                      |
+| 2    | 1    | 0         | `Settled`                                                                                                                                                      |
+| 0    | 2    | 1         | `Refunded`                                                                                                                                                     |
+| 1    | 1    | 1         | `NoQuorum` (single non-abstain CC vs single non-abstain IC — `non_abstain = 2`, but the outcome is split, so this case is **resolved by tie rule**: see below) |
+| 1    | 0    | 2         | `NoQuorum` (`non_abstain = 1` < 2)                                                                                                                             |
+| 0    | 0    | 3         | `NoQuorum`                                                                                                                                                     |
+
+**Ties.** A tie requires equal `cc` and `ic` with `non_abstain ≥
+quorum`, which is only possible when both are non-zero AND equal.
+With odd panel sizes this only happens when one arbitrator
+abstains. The current proposal **treats ties as `NoQuorum`** —
+mathematically a tie means there's no majority, and the dispute
+flow's fallback rule (Q9) takes over. This keeps the formula
+simple. (The original wording "≥ 50% + 1 of non-abstain" was
+ambiguous on this case — fixed here.)
+
+**Tie-avoidance.** Mandate odd panel sizes via
+`DisputeConfig::panel_size: u32` validator (`panel_size % 2 == 1`).
+
+**Alternative.** Resolve ties by `opened_by` (i.e., the disputer
+loses on a tie because they failed to convince the panel). Keeps
+strictly-decisive arbitration but adds an extra rule.
 
 **Decision:** _<TBD>_
 
@@ -454,8 +529,8 @@ for memory.
 - **Evidence:** **3 days** from `open_dispute`. Both parties +
   arbitrators may submit during this window.
 - **Voting:** **2 days** from end of evidence phase.
-- **No-quorum fallback:** if `< panel_size / 2 + 1` non-abstain
-  votes by `voting_deadline_ns`, the deal **defaults to refund**
+- **No-quorum fallback:** if [Q7's quorum condition](#q7-quorum--tie-breaking)
+  is not met by `voting_deadline_ns`, the deal **defaults to refund**
   (payer wins). Rationale: the burden of proof is on the recipient
   (who would receive the funds); silence shouldn't enrich them.
 
