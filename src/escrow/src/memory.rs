@@ -13,7 +13,7 @@ use crate::{
 };
 
 thread_local! {
-    pub static CONFIG: RefCell<Config> = const { RefCell::new(Config { }) };
+    pub static CONFIG: RefCell<Config> = const { RefCell::new(Config { dispute_config: None }) };
     static DEALS: RefCell<BTreeMap<DealId, Deal>> = const { RefCell::new(BTreeMap::new()) };
     static NEXT_DEAL_ID: RefCell<DealId> = const { RefCell::new(1) };
     /// Transient lock preventing concurrent async processing of the same deal.
@@ -218,6 +218,7 @@ mod tests {
             payer_consent: Consent::Accepted,
             recipient_consent: Consent::Pending,
             metadata: None,
+            dispute: None,
         })
     }
 
@@ -276,6 +277,7 @@ mod tests {
             payer_consent: Consent::Accepted,
             recipient_consent: Consent::Pending,
             metadata: None,
+            dispute: None,
         });
         assert_ne!(deal.id, 999_999_999);
         assert!(get_deal(deal.id).is_some());

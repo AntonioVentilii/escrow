@@ -348,6 +348,7 @@ mod tests {
                 title: None,
                 note: None,
             }),
+            dispute: None,
         }
     }
 
@@ -793,6 +794,7 @@ mod tests {
             payer_consent: Consent::Accepted,
             recipient_consent: Consent::Pending,
             metadata: None,
+            dispute: None,
         });
     }
 

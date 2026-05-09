@@ -34,6 +34,16 @@ type ClaimableDealView = record {
 	// Whether a recipient principal has already been bound to this deal.
 	is_recipient_bound : bool
 };
+// Global configuration for the Escrow canister.
+//
+// New fields use `Option` for backward-compatible deserialisation from
+// older stable-memory snapshots that lack them.
+type Config = record {
+	// Admin-tunable dispute parameters. `None` on legacy snapshots; the
+	// canister falls back to `DisputeConfig::default()` (Q6/Q9/Q10/Q12
+	// defaults) for any missing values when disputes are queried.
+	dispute_config : opt DisputeConfig
+};
 type Consent = variant { Rejected; Accepted; Pending };
 // Arguments for creating a new deal.
 //
@@ -61,7 +71,21 @@ type CreateDealArgs = record {
 	expires_at_ns : nat64
 };
 type DealStatus = variant {
+	// A dispute is open on this deal (RFC-001 Q1/Q2). Funds remain in the
+	// escrow subaccount until the dispute resolves to
+	// `ArbitratedSettled` / `ArbitratedRefunded`. The expiry sweep
+	// (`services::expiry`) skips deals in this state — see Q2 contract.
+	Disputed;
 	Refunded;
+	// Dispute panel voted majority CC, OR both parties agreed out-of-band
+	// (Q12) on a CC outcome — funds released to recipient. Distinct from
+	// `Settled` so callers can tell arbitrated from unilateral
+	// settlement (Q1). Terminal.
+	ArbitratedSettled;
+	// Dispute panel voted majority IC, OR both parties agreed out-of-band
+	// on an IC outcome, OR the panel reached no quorum (Q9 fallback).
+	// Funds refunded to payer. Distinct from `Refunded` (Q1). Terminal.
+	ArbitratedRefunded;
 	Rejected;
 	Funded;
 	Cancelled;
@@ -101,6 +125,10 @@ type DealView = record {
 	// Claim code for sharing via QR / link. Only visible to authorised
 	// participants; never exposed in the public claimable view.
 	claim_code : opt text;
+	// Identifier of the attached dispute, if any. `Some(_)` while a
+	// dispute is open or after it has resolved (RFC-001 Q1 audit-trail
+	// link); `None` for deals that never went into dispute.
+	dispute : opt nat64;
 	// Timestamp when the deal was settled (funds released), if applicable.
 	settled_at_ns : opt nat64;
 	// Principal of the payer, or `None` if not yet assigned.
@@ -111,6 +139,36 @@ type DealView = record {
 	token_ledger : principal;
 	// Nanosecond UTC timestamp after which the deal expires.
 	expires_at_ns : nat64
+};
+// Admin-tunable dispute configuration. Lives nested in [`crate::types::state::Config`].
+//
+// All windows are nanoseconds (canister convention); fee bps follows the
+// standard ICRC bps convention (`10_000` = 100%). Defaults below match
+// the Q6/Q9/Q10/Q12 decisions.
+type DisputeConfig = record {
+	// Number of arbitrators selected per dispute. Must be odd and `>= 3`
+	// (Q6). The validator that ships in step 4 enforces both invariants
+	// at `update_dispute_config` time.
+	panel_size : nat32;
+	// Length of the Voting phase, in nanoseconds (Q9; default 2 days).
+	voting_window_ns : nat64;
+	// Length of the Evidence phase, in nanoseconds (Q9; default 3 days).
+	evidence_window_ns : nat64;
+	// Optional minimum arbitrator score required to be eligible for
+	// selection (Q4 Sybil filter). `None` = bootstrap mode (every active
+	// arbitrator is eligible; default).
+	min_arbitrator_score : opt nat32;
+	// Minimum arbitration fee in the deal's token (Q10). The effective
+	// fee at `open_dispute` is `max(arbitration_min_fee, amount *
+	// arbitration_fee_bps / 10_000)`.
+	arbitration_min_fee : nat;
+	// Arbitration fee in basis points of the disputed amount (Q10;
+	// default 500 = 5%). Combined with [`Self::arbitration_min_fee`].
+	arbitration_fee_bps : nat32;
+	// Percentage of the arbitration fee paid to the panel when both
+	// parties resolve out-of-band via `withdraw_dispute` (Q12; default
+	// 25, validator clamps to `0..=100`).
+	withdraw_fee_pct : nat32
 };
 // Canonical error type returned by all deal endpoints.
 type EscrowError = variant {
@@ -127,10 +185,17 @@ type EscrowError = variant {
 	AnonymousParty;
 	// The supplied amount is invalid (e.g. zero).
 	InvalidAmount;
+	// The requested dispute does not exist.
+	DisputeNotFound;
 	// The payer principal is not set for this deal.
 	PayerNotSet;
 	// The requested deal does not exist.
 	NotFound;
+	// The arbitrator is `Suspended` or `Deregistered`.
+	ArbitratorNotActive;
+	// `cast_vote` was called by a principal that is not on the
+	// dispute's selected panel.
+	NotAssignedArbitrator;
 	// A generic validation error with a human-readable message.
 	ValidationError : text;
 	// The caller is not authorised to perform this action on the deal.
@@ -139,6 +204,9 @@ type EscrowError = variant {
 	ConsentRequired;
 	// A claim code is required for open (unbound-recipient) deals.
 	MissingClaimCode;
+	// An evidence submission exceeds the maximum allowed size for its
+	// field (Q8). The `max` is the byte limit that was breached.
+	EvidenceTooLarge : record { max : nat32 };
 	// An error occurred while communicating with the ICRC ledger canister.
 	LedgerError : text;
 	// The expiry timestamp is too far in the future.
@@ -149,12 +217,31 @@ type EscrowError = variant {
 	InvalidClaimCode;
 	// A metadata field exceeds its maximum allowed length.
 	MetadataTooLong : record { max : nat32; field : text };
+	// `open_dispute` was called on a deal whose `recipient` is `None`
+	// (open-recipient / tip-flow deal). Per Q3, tip flows cannot be
+	// disputed because there is no bound counterparty in canister state.
+	DisputeRequiresBoundRecipient;
+	// `open_dispute` was called on a deal that already has an open or
+	// resolved dispute attached.
+	DisputeAlreadyExists;
 	// The caller does not match the deal's bound recipient.
 	RecipientMismatch;
+	// The action requires the dispute to be in a different phase
+	// (`Evidence`, `Voting`, or `Resolved`).
+	InvalidDisputePhase : record {
+		// The phase the dispute is actually in.
+		actual : text;
+		// The phase(s) that would have been valid.
+		expected : text
+	};
 	// The ledger accepted the call but the transfer itself failed.
 	TransferFailed : text;
 	// The caller has too many active (non-terminal) deals.
 	TooManyActiveDeals : record { max : nat32 };
+	// The eligible arbitrator pool is too small to fill the configured
+	// `panel_size`. Returned by `open_dispute` (Q5) — the deal stays
+	// `Funded` so the caller can retry later or settle out-of-band.
+	InsufficientArbitrators : record { have : nat32; need : nat32 };
 	// A reclaim was attempted before the deal's expiry deadline.
 	NotExpired;
 	// The deal is not in the expected state for this operation.
@@ -165,7 +252,11 @@ type EscrowError = variant {
 		expected : text
 	};
 	// An accept was attempted after the deal's expiry deadline.
-	Expired
+	Expired;
+	// `open_dispute` was called on a deal whose `amount` cannot cover
+	// the configured arbitration fee plus the per-arbitrator ICRC-1
+	// ledger fees (Q10). Tiny deals are not disputable.
+	AmountTooSmallForArbitration : record { min : nat }
 };
 // Arguments for funding a created deal via ICRC-2 `transfer_from`.
 type FundDealArgs = record {
@@ -261,7 +352,7 @@ service : () -> {
 	// Returns the current global configuration of the Escrow canister.
 	//
 	// This method is gated to canister controllers.
-	config : () -> (record {}) query;
+	config : () -> (Config) query;
 	// Explicitly consents to a deal's terms.
 	//
 	// The caller must be the payer or recipient. Sets their consent to `Accepted`.
@@ -400,5 +491,5 @@ service : () -> {
 	// Updates the global configuration for the Escrow canister.
 	//
 	// This method is gated to canister controllers.
-	update_config : (record {}) -> ()
+	update_config : (Config) -> ()
 }

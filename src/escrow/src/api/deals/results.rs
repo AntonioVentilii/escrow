@@ -3,6 +3,7 @@ use candid::{CandidType, Deserialize, Principal};
 use super::errors::EscrowError;
 use crate::types::{
     deal::{Consent, Deal, DealId, DealStatus},
+    dispute::DisputeId,
     ledger_types::Account,
 };
 
@@ -81,6 +82,10 @@ pub struct DealView {
     /// Claim code for sharing via QR / link. Only visible to authorised
     /// participants; never exposed in the public claimable view.
     pub claim_code: Option<String>,
+    /// Identifier of the attached dispute, if any. `Some(_)` while a
+    /// dispute is open or after it has resolved (RFC-001 Q1 audit-trail
+    /// link); `None` for deals that never went into dispute.
+    pub dispute: Option<DisputeId>,
 }
 
 impl From<&Deal> for DealView {
@@ -106,6 +111,7 @@ impl From<&Deal> for DealView {
             payer_consent: deal.payer_consent.clone(),
             recipient_consent: deal.recipient_consent.clone(),
             claim_code: deal.claim_code.clone(),
+            dispute: deal.dispute,
         }
     }
 }
@@ -187,6 +193,7 @@ mod tests {
                 title: Some("Test tip".to_owned()),
                 note: None,
             }),
+            dispute: None,
         };
         let view = DealView::from(&deal);
         assert_eq!(view.title.as_deref(), Some("Test tip"));
@@ -198,6 +205,7 @@ mod tests {
         assert_eq!(view.payer_consent, Consent::Accepted);
         assert_eq!(view.recipient_consent, Consent::Pending);
         assert_eq!(view.claim_code.as_deref(), Some("abc123"));
+        assert!(view.dispute.is_none());
     }
 
     #[test]
@@ -226,6 +234,7 @@ mod tests {
             payer_consent: Consent::Accepted,
             recipient_consent: Consent::Accepted,
             metadata: None,
+            dispute: None,
         };
         let view = ClaimableDealView::from(&deal);
         assert!(view.is_recipient_bound);
