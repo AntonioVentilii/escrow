@@ -2,7 +2,6 @@
 
 | Field   | Value                                                  |
 | ------- | ------------------------------------------------------ |
-| Status  | **Draft** — open for comment                           |
 | Author  | @antonioventilii                                       |
 | Created | 2026-05-09                                             |
 | Targets | escrow `v0.1.x` (next minor — needs schema migration)  |
