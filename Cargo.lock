@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "escrow"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "candid",
  "ic-cdk",
