@@ -22,39 +22,39 @@ REPO_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 err() {
-	echo "error: $*" >&2
-	exit 1
+  echo "error: $*" >&2
+  exit 1
 }
 
 if [[ $# -lt 1 ]]; then
-	err "missing <version> arg. usage: scripts/release.sh <version> [--dry-run]"
+  err "missing <version> arg. usage: scripts/release.sh <version> [--dry-run]"
 fi
 
 VERSION="$1"
 DRY_RUN=0
 if [[ "${2:-}" == "--dry-run" ]]; then
-	DRY_RUN=1
+  DRY_RUN=1
 fi
 
 # Semver-ish: major.minor.patch with optional -prerelease (e.g. 0.0.3, 1.2.3-rc.1)
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-	err "version '$VERSION' is not in MAJOR.MINOR.PATCH[-PRERELEASE] form"
+  err "version '$VERSION' is not in MAJOR.MINOR.PATCH[-PRERELEASE] form"
 fi
 
 TAG="v$VERSION"
 
 if ! git diff --quiet || ! git diff --cached --quiet; then
-	err "working tree has uncommitted changes; commit or stash them first"
+  err "working tree has uncommitted changes; commit or stash them first"
 fi
 
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 if [[ "$CURRENT_BRANCH" != "main" ]]; then
-	echo "warning: not on 'main' (currently on '$CURRENT_BRANCH'). Continuing anyway." >&2
+  echo "warning: not on 'main' (currently on '$CURRENT_BRANCH'). Continuing anyway." >&2
 fi
 
 git fetch --tags --quiet
 if git rev-parse "$TAG" >/dev/null 2>&1; then
-	err "tag '$TAG' already exists"
+  err "tag '$TAG' already exists"
 fi
 
 CURRENT_VERSION="$(awk -F'"' '/^version[[:space:]]*=/ { print $2; exit }' Cargo.toml)"
@@ -91,7 +91,7 @@ PY
 
 # Refresh Cargo.lock so the workspace version change is recorded.
 if ! cargo check --workspace --locked --offline >/dev/null 2>&1; then
-	cargo check --workspace >/dev/null
+  cargo check --workspace >/dev/null
 fi
 
 echo
@@ -100,8 +100,8 @@ git --no-pager diff --stat
 echo
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-	echo "Dry run: leaving changes in working tree, no commit/tag/push."
-	exit 0
+  echo "Dry run: leaving changes in working tree, no commit/tag/push."
+  exit 0
 fi
 
 git add Cargo.toml Cargo.lock package.json
