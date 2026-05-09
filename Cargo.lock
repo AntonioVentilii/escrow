@@ -246,6 +246,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "darling"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
+dependencies = [
+ "darling_core",
+ "darling_macro",
+]
+
+[[package]]
+name = "darling_core"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9865a50f7c335f53564bb694ef660825eb8610e0a53d3e11bf1b0d3df31e03b0"
+dependencies = [
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 2.0.116",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
+dependencies = [
+ "darling_core",
+ "quote",
+ "syn 2.0.116",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -324,7 +358,7 @@ version = "0.0.1"
 dependencies = [
  "candid",
  "ic-cdk",
- "ic-cdk-macros",
+ "ic-cdk-macros 0.20.1",
  "ic-cdk-timers",
  "pocket-ic",
  "serde",
@@ -648,7 +682,7 @@ checksum = "95a7344f41493cbf591f13ae9f90181076f808a83af799815c3074b19c693d2e"
 dependencies = [
  "candid",
  "ic-cdk-executor",
- "ic-cdk-macros",
+ "ic-cdk-macros 0.17.2",
  "ic0",
  "serde",
  "serde_bytes",
@@ -671,6 +705,19 @@ dependencies = [
  "quote",
  "serde",
  "serde_tokenstream",
+ "syn 2.0.116",
+]
+
+[[package]]
+name = "ic-cdk-macros"
+version = "0.20.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd0794365edf9997b1114b4ea10358c6af1317e39fc6611b4fc67053a44ec8f1"
+dependencies = [
+ "candid",
+ "darling",
+ "proc-macro2",
+ "quote",
  "syn 2.0.116",
 ]
 
@@ -828,6 +875,12 @@ dependencies = [
  "zerotrie",
  "zerovec",
 ]
+
+[[package]]
+name = "ident_case"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "idna"
@@ -1779,6 +1832,12 @@ dependencies = [
  "psm",
  "windows-sys 0.59.0",
 ]
+
+[[package]]
+name = "strsim"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
