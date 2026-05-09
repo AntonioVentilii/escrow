@@ -257,7 +257,7 @@ Until ICRC-3 is implemented, the existing `updated_at_ns` / `updated_by` fields 
 
 ### Disputes and resolution
 
-Add `Disputed` / `ArbitratedSettled` / `ArbitratedRefunded` variants to `DealStatus`. The explicit state machine in `validation.rs` already gates every transition — new edges (e.g. `Funded -> Disputed`, `Disputed -> ArbitratedSettled`) can be added alongside the existing ones. The `Deal` struct can gain optional fields (`dispute_evidence`, `resolver`, `resolution_outcome`) wrapped in `Option` for backward-compatible deserialization.
+The next major addition — design captured in [RFC-001](../../docs/rfcs/0001-dispute-resolution.md) (currently open for comment). At a high level: add `Disputed` / `ArbitratedSettled` / `ArbitratedRefunded` variants to `DealStatus`, a parallel arbitrator pool with simple-majority voting, and an evidence + voting phase model. The explicit state machine in `validation.rs` already gates every transition — new edges (e.g. `Funded -> Disputed`, `Disputed -> ArbitratedSettled`) plug in alongside the existing ones. The `Deal` struct gains a `dispute: Option<DisputeId>` field (backward-compatible). The proposed schema and open design questions live in the RFC.
 
 ### Multi-asset / multi-ledger
 
@@ -269,7 +269,7 @@ Add a `parent_deal_id: Option<DealId>` to `Deal` for parent ↔ child relationsh
 
 ### Pluggable resolvers
 
-Introduce a `Resolver` trait or enum (`Admin`, `Oracle(Principal)`, `DaoVote { ... }`) stored on the deal. Resolution logic can dispatch on this field, keeping the core state machine unchanged.
+Introduce a `Resolver` trait or enum (`Admin`, `Oracle(Principal)`, `DaoVote { ... }`) stored on the deal. Resolution logic can dispatch on this field, keeping the core state machine unchanged. The arbitrator pool from [RFC-001](../../docs/rfcs/0001-dispute-resolution.md) is the first concrete instance of this pattern.
 
 ### Storage at scale
 
