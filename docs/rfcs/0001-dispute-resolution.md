@@ -454,7 +454,14 @@ suspend bad actors.
 pool; users apply, controller approves. Lower abuse surface but
 adds a centralised gatekeeper to a "trustless escrow" claim.
 
-**Decision:** _<TBD>_
+**Decision:** Permissionless self-registration via
+`register_arbitrator` (idempotent — re-registering returns the
+existing profile, no error). Admin retains emergency suspension
+via `admin_set_arbitrator_status`. Future
+`DisputeConfig::min_arbitrator_score: Option<u32>` knob (default
+`None` for bootstrap) provides a tunable Sybil filter without
+touching code. Permissioned alt rejected because it puts a
+centralised gatekeeper at the most consequential layer.
 
 ### Q5. Arbitrator selection algorithm
 
@@ -473,7 +480,16 @@ Randomness via `raw_rand()` (already used for claim codes).
 Pure random is simpler but harder to bootstrap reputation. Self-select
 adds latency to dispute resolution.
 
-**Decision:** _<TBD>_
+**Decision:** Score-weighted random selection at `open_dispute`
+time, **base weight = 1** for unscored (`score = None`)
+arbitrators, hard-exclude `payer` and `recipient` of the disputed
+deal. Randomness via the existing `ledger::raw_rand` wrapper (same
+primitive used by `services::deals::create_deal` for claim codes).
+Selection is committed once to `Dispute.panel` — no re-selection
+on tally, keeping the dispute deterministic from the moment it's
+opened. Insufficient pool returns
+`EscrowError::InsufficientArbitrators { need, have }` with the
+deal still `Funded` (no partial state).
 
 ### Q6. Panel size
 
@@ -621,7 +637,19 @@ The existing `api/reliability/` module is **payer/recipient-side**
 reliability. The arbitrator score is a separate concept; do not
 conflate them in the same struct.
 
-**Decision:** _<TBD>_
+**Decision:** Schema as proposed (`disputes_assigned`,
+`disputes_voted`, `disputes_with_majority`, `score: Option<u32>`,
+`MIN_VOTES_FOR_SCORE = 5` constant). **Refinement:** NoQuorum
+disputes only update `disputes_assigned` — they do **not** update
+`disputes_voted` or `disputes_with_majority` — to avoid a perverse
+incentive to abstain on hard-to-quorum disputes. Update rules:
+
+| Outcome            | Voter type             | `assigned` | `voted` | `with_majority` |
+| ------------------ | ---------------------- | ---------- | ------- | --------------- |
+| Settled / Refunded | non-abstain w/ majority | +1         | +1      | +1              |
+| Settled / Refunded | non-abstain vs majority | +1         | +1      | +0              |
+| Settled / Refunded | abstain                | +1         | +0      | +0              |
+| **NoQuorum**       | **any (incl. non-abstain)** | **+1**     | **+0**  | **+0**          |
 
 ### Q12. Out-of-band settlement during a dispute
 
@@ -830,14 +858,14 @@ proposed schema (stake field can be added later as `Option<u128>`).
 | Q1  | 2026-05-10 | Distinct statuses (`Disputed`, `ArbitratedSettled`, `ArbitratedRefunded`) on `DealStatus`; `Deal.dispute: Option<DisputeId>` carries the audit-trail link. | RFC-001 design review (2026-05-10) |
 | Q2  | 2026-05-10 | Either bound party (payer or recipient), `Funded` state, before expiry; expiry sweep skips `Disputed`. Drop `NotAParty` variant (reuse `NotAuthorised`). | RFC-001 design review (2026-05-10) |
 | Q3  | 2026-05-10 | Open-recipient (tip-flow) deals cannot be disputed; gate via new `DisputeRequiresBoundRecipient` variant. | RFC-001 design review (2026-05-10) |
-| Q4  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
-| Q5  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q4  | 2026-05-10 | Permissionless self-registration (idempotent); admin keeps emergency suspension; future `min_arbitrator_score` knob in `DisputeConfig`. | RFC-001 design review (2026-05-10) |
+| Q5  | 2026-05-10 | Score-weighted random selection at `open_dispute` time, base weight = 1 for unscored arbitrators, hard-exclude payer + recipient, randomness via `ledger::raw_rand`. | RFC-001 design review (2026-05-10) |
 | Q6  | 2026-05-10 | `panel_size = 3` default, admin-tunable via `DisputeConfig::panel_size: u32`; validator enforces odd and `>= 3`. | RFC-001 design review (2026-05-10) |
 | Q7  | 2026-05-10 | Quorum = `floor(P/2) + 1` non-abstain; majority = greater of `cc`/`ic`; ties resolve as `NoQuorum`. | RFC-001 design review (2026-05-10) |
 | Q8  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q9  | 2026-05-10 | Evidence window 3 days, voting window 2 days, both admin-tunable; no-quorum fallback refunds payer (`ArbitratedRefunded`). | RFC-001 design review (2026-05-10) |
 | Q10 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
-| Q11 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q11 | 2026-05-10 | Schema as proposed; refinement: NoQuorum disputes only update `disputes_assigned` (not `voted` / `with_majority`). | RFC-001 design review (2026-05-10) |
 | Q12 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q13 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q14 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
