@@ -74,12 +74,18 @@ in the canister README.
   arbitrator-side score so a future reputation-weighted vote model
   can be plugged in without a schema migration.
 
+### In scope, but the v1-vs-v2 split is open
+
+- **Reputation-weighted voting** — `Product.docx` flags it as
+  _"(TO BE DISCUSSED)"_. See [Q13](#q13-weighted-voting-now-or-v2).
+- **Competency / subject-matter tags** — `Product.docx`'s alternative
+  weight (_"history of correct decision … or the competency"_). See
+  [Q14](#q14-competency--subject-matter-tags).
+
 ### Out of scope (deferred to later RFCs or future work)
 
 - Tip flow (open-recipient deals): can't dispute since there's no
   bound counterparty until claim.
-- Reputation-weighted voting (mentioned in `Product.docx` as v2 —
-  this RFC writes the schema fields but always uses simple majority).
 - Multi-round arbitration / appeals.
 - Cross-chain / fiat evidence.
 - Insurance / indemnity for slashed arbitrators.
@@ -516,6 +522,92 @@ Cleaner protocol but worse UX for parties who want to make peace.
 
 **Decision:** _<TBD>_
 
+### Q13. Weighted voting now or v2?
+
+Direct from `Product.docx`: _"the majority, in future releases, can
+be even **weighted**, considering as **weight the history of correct
+decision** of each node or the **competency** (TO BE DISCUSSED)."_
+This question covers the **history-based** half; competency is
+[Q14](#q14-competency--subject-matter-tags).
+
+**Current proposal.** **Simple majority in v1; weighted voting in
+v2.** Q11's reliability score is computed and stored from day 1, so
+the v2 switch is a service-level change with no schema migration.
+
+**Alternatives.**
+(a) **Simple majority always.** Each selected arbitrator counts as
+1; ≥ 50% + 1 of non-abstain votes decides. Easy to reason about,
+easy to explain to users.
+(b) **Linear-weighted in v1.** Each arbitrator's vote weight is
+`max(MIN_WEIGHT, score)` (e.g. clamp to `[1, 100]`). New / no-score
+arbitrators contribute 1; established ones up to 100. Outcome
+decided by greater weighted sum.
+(c) **Square-root or log-weighted.** Same idea, but
+`vote_weight = sqrt(score)` to soften reputation concentration.
+Compromise between (a) and (b) — high-score arbitrators matter
+more than newbies, but no single arbitrator can dominate.
+(d) **Defer to v2** as currently proposed. v1 ships simple majority;
+revisit after observing real disputes.
+
+**Trade-off.**
+
+- (a) is the safest MVP: easiest to explain ("3 arbitrators, 2 votes
+  win") and removes a whole class of fairness arguments
+  ("my vote weighed less because…").
+- (b) and (c) are honest about reputation differences, but punish
+  low-score arbitrators who were **selected by the canister** —
+  they didn't ask to be there. Feels unfair unless arbitrators
+  opt in per dispute (which makes selection even harder).
+- (b)/(c) also create a Sybil-resistance question: an attacker who
+  earns one high-score account can outweigh several honest newbies.
+- (d) lets us collect data before committing. Cheap to defer because
+  the schema doesn't change.
+
+**Decision:** _<TBD>_
+
+### Q14. Competency / subject-matter tags
+
+Direct from `Product.docx`: weight the vote by _"the history of
+correct decision of each node **or the competency**"_. Competency
+is the alternative-or-additional weighting dimension to history.
+
+**Current proposal.** **Schema in v1, behaviour in v2.** Add a
+`tags: Vec<String>` field to `ArbitratorProfile` (self-declared —
+free-form for v1 to avoid taxonomy bikeshedding) and a
+`category: Option<String>` field on `Deal` (set at create time, can
+be `None` for backward-compat). v1 selection and voting **ignore**
+the tags. v2 can bias selection toward arbitrators whose `tags`
+include the deal's `category`, with a fallback to the general pool
+when no tag-match arbitrator is available.
+
+**Alternatives.**
+(a) **Skip entirely.** Competency without a verification mechanic
+(certifications, KYC, etc.) is self-claimed and easily abused.
+Lean on history-based reputation only.
+(b) **Predefined enum.** Hard-code a closed set of categories
+(`PHYSICAL_GOODS`, `DIGITAL_GOODS`, `SERVICES`, `REAL_ESTATE`, …).
+Less flexible but enforceable.
+(c) **Schema only as proposed.** Free-form string tags; no
+selection bias yet.
+(d) **Full v1.** Tags + category + selection bias from day 1.
+Adds a category taxonomy decision and a fallback algorithm.
+
+**Trade-off.**
+
+- (a) keeps the canister narrow but drops half of `Product.docx`'s
+  weight-source proposal.
+- (b) is enforceable but inflexible — any new category needs a
+  Candid update.
+- (c) is forward-compatible: v1 doesn't bias on tags, but the
+  schema is ready, so v2 can flip the switch without a data
+  migration.
+- (d) is the most product-complete v1 but adds a UX surface
+  (category picker on deal creation, tag editor on arbitrator
+  registration) that may not be worth it before the rest of the
+  flow is battle-tested.
+
+**Decision:** _<TBD>_
+
 ## Implementation plan
 
 After this RFC is accepted, the implementation lands in **separate
@@ -591,8 +683,6 @@ proposed schema (stake field can be added later as `Option<u128>`).
 ## Out of scope
 
 - Tip-flow disputes (Q3).
-- Reputation-weighted voting (mentioned in Product.docx as v2; the
-  schema is ready, the algorithm isn't).
 - Multi-round arbitration / appeals (Q9 picks one no-quorum
   fallback; appeals would add a layer).
 - Cross-chain evidence (everything off-canister is just a URL +
@@ -602,6 +692,13 @@ proposed schema (stake field can be added later as `Option<u128>`).
   enforcement is not the canister's problem).
 - Arbitrator slashing for misconduct beyond the existing reliability
   score (Q11). Real slashing requires the stake mechanic.
+
+> **Note:** reputation-weighted voting and competency weighting are
+> **not** out of scope — they're explicit `Product.docx`
+> requirements captured as [Q13](#q13-weighted-voting-now-or-v2) and
+> [Q14](#q14-competency--subject-matter-tags). The "open" question is
+> only whether they ship in v1 (active behaviour) or v2 (schema-only
+> in v1, behaviour later).
 
 ---
 
@@ -624,3 +721,5 @@ proposed schema (stake field can be added later as `Option<u128>`).
 | Q10 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q11 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q12 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q13 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q14 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
