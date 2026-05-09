@@ -1,12 +1,12 @@
 # RFC-001 — Dispute resolution + arbitrators
 
-| Field   | Value                                                                                                                                         |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Status  | **Draft** — open for comment                                                                                                                  |
-| Author  | @antonioventilii                                                                                                                              |
-| Created | 2026-05-09                                                                                                                                    |
-| Targets | escrow `v0.1.x` (next minor — adds Candid types but no on-canister data migration; existing `Deal` records deserialise with `dispute = None`) |
-| Related | `Pluggable resolvers` sketch in `src/escrow/README.md`                                                                                        |
+| Field    | Value                                                                                                                                         |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Author   | @antonioventilii                                                                                                                              |
+| Created  | 2026-05-09                                                                                                                                    |
+| Accepted | 2026-05-10                                                                                                                                    |
+| Targets  | escrow `v0.1.x` (next minor — adds Candid types but no on-canister data migration; existing `Deal` records deserialise with `dispute = None`) |
+| Related  | `Pluggable resolvers` sketch in `src/escrow/README.md`                                                                                        |
 
 > **What is this RFC?** A design proposal that has to be agreed before
 > any implementation lands. Each "Open question" in the document is a
