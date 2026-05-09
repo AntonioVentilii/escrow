@@ -25,7 +25,7 @@ pedantic = { level = "deny", priority = -1 }
 enum_glob_use = "deny"
 single_component_path_imports = "warn"
 absolute_paths = "deny"
-allow_attributes = "allow"
+allow_attributes = "deny"
 std_instead_of_core = "deny"
 unseparated_literal_suffix = "deny"
 redundant_test_prefix = "deny"
