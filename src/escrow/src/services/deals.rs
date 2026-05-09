@@ -1,7 +1,7 @@
 use core::{cmp::Reverse, fmt::Write};
 
 use candid::Principal;
-use ic_cdk::{api::time, id};
+use ic_cdk::api::{canister_self, time};
 
 use super::reliability;
 use crate::{
@@ -229,7 +229,7 @@ pub fn get_escrow_account(caller: Principal, deal_id: DealId) -> Result<Account,
     let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
     authorize_deal_participant(&deal, caller)?;
     Ok(Account {
-        owner: id(),
+        owner: canister_self(),
         subaccount: Some(deal.escrow_subaccount),
     })
 }
@@ -274,7 +274,7 @@ async fn execute_fund(
     let payer = deal.payer.unwrap_or(caller);
 
     let escrow_account = Account {
-        owner: id(),
+        owner: canister_self(),
         subaccount: Some(deal.escrow_subaccount.clone()),
     };
     let payer_account = Account {

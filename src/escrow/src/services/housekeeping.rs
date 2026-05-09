@@ -1,6 +1,6 @@
 use core::{cell::Cell, time::Duration};
 
-use ic_cdk::spawn;
+use ic_cdk::futures::spawn;
 use ic_cdk_timers::set_timer_interval;
 
 use crate::services::expiry;
@@ -22,7 +22,7 @@ thread_local! {
 /// [`SWEEP_INTERVAL`]; each cycle processes up to [`SWEEP_BATCH_LIMIT`] deals.
 /// A re-entrancy guard ensures at most one sweep is in-flight at a time.
 pub fn start_expiry_sweep() {
-    set_timer_interval(SWEEP_INTERVAL, || {
+    set_timer_interval(SWEEP_INTERVAL, || async {
         if !try_start_sweep() {
             return;
         }

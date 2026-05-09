@@ -1,5 +1,5 @@
 use candid::{Nat, Principal};
-use ic_cdk::call;
+use ic_cdk::call::Call;
 
 use crate::{
     api::deals::errors::EscrowError,
@@ -28,13 +28,18 @@ pub async fn transfer_from(
         created_at_time: None,
     };
 
-    let result: Result<(Result<Nat, TransferFromError>,), _> =
-        call(ledger, "icrc2_transfer_from", (args,)).await;
+    let response = Call::unbounded_wait(ledger, "icrc2_transfer_from")
+        .with_args(&(args,))
+        .await
+        .map_err(|e| EscrowError::LedgerError(format!("{e:?}")))?;
 
-    match result {
-        Ok((Ok(block_index),)) => nat_to_u128(&block_index),
-        Ok((Err(e),)) => Err(EscrowError::TransferFailed(format!("{e:?}"))),
-        Err((code, msg)) => Err(EscrowError::LedgerError(format!("{code:?}: {msg}"))),
+    let (inner_result,): (Result<Nat, TransferFromError>,) = response
+        .candid_tuple()
+        .map_err(|e| EscrowError::LedgerError(format!("{e:?}")))?;
+
+    match inner_result {
+        Ok(block_index) => nat_to_u128(&block_index),
+        Err(e) => Err(EscrowError::TransferFailed(format!("{e:?}"))),
     }
 }
 
@@ -57,24 +62,30 @@ pub async fn transfer(
         created_at_time: None,
     };
 
-    let result: Result<(Result<Nat, TransferError>,), _> =
-        call(ledger, "icrc1_transfer", (args,)).await;
+    let response = Call::unbounded_wait(ledger, "icrc1_transfer")
+        .with_args(&(args,))
+        .await
+        .map_err(|e| EscrowError::LedgerError(format!("{e:?}")))?;
 
-    match result {
-        Ok((Ok(block_index),)) => nat_to_u128(&block_index),
-        Ok((Err(e),)) => Err(EscrowError::TransferFailed(format!("{e:?}"))),
-        Err((code, msg)) => Err(EscrowError::LedgerError(format!("{code:?}: {msg}"))),
+    let (inner_result,): (Result<Nat, TransferError>,) = response
+        .candid_tuple()
+        .map_err(|e| EscrowError::LedgerError(format!("{e:?}")))?;
+
+    match inner_result {
+        Ok(block_index) => nat_to_u128(&block_index),
+        Err(e) => Err(EscrowError::TransferFailed(format!("{e:?}"))),
     }
 }
 
 /// Calls the IC management canister to obtain 32 bytes of cryptographic randomness.
 pub async fn raw_rand() -> Result<(Vec<u8>,), EscrowError> {
-    let result: Result<(Vec<u8>,), _> =
-        call(Principal::management_canister(), "raw_rand", ()).await;
+    let response = Call::unbounded_wait(Principal::management_canister(), "raw_rand")
+        .await
+        .map_err(|e| EscrowError::LedgerError(format!("{e:?}")))?;
 
-    result.map_err(|(code, msg)| {
-        EscrowError::LedgerError(format!("raw_rand failed: {code:?}: {msg}"))
-    })
+    response
+        .candid_tuple()
+        .map_err(|e| EscrowError::LedgerError(format!("raw_rand decode failed: {e:?}")))
 }
 
 fn nat_to_u128(nat: &Nat) -> Result<u128, EscrowError> {

@@ -1,4 +1,4 @@
-use ic_cdk::{api::time, caller};
+use ic_cdk::api::{msg_caller, time};
 use ic_cdk_macros::{query, update};
 
 use super::{
@@ -30,7 +30,9 @@ use crate::{guards::caller_is_not_anonymous, services, types::deal::DealId};
 #[update(guard = "caller_is_not_anonymous")]
 #[must_use]
 pub async fn create_deal(args: CreateDealArgs) -> CreateDealResult {
-    services::deals::create(caller(), args, time()).await.into()
+    services::deals::create(msg_caller(), args, time())
+        .await
+        .into()
 }
 
 /// Funds a previously created deal by transferring tokens from the payer's
@@ -40,8 +42,8 @@ pub async fn create_deal(args: CreateDealArgs) -> CreateDealResult {
 /// the payer's consent to `Accepted`. For deals with a known recipient, the
 /// recipient must have consented first.
 #[update(guard = "caller_is_not_anonymous")]
-pub async fn fund_deal(args: FundDealArgs) -> FundDealResult {
-    services::deals::fund(caller(), args.deal_id).await.into()
+pub async fn fund_deal(FundDealArgs { deal_id }: FundDealArgs) -> FundDealResult {
+    services::deals::fund(msg_caller(), deal_id).await.into()
 }
 
 /// Accepts (claims) a funded deal, releasing the escrowed tokens to the caller.
@@ -51,8 +53,13 @@ pub async fn fund_deal(args: FundDealArgs) -> FundDealResult {
 /// automatically set to `Accepted`. The deal transitions from `Funded` to
 /// `Settled`.
 #[update(guard = "caller_is_not_anonymous")]
-pub async fn accept_deal(args: AcceptDealArgs) -> AcceptDealResult {
-    services::deals::accept(caller(), args.deal_id, time(), args.claim_code)
+pub async fn accept_deal(
+    AcceptDealArgs {
+        deal_id,
+        claim_code,
+    }: AcceptDealArgs,
+) -> AcceptDealResult {
+    services::deals::accept(msg_caller(), deal_id, time(), claim_code)
         .await
         .into()
 }
@@ -62,8 +69,8 @@ pub async fn accept_deal(args: AcceptDealArgs) -> AcceptDealResult {
 /// Only callable after the deal's `expires_at_ns` deadline has passed. The deal
 /// transitions from `Funded` to `Refunded`.
 #[update(guard = "caller_is_not_anonymous")]
-pub async fn reclaim_deal(args: ReclaimDealArgs) -> ReclaimDealResult {
-    services::deals::reclaim(caller(), args.deal_id, time())
+pub async fn reclaim_deal(ReclaimDealArgs { deal_id }: ReclaimDealArgs) -> ReclaimDealResult {
+    services::deals::reclaim(msg_caller(), deal_id, time())
         .await
         .into()
 }
@@ -74,10 +81,9 @@ pub async fn reclaim_deal(args: ReclaimDealArgs) -> ReclaimDealResult {
 /// `Cancelled`. Funded deals cannot be cancelled — use [`reclaim_deal`] after
 /// expiry instead.
 #[update(guard = "caller_is_not_anonymous")]
-#[expect(clippy::needless_pass_by_value)]
 #[must_use]
-pub fn cancel_deal(args: CancelDealArgs) -> CancelDealResult {
-    services::deals::cancel(caller(), args.deal_id, time()).into()
+pub fn cancel_deal(CancelDealArgs { deal_id }: CancelDealArgs) -> CancelDealResult {
+    services::deals::cancel(msg_caller(), deal_id, time()).into()
 }
 
 /// Explicitly consents to a deal's terms.
@@ -86,10 +92,9 @@ pub fn cancel_deal(args: CancelDealArgs) -> CancelDealResult {
 /// Both parties must consent before the payer can fund a deal with a known
 /// recipient.
 #[update(guard = "caller_is_not_anonymous")]
-#[expect(clippy::needless_pass_by_value)]
 #[must_use]
-pub fn consent_deal(args: ConsentDealArgs) -> ConsentDealResult {
-    services::deals::consent(caller(), args.deal_id, time()).into()
+pub fn consent_deal(ConsentDealArgs { deal_id }: ConsentDealArgs) -> ConsentDealResult {
+    services::deals::consent(msg_caller(), deal_id, time()).into()
 }
 
 /// Rejects a deal's terms. The deal transitions to `Rejected` (terminal).
@@ -97,10 +102,9 @@ pub fn consent_deal(args: ConsentDealArgs) -> ConsentDealResult {
 /// The caller must be the payer or recipient. Their consent is set to
 /// `Rejected` and the deal becomes final.
 #[update(guard = "caller_is_not_anonymous")]
-#[expect(clippy::needless_pass_by_value)]
 #[must_use]
-pub fn reject_deal(args: RejectDealArgs) -> RejectDealResult {
-    services::deals::reject(caller(), args.deal_id, time()).into()
+pub fn reject_deal(RejectDealArgs { deal_id }: RejectDealArgs) -> RejectDealResult {
+    services::deals::reject(msg_caller(), deal_id, time()).into()
 }
 
 /// Batch-processes expired deals by refunding escrowed tokens back to their
@@ -123,18 +127,19 @@ pub async fn process_expired_deals(limit: u32) -> ProcessExpiredDealsResult {
 #[query(guard = "caller_is_not_anonymous")]
 #[must_use]
 pub fn get_deal(deal_id: DealId) -> GetDealResult {
-    services::deals::get(caller(), deal_id).into()
+    services::deals::get(msg_caller(), deal_id).into()
 }
 
 /// Lists all deals where the caller is either the payer or the recipient,
 /// ordered by creation time with pagination support.
 #[query(guard = "caller_is_not_anonymous")]
-#[expect(clippy::needless_pass_by_value, clippy::cast_possible_truncation)]
 #[must_use]
-pub fn list_my_deals(args: ListMyDealsArgs) -> Vec<DealView> {
-    let offset = args.offset.unwrap_or(0) as usize;
-    let limit = (args.limit.unwrap_or(50)).min(100) as usize;
-    services::deals::list_for_caller(caller(), offset, limit)
+pub fn list_my_deals(ListMyDealsArgs { offset, limit }: ListMyDealsArgs) -> Vec<DealView> {
+    let offset_u64 = offset.unwrap_or(0);
+    let offset_usize = usize::try_from(offset_u64).unwrap_or(usize::MAX);
+    let limit_u64 = limit.unwrap_or(50).min(100);
+    let limit_usize = usize::try_from(limit_u64).unwrap_or(100);
+    services::deals::list_for_caller(msg_caller(), offset_usize, limit_usize)
 }
 
 /// Reduced public view for claim/share-link pages.
@@ -151,5 +156,5 @@ pub fn get_claimable_deal(deal_id: DealId) -> GetClaimableDealResult {
 #[query(guard = "caller_is_not_anonymous")]
 #[must_use]
 pub fn get_escrow_account(deal_id: DealId) -> GetEscrowAccountResult {
-    services::deals::get_escrow_account(caller(), deal_id).into()
+    services::deals::get_escrow_account(msg_caller(), deal_id).into()
 }
