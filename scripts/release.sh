@@ -6,11 +6,15 @@
 #   scripts/release.sh <version>            # e.g. scripts/release.sh 0.0.3
 #   scripts/release.sh <version> --dry-run  # validate + show diff, do not push
 #
+# Via npm (note the `--` separator, required to forward the version arg):
+#   npm run release -- <version>
+#   npm run release -- <version> --dry-run
+#
 # What it does:
 #   1. Validates the version (semver-ish) and the current repo state.
-#   2. Bumps the workspace version in Cargo.toml and package.json.
-#   3. Refreshes Cargo.lock via `cargo check --workspace --locked --offline`
-#      (falling back to online if needed).
+#   2. Bumps the workspace version in Cargo.toml, package.json, and
+#      package-lock.json.
+#   3. Refreshes Cargo.lock (offline if possible, otherwise online).
 #   4. Commits the bump, tags `v<version>`, and pushes branch + tag.
 #
 # The push of the tag fires `.github/workflows/release.yml`, which builds the
@@ -47,7 +51,10 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   err "working tree has uncommitted changes; commit or stash them first"
 fi
 
-CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+CURRENT_BRANCH="$(git symbolic-ref --short -q HEAD || true)"
+if [[ -z "$CURRENT_BRANCH" ]]; then
+  err "HEAD is detached; check out a branch before releasing"
+fi
 if [[ "$CURRENT_BRANCH" != "main" ]]; then
   echo "warning: not on 'main' (currently on '$CURRENT_BRANCH'). Continuing anyway." >&2
 fi
@@ -61,7 +68,6 @@ CURRENT_VERSION="$(awk -F'"' '/^version[[:space:]]*=/ { print $2; exit }' Cargo.
 echo "Bumping version: $CURRENT_VERSION -> $VERSION"
 
 # Cargo.toml: only the [workspace.package] version line (the first `version = "..."`).
-# Using a tagged anchor to be safe across reorders.
 python3 - "$VERSION" <<'PY'
 import re, sys
 new = sys.argv[1]
@@ -89,10 +95,30 @@ with open(path, "w") as f:
     f.write("\n")
 PY
 
-# Refresh Cargo.lock so the workspace version change is recorded.
-if ! cargo check --workspace --locked --offline >/dev/null 2>&1; then
+# package-lock.json: top-level "version" and the root "" package entry.
+python3 - "$VERSION" <<'PY'
+import json, sys
+new = sys.argv[1]
+path = "package-lock.json"
+with open(path) as f:
+    data = json.load(f)
+data["version"] = new
+if "packages" in data and "" in data["packages"]:
+    data["packages"][""]["version"] = new
+with open(path, "w") as f:
+    json.dump(data, f, indent="\t")
+    f.write("\n")
+PY
+
+# Refresh Cargo.lock for the new workspace version.
+# `cargo check` (without --locked) will update the lockfile; prefer offline so
+# the script doesn't need network for routine bumps. Fall back to online if the
+# offline cache is missing anything.
+if ! cargo check --workspace --offline >/dev/null 2>&1; then
   cargo check --workspace >/dev/null
 fi
+# Sanity check: with the refreshed lockfile, a --locked check must succeed.
+cargo check --workspace --locked --offline >/dev/null
 
 echo
 echo "Diff:"
@@ -104,7 +130,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
-git add Cargo.toml Cargo.lock package.json
+git add Cargo.toml Cargo.lock package.json package-lock.json
 git commit -m "chore: bump version to $VERSION"
 git tag "$TAG"
 git push origin "$CURRENT_BRANCH"
