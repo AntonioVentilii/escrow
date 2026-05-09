@@ -570,7 +570,17 @@ storage; ICRC-7 ownership map starts competing with evidence blobs
 for memory.
 (b) Hybrid: small blobs on-canister (≤ 64 KiB), large blobs off.
 
-**Decision:** _<TBD>_
+**Decision:** Off-canister artefacts (URL + SHA-256 hash),
+on-canister metadata only. Validation rules at the canister
+boundary: at least one of `note` / `(artefact_url +
+artefact_sha256)` must be present (empty evidence is rejected);
+URL and hash are paired (one without the other is rejected); `note`
+≤ 4 KiB → `EscrowError::EvidenceTooLarge { max: 4096 }`;
+`artefact_url` ≤ 2 KiB and `artefact_sha256` exactly 32 bytes
+both reuse `EscrowError::ValidationError(String)` per the existing
+length-check convention. Privacy bonus: keeping evidence off-canister
+means dispute artefacts are never in raw subnet state visible to node
+operators.
 
 ### Q9. Evidence + voting windows
 
@@ -624,7 +634,46 @@ requires either party to top up the deal post-funding to cover the
 fee.
 (c) Fixed fee in a separate canister token (if/when one exists).
 
-**Decision:** _<TBD>_
+**Decision:** Per-deal fee = `max(MIN_FEE, amount * FEE_BPS /
+10_000)`, computed at `open_dispute`. Both `FEE_BPS`
+(`DisputeConfig::arbitration_fee_bps: u32`) and `MIN_FEE`
+(`DisputeConfig::arbitration_min_fee: u128`) are admin-tunable.
+Sourced from the disputed amount in the escrow subaccount.
+Distributed equally among non-abstain voters via direct
+per-arbitrator transfer at finalize. NoQuorum: full refund, no fees
+paid. Front-loaded rejected (weaponises wealth); loser-pays
+rejected (requires post-fund top-ups the canister doesn't support);
+fixed-fee-in-separate-token rejected (no such token).
+
+**Refinements (load-bearing for the impl PRs):**
+
+1. **Per-arbitrator ledger fees are absorbed by the prevailing
+   party**: `prevailing_party_payout = amount - non_abstain_count
+   * fee_per_arbitrator - sum_of_arbitrator_ledger_fees`. Same
+   pattern as today's settle/refund flows where the prevailing party
+   absorbs the single ledger fee.
+2. **Integer-division remainder of the arbitration fee rolls back
+   to the prevailing party** — every arbitrator gets exactly the
+   same share; remainder is implicit in the subtraction above.
+3. **Schema change to support per-arbitrator payout idempotency**:
+   replace the RFC's `Dispute.arbitrators: Vec<Principal>` +
+   `Dispute.votes: BTreeMap<Principal, Vote>` with a single
+   `Dispute.panel: Vec<PanelMember>` where `PanelMember { principal:
+   Principal, vote: Option<Vote>, paid_at_ns: Option<u64>,
+   payout_tx: Option<u128> }`. Mirrors the existing
+   `Deal.funded_at_ns` / `funding_tx` / `settled_at_ns` /
+   `payout_tx` pattern. `cast_vote` mutates the matching member's
+   `vote`. `finalize_dispute` walks the panel for tally and for
+   replay-safe fan-out payouts (skip members where
+   `paid_at_ns.is_some()`).
+
+**Schema rider:** new `EscrowError::AmountTooSmallForArbitration {
+min: u128 }` emitted at `open_dispute` when the deal's amount
+cannot cover `MIN_FEE + N * estimated_ledger_fee`. New
+`DisputeConfig` fields: `arbitration_fee_bps: u32`,
+`arbitration_min_fee: u128`. `services::disputes::finalize` uses
+the per-deal `PROCESSING` lock in `memory.rs` to serialise
+concurrent finalize calls.
 
 ### Q11. Reliability score — arbitrator side
 
@@ -862,9 +911,9 @@ proposed schema (stake field can be added later as `Option<u128>`).
 | Q5  | 2026-05-10 | Score-weighted random selection at `open_dispute` time, base weight = 1 for unscored arbitrators, hard-exclude payer + recipient, randomness via `ledger::raw_rand`. | RFC-001 design review (2026-05-10) |
 | Q6  | 2026-05-10 | `panel_size = 3` default, admin-tunable via `DisputeConfig::panel_size: u32`; validator enforces odd and `>= 3`. | RFC-001 design review (2026-05-10) |
 | Q7  | 2026-05-10 | Quorum = `floor(P/2) + 1` non-abstain; majority = greater of `cc`/`ic`; ties resolve as `NoQuorum`. | RFC-001 design review (2026-05-10) |
-| Q8  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q8  | 2026-05-10 | Off-canister artefacts (URL + SHA-256), on-canister metadata only; URL/hash paired; `note` ≤ 4 KiB; `artefact_url` ≤ 2 KiB; `artefact_sha256` exactly 32 bytes. | RFC-001 design review (2026-05-10) |
 | Q9  | 2026-05-10 | Evidence window 3 days, voting window 2 days, both admin-tunable; no-quorum fallback refunds payer (`ArbitratedRefunded`). | RFC-001 design review (2026-05-10) |
-| Q10 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q10 | 2026-05-10 | Per-deal fee from disputed amount; `bps + min` admin-tunable; equally split among non-abstain voters; NoQuorum pays no fee. Schema refinement: `Dispute.panel: Vec<PanelMember>` replaces `arbitrators` + `votes` for per-arbitrator payout idempotency. | RFC-001 design review (2026-05-10) |
 | Q11 | 2026-05-10 | Schema as proposed; refinement: NoQuorum disputes only update `disputes_assigned` (not `voted` / `with_majority`). | RFC-001 design review (2026-05-10) |
 | Q12 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q13 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
