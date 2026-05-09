@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
-use candid::{CandidType, Deserialize};
+use candid::{CandidType, Deserialize, Principal};
 
 use super::{
+    arbitrator::ArbitratorProfile,
     deal::{Deal, DealId},
-    dispute::DisputeConfig,
+    dispute::{Dispute, DisputeConfig, DisputeId},
 };
 
 /// Global configuration for the Escrow canister.
@@ -28,4 +29,9 @@ pub struct StableState {
     pub config: Config,
     pub deals: Option<BTreeMap<DealId, Deal>>,
     pub next_deal_id: Option<DealId>,
+    /// RFC-001 step 2 — dispute storage. `None` on legacy snapshots.
+    pub disputes: Option<BTreeMap<DisputeId, Dispute>>,
+    pub next_dispute_id: Option<DisputeId>,
+    /// RFC-001 step 2 — arbitrator registry, keyed by principal.
+    pub arbitrators: Option<BTreeMap<Principal, ArbitratorProfile>>,
 }

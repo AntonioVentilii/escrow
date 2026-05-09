@@ -7,7 +7,9 @@ use ic_cdk::{storage, trap};
 use crate::{
     api::deals::errors::EscrowError,
     types::{
+        arbitrator::ArbitratorProfile,
         deal::{Deal, DealId, DealStatus},
+        dispute::{Dispute, DisputeId},
         state::{Config, StableState},
     },
 };
@@ -18,6 +20,10 @@ thread_local! {
     static NEXT_DEAL_ID: RefCell<DealId> = const { RefCell::new(1) };
     /// Transient lock preventing concurrent async processing of the same deal.
     static PROCESSING: RefCell<BTreeSet<DealId>> = const { RefCell::new(BTreeSet::new()) };
+    // ---- RFC-001 storage (step 2) ----
+    static DISPUTES: RefCell<BTreeMap<DisputeId, Dispute>> = const { RefCell::new(BTreeMap::new()) };
+    static NEXT_DISPUTE_ID: RefCell<DisputeId> = const { RefCell::new(1) };
+    static ARBITRATORS: RefCell<BTreeMap<Principal, ArbitratorProfile>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 // --- Deal storage ---
@@ -122,6 +128,96 @@ fn allocate_deal_id() -> DealId {
     })
 }
 
+// --- Dispute storage (RFC-001 step 2) ---
+
+/// Atomically allocates a unique `DisputeId`, builds the dispute via `build`,
+/// and inserts it into the store.
+///
+/// The **only** public way to create a dispute — guarantees every stored
+/// dispute has a canister-assigned ID. The `build` closure receives the
+/// freshly allocated ID; after `build` returns, the dispute's `id` field
+/// is forcibly set to the allocated value before insertion (matches the
+/// `insert_new_deal` belt-and-suspenders pattern).
+pub fn insert_new_dispute(build: impl FnOnce(DisputeId) -> Dispute) -> Dispute {
+    let dispute_id = allocate_dispute_id();
+    let mut dispute = build(dispute_id);
+    dispute.id = dispute_id;
+    DISPUTES.with(|d| d.borrow_mut().insert(dispute_id, dispute.clone()));
+    dispute
+}
+
+#[must_use]
+pub fn get_dispute(dispute_id: DisputeId) -> Option<Dispute> {
+    DISPUTES.with(|d| d.borrow().get(&dispute_id).cloned())
+}
+
+/// Runs `f` with a mutable reference to the dispute, returning `Some(R)`
+/// if the dispute exists.
+pub fn with_dispute<R>(dispute_id: DisputeId, f: impl FnOnce(&mut Dispute) -> R) -> Option<R> {
+    DISPUTES.with(|d| d.borrow_mut().get_mut(&dispute_id).map(f))
+}
+
+/// Runs `f` with a read-only reference to the full dispute map.
+pub fn with_disputes<R>(f: impl FnOnce(&BTreeMap<DisputeId, Dispute>) -> R) -> R {
+    DISPUTES.with(|d| f(&d.borrow()))
+}
+
+/// Runs `f` with a mutable reference to the full dispute map. Used by the
+/// auto-finalize sweep (RFC-001 step 8) to iterate without per-call clone.
+pub fn with_disputes_mut<R>(f: impl FnOnce(&mut BTreeMap<DisputeId, Dispute>) -> R) -> R {
+    DISPUTES.with(|d| f(&mut d.borrow_mut()))
+}
+
+#[must_use]
+pub fn dispute_count() -> u64 {
+    DISPUTES.with(|d| d.borrow().len() as u64)
+}
+
+fn allocate_dispute_id() -> DisputeId {
+    NEXT_DISPUTE_ID.with(|id| {
+        let mut id = id.borrow_mut();
+        let current = *id;
+        *id = current.checked_add(1).expect("DisputeId overflow");
+        current
+    })
+}
+
+// --- Arbitrator storage (RFC-001 step 2) ---
+
+/// Inserts or replaces an arbitrator profile keyed by principal.
+///
+/// Used by `register_arbitrator` (idempotent — re-registration returns the
+/// existing profile rather than erroring; see RFC-001 Q4 decision) and by
+/// `services::arbitrators::update_score_after_finalize`.
+pub fn upsert_arbitrator(profile: ArbitratorProfile) {
+    ARBITRATORS.with(|a| a.borrow_mut().insert(profile.principal, profile));
+}
+
+#[must_use]
+pub fn get_arbitrator(principal: Principal) -> Option<ArbitratorProfile> {
+    ARBITRATORS.with(|a| a.borrow().get(&principal).cloned())
+}
+
+/// Runs `f` with a mutable reference to the arbitrator profile, returning
+/// `Some(R)` if the arbitrator exists.
+pub fn with_arbitrator<R>(
+    principal: Principal,
+    f: impl FnOnce(&mut ArbitratorProfile) -> R,
+) -> Option<R> {
+    ARBITRATORS.with(|a| a.borrow_mut().get_mut(&principal).map(f))
+}
+
+/// Runs `f` with a read-only reference to the full arbitrator map. Used by
+/// `services::arbitrators::select_panel` to enumerate eligible arbitrators.
+pub fn with_arbitrators<R>(f: impl FnOnce(&BTreeMap<Principal, ArbitratorProfile>) -> R) -> R {
+    ARBITRATORS.with(|a| f(&a.borrow()))
+}
+
+#[must_use]
+pub fn arbitrator_count() -> u64 {
+    ARBITRATORS.with(|a| a.borrow().len() as u64)
+}
+
 // --- Processing lock ---
 
 pub fn try_acquire_lock(deal_id: DealId) -> Result<(), EscrowError> {
@@ -149,11 +245,17 @@ pub fn save_state() {
     let config: Config = CONFIG.with(|c| c.borrow().clone());
     let deals = DEALS.with(|d| d.borrow().clone());
     let next_deal_id = NEXT_DEAL_ID.with(|id| *id.borrow());
+    let disputes = DISPUTES.with(|d| d.borrow().clone());
+    let next_dispute_id = NEXT_DISPUTE_ID.with(|id| *id.borrow());
+    let arbitrators = ARBITRATORS.with(|a| a.borrow().clone());
 
     let state = StableState {
         config,
         deals: Some(deals),
         next_deal_id: Some(next_deal_id),
+        disputes: Some(disputes),
+        next_dispute_id: Some(next_dispute_id),
+        arbitrators: Some(arbitrators),
     };
 
     storage::stable_save((state,)).expect("Save failed");
@@ -173,11 +275,17 @@ pub fn restore_state() {
         config,
         deals,
         next_deal_id,
+        disputes,
+        next_dispute_id,
+        arbitrators,
     } = state;
 
     CONFIG.with(|c| *c.borrow_mut() = config);
     DEALS.with(|d| *d.borrow_mut() = deals.unwrap_or_default());
     NEXT_DEAL_ID.with(|id| *id.borrow_mut() = next_deal_id.unwrap_or(1));
+    DISPUTES.with(|d| *d.borrow_mut() = disputes.unwrap_or_default());
+    NEXT_DISPUTE_ID.with(|id| *id.borrow_mut() = next_dispute_id.unwrap_or(1));
+    ARBITRATORS.with(|a| *a.borrow_mut() = arbitrators.unwrap_or_default());
 }
 
 #[cfg(test)]
@@ -320,5 +428,176 @@ mod tests {
         release_lock(id);
         assert!(try_acquire_lock(id).is_ok());
         release_lock(id);
+    }
+
+    // --- Dispute storage (RFC-001 step 2) ---
+
+    use super::{
+        arbitrator_count, dispute_count, get_arbitrator, get_dispute, insert_new_dispute,
+        upsert_arbitrator, with_arbitrator, with_arbitrators, with_dispute, with_disputes,
+    };
+    use crate::types::{
+        arbitrator::{ArbitratorProfile, ArbitratorStatus},
+        dispute::{Dispute, DisputeOutcome, DisputePhase, PanelMember, Vote},
+    };
+
+    fn make_dispute(deal_id: u64) -> Dispute {
+        insert_new_dispute(|dispute_id| Dispute {
+            id: dispute_id,
+            deal_id,
+            opened_by: test_principal(1),
+            opened_at_ns: 100,
+            phase: DisputePhase::Evidence,
+            evidence_deadline_ns: 200,
+            voting_deadline_ns: 300,
+            panel: vec![PanelMember {
+                principal: test_principal(2),
+                vote: None,
+                paid_at_ns: None,
+                payout_tx: None,
+            }],
+            evidence: vec![],
+            arbitration_fee: 1_000,
+            outcome: None,
+            payer_withdraw_proposal: None,
+            recipient_withdraw_proposal: None,
+        })
+    }
+
+    #[test]
+    fn insert_and_retrieve_dispute() {
+        let dispute = make_dispute(7);
+        let loaded = get_dispute(dispute.id).expect("dispute should exist");
+        assert_eq!(loaded.id, dispute.id);
+        assert_eq!(loaded.deal_id, 7);
+    }
+
+    #[test]
+    fn dispute_ids_are_sequential() {
+        let a = make_dispute(1);
+        let b = make_dispute(2);
+        assert_eq!(b.id, a.id + 1);
+    }
+
+    #[test]
+    fn dispute_count_reflects_inserts() {
+        let before = dispute_count();
+        make_dispute(1);
+        make_dispute(2);
+        assert_eq!(dispute_count(), before + 2);
+    }
+
+    #[test]
+    fn with_dispute_mutates_in_place() {
+        let dispute = make_dispute(99);
+        let res = with_dispute(dispute.id, |d| {
+            d.phase = DisputePhase::Voting;
+            d.outcome = Some(DisputeOutcome::Settled {
+                cc: 2,
+                ic: 1,
+                abstain: 0,
+            });
+            d.panel[0].vote = Some(Vote::ConcludedCorrectly);
+            "ok"
+        });
+        assert_eq!(res, Some("ok"));
+        let reloaded = get_dispute(dispute.id).unwrap();
+        assert_eq!(reloaded.phase, DisputePhase::Voting);
+        assert!(matches!(
+            reloaded.outcome,
+            Some(DisputeOutcome::Settled { .. })
+        ));
+        assert_eq!(reloaded.panel[0].vote, Some(Vote::ConcludedCorrectly));
+    }
+
+    #[test]
+    fn with_dispute_returns_none_for_unknown() {
+        assert!(with_dispute(9_999_999, |_| ()).is_none());
+    }
+
+    #[test]
+    fn with_disputes_iterates_all() {
+        make_dispute(11);
+        make_dispute(12);
+        let count = with_disputes(|map| map.values().filter(|d| d.deal_id >= 11).count());
+        assert!(count >= 2);
+    }
+
+    // --- Arbitrator storage (RFC-001 step 2) ---
+
+    fn make_arbitrator(p: u8) -> ArbitratorProfile {
+        let profile = ArbitratorProfile {
+            principal: test_principal(p),
+            registered_at_ns: 100,
+            bio: None,
+            disputes_assigned: 0,
+            disputes_voted: 0,
+            disputes_with_majority: 0,
+            score: None,
+            status: ArbitratorStatus::Active,
+        };
+        upsert_arbitrator(profile.clone());
+        profile
+    }
+
+    #[test]
+    fn upsert_and_retrieve_arbitrator() {
+        let profile = make_arbitrator(50);
+        let loaded = get_arbitrator(profile.principal).expect("present");
+        assert_eq!(loaded.principal, profile.principal);
+        assert_eq!(loaded.status, ArbitratorStatus::Active);
+    }
+
+    #[test]
+    fn upsert_replaces_existing() {
+        let profile = make_arbitrator(51);
+        let mut updated = profile.clone();
+        updated.disputes_assigned = 5;
+        updated.status = ArbitratorStatus::Suspended;
+        upsert_arbitrator(updated);
+        let loaded = get_arbitrator(profile.principal).unwrap();
+        assert_eq!(loaded.disputes_assigned, 5);
+        assert_eq!(loaded.status, ArbitratorStatus::Suspended);
+    }
+
+    #[test]
+    fn with_arbitrator_mutates_in_place() {
+        let profile = make_arbitrator(52);
+        let res = with_arbitrator(profile.principal, |a| {
+            a.disputes_assigned += 1;
+            a.disputes_voted += 1;
+            a.disputes_with_majority += 1;
+        });
+        assert!(res.is_some());
+        let loaded = get_arbitrator(profile.principal).unwrap();
+        assert_eq!(loaded.disputes_assigned, 1);
+        assert_eq!(loaded.disputes_voted, 1);
+        assert_eq!(loaded.disputes_with_majority, 1);
+    }
+
+    #[test]
+    fn arbitrator_count_reflects_inserts() {
+        let before = arbitrator_count();
+        make_arbitrator(60);
+        make_arbitrator(61);
+        assert_eq!(arbitrator_count(), before + 2);
+    }
+
+    #[test]
+    fn with_arbitrators_filters_active() {
+        make_arbitrator(70);
+        make_arbitrator(71);
+        with_arbitrator(test_principal(71), |a| {
+            a.status = ArbitratorStatus::Suspended;
+        });
+        let active = with_arbitrators(|map| {
+            map.values()
+                .filter(|a| {
+                    matches!(a.status, ArbitratorStatus::Active)
+                        && (a.principal == test_principal(70) || a.principal == test_principal(71))
+                })
+                .count()
+        });
+        assert_eq!(active, 1);
     }
 }
