@@ -415,7 +415,15 @@ payer can't dispute a settled-but-undelivered deal. (b) opens the
 door to claw-back, which is operationally harder (already-released
 funds need to be reversible).
 
-**Decision:** _<TBD>_
+**Decision:** Either _bound_ party (both `payer` and `recipient`
+set), in `Funded` state, before `expires_at_ns`. Symmetrical with
+the spec's two-signature DISPUTED model; the escrow has no
+enforcement leverage post-`Settled` (no claw-back without a new
+bond mechanism, which is out of scope for v1). Implementation
+contract: `services::expiry` sweep must skip `Disputed` deals.
+Schema rider: drop the proposed `EscrowError::NotAParty` variant
+(reuse existing `NotAuthorised`, matching the convention in
+`validate_can_cancel`).
 
 ### Q3. Open-recipient (tip-flow) deals
 
@@ -426,7 +434,14 @@ accepted, see Q2.
 **Alternative.** Allow disputes on tip flows post-claim with a much
 shorter challenge window.
 
-**Decision:** _<TBD>_
+**Decision:** Open-recipient (tip-flow) deals cannot be disputed.
+No bound counterparty exists in canister state to dispute against;
+tip claim codes are bearer tokens, so post-claim there is no
+principled way to identify "the right party" to refund.
+`validate_can_open_dispute` requires `deal.recipient.is_some()`.
+Schema rider: add `EscrowError::DisputeRequiresBoundRecipient` for
+this gate (distinct from `NotAuthorised`, matching the granularity
+of existing variants like `MissingClaimCode` and `RecipientMismatch`).
 
 ### Q4. Arbitrator pool — permissioned vs permissionless
 
@@ -793,8 +808,8 @@ proposed schema (stake field can be added later as `Option<u128>`).
 | Q   | Resolved | Resolution | Source  |
 | --- | -------- | ---------- | ------- |
 | Q1  | 2026-05-10 | Distinct statuses (`Disputed`, `ArbitratedSettled`, `ArbitratedRefunded`) on `DealStatus`; `Deal.dispute: Option<DisputeId>` carries the audit-trail link. | RFC-001 design review (2026-05-10) |
-| Q2  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
-| Q3  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q2  | 2026-05-10 | Either bound party (payer or recipient), `Funded` state, before expiry; expiry sweep skips `Disputed`. Drop `NotAParty` variant (reuse `NotAuthorised`). | RFC-001 design review (2026-05-10) |
+| Q3  | 2026-05-10 | Open-recipient (tip-flow) deals cannot be disputed; gate via new `DisputeRequiresBoundRecipient` variant. | RFC-001 design review (2026-05-10) |
 | Q4  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q5  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q6  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
