@@ -2,6 +2,7 @@
 
 | Field   | Value                                                                                                                                         |
 | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status  | **Draft** — open for comment                                                                                                                  |
 | Author  | @antonioventilii                                                                                                                              |
 | Created | 2026-05-09                                                                                                                                    |
 | Targets | escrow `v0.1.x` (next minor — adds Candid types but no on-canister data migration; existing `Deal` records deserialise with `dispute = None`) |
