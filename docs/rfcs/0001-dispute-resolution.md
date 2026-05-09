@@ -390,7 +390,15 @@ arbitrated vs unilateral.
 naming). Single-status + field is cleaner schema-wise but loses the
 ICRC-7 token-status signal.
 
-**Decision:** _<TBD>_
+**Decision:** Distinct statuses — add `Disputed`,
+`ArbitratedSettled`, `ArbitratedRefunded` to `DealStatus`. Mirrors
+the existing `Cancelled` vs `Rejected` convention (distinct
+terminals when the _reason_ differs); preserves exhaustive `match`
+safety in `validate_can_*`; gives ICRC-7 a single-field status
+signal. The `Deal.dispute: Option<DisputeId>` field carries the
+audit-trail link. Future external resolvers (oracle, DAO) can
+introduce a generic `Resolved` + `resolution: Option<…>` field at
+_that_ point — Q1 doesn't preclude it.
 
 ### Q2. Who can open a dispute?
 
@@ -784,7 +792,7 @@ proposed schema (stake field can be added later as `Option<u128>`).
 
 | Q   | Resolved | Resolution | Source  |
 | --- | -------- | ---------- | ------- |
-| Q1  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q1  | 2026-05-10 | Distinct statuses (`Disputed`, `ArbitratedSettled`, `ArbitratedRefunded`) on `DealStatus`; `Deal.dispute: Option<DisputeId>` carries the audit-trail link. | RFC-001 design review (2026-05-10) |
 | Q2  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q3  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q4  | _<TBD>_  | _<TBD>_    | _<TBD>_ |
