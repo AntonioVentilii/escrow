@@ -19,7 +19,7 @@ Payers lock tokens into deal-specific subaccounts; recipients claim them before 
 | -------- | --------------------------------------------------------------------------------------------------------------- | ------------------ |
 | **Tips** | Send a tip via QR code or link — the recipient signs up and claims it, or the payer gets a refund after expiry. | [TIPS.md](TIPS.md) |
 
-More use cases (disputes, instalment payments, multi-party escrow, ...) are planned — see the [future expansion](src/escrow/README.md#future-expansion) section.
+More use cases (instalment payments, multi-party escrow, ...) are planned — see the [future expansion](src/escrow/README.md#future-expansion) section. Dispute resolution + arbitrators is the next major addition; the design is captured in [RFC-001](docs/rfcs/0001-dispute-resolution.md) (currently open for comment).
 
 ## Scalability
 
