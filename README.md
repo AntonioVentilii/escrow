@@ -28,3 +28,17 @@ The canister currently stores all deals in heap memory (~4–8 M deals). ICRC-7 
 ## Technical documentation
 
 For the full API reference, deal lifecycle, module structure, and ICRC-7 NFT interface, see the [escrow canister README](src/escrow/README.md).
+
+## 📖 Project Guidelines & AI Agent Docs
+
+This project follows strict development patterns. AI agents (Claude Code, Cursor, Copilot, Codex, …) and humans should start at the canonical entry point:
+
+- **[AGENTS.md](./AGENTS.md)** — universal entry for every AI agent.
+- **[CLAUDE.md](./CLAUDE.md)** — Claude-specific runtime layer (defers to AGENTS.md).
+- **[docs/ai/](./docs/ai/)** — long-form documentation:
+  - [`docs/ai/governance.md`](./docs/ai/governance.md) — truth hierarchy, boundaries, capabilities, RFC workflow, meta-update rule.
+  - [`docs/ai/pr-and-ci.md`](./docs/ai/pr-and-ci.md) — PR conventions, CI gates, local quality gates.
+  - [`docs/ai/backend/`](./docs/ai/backend/) — Rust + IC + ICRC + state-machine + Candid conventions, structure, patterns.
+- **[docs/rfcs/](./docs/rfcs/)** — substantive design RFCs (created when the first one lands).
+- **[.agents/workflows/](./.agents/workflows/)** — operational runbooks (deploy, …).
+- **[.claude/rules/](./.claude/rules/)** — Claude-only quick-reference cards that defer to `docs/ai/`.
