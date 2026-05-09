@@ -116,12 +116,13 @@ pub fn collection_metadata() -> Vec<(String, Value)> {
 /// Unknown IDs yield `None`.  The input is silently capped at
 /// `MAX_QUERY_BATCH_SIZE`.
 #[must_use]
-pub fn token_metadata(token_ids: &[Nat]) -> Vec<Option<Vec<(String, Value)>>> {
-    let capped = cap_batch(token_ids);
-    capped
-        .iter()
+pub fn token_metadata(token_ids: Vec<Nat>) -> Vec<Option<Vec<(String, Value)>>> {
+    let limit = usize::try_from(MAX_QUERY_BATCH_SIZE).unwrap_or(usize::MAX);
+    token_ids
+        .into_iter()
+        .take(limit)
         .map(|id| {
-            nat_to_deal_id(id)
+            nat_to_deal_id(&id)
                 .and_then(memory::get_deal)
                 .map(|d| icrc7::deal_to_metadata(&d))
         })
@@ -133,12 +134,13 @@ pub fn token_metadata(token_ids: &[Nat]) -> Vec<Option<Vec<(String, Value)>>> {
 /// Unknown IDs yield `None`.  The input is silently capped at
 /// `MAX_QUERY_BATCH_SIZE`.
 #[must_use]
-pub fn owner_of(token_ids: &[Nat]) -> Vec<Option<Account>> {
-    let capped = cap_batch(token_ids);
-    capped
-        .iter()
+pub fn owner_of(token_ids: Vec<Nat>) -> Vec<Option<Account>> {
+    let limit = usize::try_from(MAX_QUERY_BATCH_SIZE).unwrap_or(usize::MAX);
+    token_ids
+        .into_iter()
+        .take(limit)
         .map(|id| {
-            nat_to_deal_id(id)
+            nat_to_deal_id(&id)
                 .and_then(memory::get_deal)
                 .map(|d| icrc7::token_owner(&d))
         })
@@ -149,16 +151,16 @@ pub fn owner_of(token_ids: &[Nat]) -> Vec<Option<Account>> {
 ///
 /// The input is silently capped at `MAX_QUERY_BATCH_SIZE`.
 #[must_use]
-pub fn balance_of(accounts: &[Account]) -> Vec<Nat> {
+pub fn balance_of(accounts: Vec<Account>) -> Vec<Nat> {
     let max = usize::try_from(MAX_QUERY_BATCH_SIZE).unwrap_or(usize::MAX);
     memory::with_deals(|deals| {
         accounts
-            .iter()
+            .into_iter()
             .take(max)
             .map(|account| {
                 let count = deals
                     .values()
-                    .filter(|d| account_owns_token(account, d))
+                    .filter(|d| account_owns_token(&account, d))
                     .count();
                 Nat::from(count as u64)
             })
@@ -171,10 +173,14 @@ pub fn balance_of(accounts: &[Account]) -> Vec<Nat> {
 /// `prev` is the last ID the caller received (exclusive cursor).
 /// `take` limits the page size (capped at `MAX_TAKE`, defaults to
 /// `DEFAULT_TAKE`).
+///
+/// `Option<Nat>` must be owned so the canister interface matches ICRC-7 Candid
+/// decoding (same approach as dfinity/chain-fusion-signer `http_request`).
+#[allow(clippy::needless_pass_by_value)]
 #[must_use]
-pub fn tokens(prev: Option<&Nat>, take: Option<&Nat>) -> Vec<Nat> {
-    let effective_take = effective_take(take);
-    let Some(start) = start_after_id(prev) else {
+pub fn tokens(prev: Option<Nat>, take: Option<Nat>) -> Vec<Nat> {
+    let effective_take = effective_take(take.as_ref());
+    let Some(start) = start_after_id(prev.as_ref()) else {
         return vec![];
     };
 
@@ -190,17 +196,21 @@ pub fn tokens(prev: Option<&Nat>, take: Option<&Nat>) -> Vec<Nat> {
 /// Returns a page of token IDs owned by `account` in ascending order.
 ///
 /// See [`tokens`] for cursor / take semantics.
+///
+/// Owned `Account` / `Option<Nat>` match ICRC-7 Candid method signatures; see
+/// [`tokens`] for the same `needless_pass_by_value` note.
+#[allow(clippy::needless_pass_by_value)]
 #[must_use]
-pub fn tokens_of(account: &Account, prev: Option<&Nat>, take: Option<&Nat>) -> Vec<Nat> {
-    let effective_take = effective_take(take);
-    let Some(start) = start_after_id(prev) else {
+pub fn tokens_of(account: Account, prev: Option<Nat>, take: Option<Nat>) -> Vec<Nat> {
+    let effective_take = effective_take(take.as_ref());
+    let Some(start) = start_after_id(prev.as_ref()) else {
         return vec![];
     };
 
     memory::with_deals(|deals| {
         deals
             .range(start..)
-            .filter(|(_, d)| account_owns_token(account, d))
+            .filter(|(_, d)| account_owns_token(&account, d))
             .take(effective_take)
             .map(|(id, _)| Nat::from(*id))
             .collect()
@@ -216,8 +226,8 @@ pub fn tokens_of(account: &Account, prev: Option<&Nat>, take: Option<&Nat>) -> V
 /// Deal ownership is managed exclusively through escrow operations
 /// (`accept_deal`, `reclaim_deal`, etc.), not via direct ICRC-7 transfers.
 #[must_use]
-pub fn transfer(args: &[Icrc7TransferArg]) -> Vec<Option<Icrc7TransferResponse>> {
-    args.iter()
+pub fn transfer(args: Vec<Icrc7TransferArg>) -> Vec<Option<Icrc7TransferResponse>> {
+    args.into_iter()
         .map(|_| {
             Some(Icrc7TransferResponse::Err(
                 Icrc7TransferError::GenericError {
@@ -284,15 +294,6 @@ fn start_after_id(prev: Option<&Nat>) -> Option<DealId> {
     match prev {
         None => Some(0),
         Some(p) => nat_to_deal_id(p).and_then(|id| id.checked_add(1)),
-    }
-}
-
-fn cap_batch(ids: &[Nat]) -> &[Nat] {
-    let limit = usize::try_from(MAX_QUERY_BATCH_SIZE).unwrap_or(usize::MAX);
-    if ids.len() > limit {
-        &ids[..limit]
-    } else {
-        ids
     }
 }
 
@@ -385,7 +386,7 @@ mod tests {
     #[test]
     fn metadata_for_existing_deal() {
         let deal = store_deal(DealStatus::Created, test_principal(11), None);
-        let result = token_metadata(&[Nat::from(deal.id)]);
+        let result = token_metadata(vec![Nat::from(deal.id)]);
         assert_eq!(result.len(), 1);
         let meta = result[0].as_ref().expect("metadata should exist");
         let has_name = meta.iter().any(|(k, _)| k == "icrc7:name");
@@ -394,7 +395,7 @@ mod tests {
 
     #[test]
     fn metadata_for_unknown_id() {
-        let result = token_metadata(&[Nat::from(999_999_999_u64)]);
+        let result = token_metadata(vec![Nat::from(999_999_999_u64)]);
         assert_eq!(result.len(), 1);
         assert!(result[0].is_none());
     }
@@ -402,7 +403,7 @@ mod tests {
     #[test]
     fn metadata_batch_mixed() {
         let deal = store_deal(DealStatus::Funded, test_principal(12), None);
-        let result = token_metadata(&[Nat::from(deal.id), Nat::from(999_999_998_u64)]);
+        let result = token_metadata(vec![Nat::from(deal.id), Nat::from(999_999_998_u64)]);
         assert_eq!(result.len(), 2);
         assert!(result[0].is_some());
         assert!(result[1].is_none());
@@ -414,7 +415,7 @@ mod tests {
     fn owner_of_created_deal() {
         let payer = test_principal(13);
         let deal = store_deal(DealStatus::Created, payer, None);
-        let result = owner_of(&[Nat::from(deal.id)]);
+        let result = owner_of(vec![Nat::from(deal.id)]);
         assert_eq!(result.len(), 1);
         let account = result[0].as_ref().expect("owner should exist");
         assert_eq!(account.owner, payer);
@@ -426,13 +427,13 @@ mod tests {
         let payer = test_principal(14);
         let recip = test_principal(15);
         let deal = store_deal(DealStatus::Settled, payer, Some(recip));
-        let result = owner_of(&[Nat::from(deal.id)]);
+        let result = owner_of(vec![Nat::from(deal.id)]);
         assert_eq!(result[0].as_ref().unwrap().owner, recip);
     }
 
     #[test]
     fn owner_of_unknown_id() {
-        let result = owner_of(&[Nat::from(999_999_997_u64)]);
+        let result = owner_of(vec![Nat::from(999_999_997_u64)]);
         assert!(result[0].is_none());
     }
 
@@ -448,7 +449,7 @@ mod tests {
             owner: payer,
             subaccount: None,
         };
-        let result = balance_of(&[account]);
+        let result = balance_of(vec![account]);
         let balance: u64 = result[0].0.to_string().parse().unwrap();
         assert!(balance >= 2);
     }
@@ -462,7 +463,7 @@ mod tests {
             owner: payer,
             subaccount: Some(vec![1_u8; 32]),
         };
-        let result = balance_of(&[account]);
+        let result = balance_of(vec![account]);
         assert_eq!(result[0], Nat::from(0_u64));
     }
 
@@ -482,7 +483,7 @@ mod tests {
                 subaccount: None,
             },
         ];
-        let result = balance_of(&accounts);
+        let result = balance_of(accounts);
         assert_eq!(result.len(), 2);
         let a_balance: u64 = result[0].0.to_string().parse().unwrap();
         assert!(a_balance >= 1);
@@ -494,7 +495,7 @@ mod tests {
     fn tokens_returns_ids_in_order() {
         let d1 = store_deal(DealStatus::Created, test_principal(20), None);
         let d2 = store_deal(DealStatus::Created, test_principal(20), None);
-        let ids = tokens(None, Some(&Nat::from(500_u64)));
+        let ids = tokens(None, Some(Nat::from(500_u64)));
         assert!(ids.contains(&Nat::from(d1.id)));
         assert!(ids.contains(&Nat::from(d2.id)));
 
@@ -513,7 +514,7 @@ mod tests {
     fn tokens_with_prev_cursor() {
         let d1 = store_deal(DealStatus::Created, test_principal(21), None);
         let d2 = store_deal(DealStatus::Created, test_principal(21), None);
-        let ids = tokens(Some(&Nat::from(d1.id)), Some(&Nat::from(500_u64)));
+        let ids = tokens(Some(Nat::from(d1.id)), Some(Nat::from(500_u64)));
         assert!(!ids.contains(&Nat::from(d1.id)));
         assert!(ids.contains(&Nat::from(d2.id)));
     }
@@ -522,13 +523,13 @@ mod tests {
     fn tokens_respects_take_limit() {
         store_deal(DealStatus::Created, test_principal(22), None);
         store_deal(DealStatus::Created, test_principal(22), None);
-        let ids = tokens(None, Some(&Nat::from(1_u64)));
+        let ids = tokens(None, Some(Nat::from(1_u64)));
         assert_eq!(ids.len(), 1);
     }
 
     #[test]
     fn tokens_empty_when_cursor_past_end() {
-        let ids = tokens(Some(&Nat::from(u64::MAX - 1)), Some(&Nat::from(50_u64)));
+        let ids = tokens(Some(Nat::from(u64::MAX - 1)), Some(Nat::from(50_u64)));
         assert!(ids.is_empty());
     }
 
@@ -545,7 +546,7 @@ mod tests {
             owner,
             subaccount: None,
         };
-        let ids = tokens_of(&account, None, Some(&Nat::from(500_u64)));
+        let ids = tokens_of(account.clone(), None, Some(Nat::from(500_u64)));
         assert!(ids.contains(&Nat::from(d1.id)));
     }
 
@@ -557,7 +558,7 @@ mod tests {
             owner,
             subaccount: Some(vec![1_u8; 32]),
         };
-        let ids = tokens_of(&account, None, Some(&Nat::from(500_u64)));
+        let ids = tokens_of(account, None, Some(Nat::from(500_u64)));
         assert!(ids.is_empty());
     }
 
@@ -571,10 +572,10 @@ mod tests {
             owner,
             subaccount: None,
         };
-        let page1 = tokens_of(&account, None, Some(&Nat::from(1_u64)));
+        let page1 = tokens_of(account.clone(), None, Some(Nat::from(1_u64)));
         assert_eq!(page1.len(), 1);
 
-        let page2 = tokens_of(&account, Some(&page1[0]), Some(&Nat::from(500_u64)));
+        let page2 = tokens_of(account, Some(page1[0].clone()), Some(Nat::from(500_u64)));
         assert!(page2.contains(&Nat::from(d2.id)));
         assert!(!page2.contains(&Nat::from(d1.id)));
     }
@@ -593,7 +594,7 @@ mod tests {
             memo: None,
             created_at_time: None,
         }];
-        let result = transfer(&args);
+        let result = transfer(args);
         assert_eq!(result.len(), 1);
         let resp = result[0].as_ref().expect("response should be present");
         assert!(matches!(resp, Icrc7TransferResponse::Err(_)));

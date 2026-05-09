@@ -1,5 +1,3 @@
-#![expect(clippy::needless_pass_by_value)]
-
 use ic_cdk::api::{msg_caller, time};
 use ic_cdk_macros::{query, update};
 
@@ -44,10 +42,8 @@ pub async fn create_deal(args: CreateDealArgs) -> CreateDealResult {
 /// the payer's consent to `Accepted`. For deals with a known recipient, the
 /// recipient must have consented first.
 #[update(guard = "caller_is_not_anonymous")]
-pub async fn fund_deal(args: FundDealArgs) -> FundDealResult {
-    services::deals::fund(msg_caller(), args.deal_id)
-        .await
-        .into()
+pub async fn fund_deal(FundDealArgs { deal_id }: FundDealArgs) -> FundDealResult {
+    services::deals::fund(msg_caller(), deal_id).await.into()
 }
 
 /// Accepts (claims) a funded deal, releasing the escrowed tokens to the caller.
@@ -57,8 +53,13 @@ pub async fn fund_deal(args: FundDealArgs) -> FundDealResult {
 /// automatically set to `Accepted`. The deal transitions from `Funded` to
 /// `Settled`.
 #[update(guard = "caller_is_not_anonymous")]
-pub async fn accept_deal(args: AcceptDealArgs) -> AcceptDealResult {
-    services::deals::accept(msg_caller(), args.deal_id, time(), args.claim_code)
+pub async fn accept_deal(
+    AcceptDealArgs {
+        deal_id,
+        claim_code,
+    }: AcceptDealArgs,
+) -> AcceptDealResult {
+    services::deals::accept(msg_caller(), deal_id, time(), claim_code)
         .await
         .into()
 }
@@ -68,8 +69,8 @@ pub async fn accept_deal(args: AcceptDealArgs) -> AcceptDealResult {
 /// Only callable after the deal's `expires_at_ns` deadline has passed. The deal
 /// transitions from `Funded` to `Refunded`.
 #[update(guard = "caller_is_not_anonymous")]
-pub async fn reclaim_deal(args: ReclaimDealArgs) -> ReclaimDealResult {
-    services::deals::reclaim(msg_caller(), args.deal_id, time())
+pub async fn reclaim_deal(ReclaimDealArgs { deal_id }: ReclaimDealArgs) -> ReclaimDealResult {
+    services::deals::reclaim(msg_caller(), deal_id, time())
         .await
         .into()
 }
@@ -81,8 +82,8 @@ pub async fn reclaim_deal(args: ReclaimDealArgs) -> ReclaimDealResult {
 /// expiry instead.
 #[update(guard = "caller_is_not_anonymous")]
 #[must_use]
-pub fn cancel_deal(args: CancelDealArgs) -> CancelDealResult {
-    services::deals::cancel(msg_caller(), args.deal_id, time()).into()
+pub fn cancel_deal(CancelDealArgs { deal_id }: CancelDealArgs) -> CancelDealResult {
+    services::deals::cancel(msg_caller(), deal_id, time()).into()
 }
 
 /// Explicitly consents to a deal's terms.
@@ -92,8 +93,8 @@ pub fn cancel_deal(args: CancelDealArgs) -> CancelDealResult {
 /// recipient.
 #[update(guard = "caller_is_not_anonymous")]
 #[must_use]
-pub fn consent_deal(args: ConsentDealArgs) -> ConsentDealResult {
-    services::deals::consent(msg_caller(), args.deal_id, time()).into()
+pub fn consent_deal(ConsentDealArgs { deal_id }: ConsentDealArgs) -> ConsentDealResult {
+    services::deals::consent(msg_caller(), deal_id, time()).into()
 }
 
 /// Rejects a deal's terms. The deal transitions to `Rejected` (terminal).
@@ -102,8 +103,8 @@ pub fn consent_deal(args: ConsentDealArgs) -> ConsentDealResult {
 /// `Rejected` and the deal becomes final.
 #[update(guard = "caller_is_not_anonymous")]
 #[must_use]
-pub fn reject_deal(args: RejectDealArgs) -> RejectDealResult {
-    services::deals::reject(msg_caller(), args.deal_id, time()).into()
+pub fn reject_deal(RejectDealArgs { deal_id }: RejectDealArgs) -> RejectDealResult {
+    services::deals::reject(msg_caller(), deal_id, time()).into()
 }
 
 /// Batch-processes expired deals by refunding escrowed tokens back to their
@@ -133,12 +134,12 @@ pub fn get_deal(deal_id: DealId) -> GetDealResult {
 /// ordered by creation time with pagination support.
 #[query(guard = "caller_is_not_anonymous")]
 #[must_use]
-pub fn list_my_deals(args: ListMyDealsArgs) -> Vec<DealView> {
-    let offset_u64 = args.offset.unwrap_or(0);
-    let offset = usize::try_from(offset_u64).unwrap_or(usize::MAX);
-    let limit_u64 = args.limit.unwrap_or(50).min(100);
-    let limit = usize::try_from(limit_u64).unwrap_or(100);
-    services::deals::list_for_caller(msg_caller(), offset, limit)
+pub fn list_my_deals(ListMyDealsArgs { offset, limit }: ListMyDealsArgs) -> Vec<DealView> {
+    let offset_u64 = offset.unwrap_or(0);
+    let offset_usize = usize::try_from(offset_u64).unwrap_or(usize::MAX);
+    let limit_u64 = limit.unwrap_or(50).min(100);
+    let limit_usize = usize::try_from(limit_u64).unwrap_or(100);
+    services::deals::list_for_caller(msg_caller(), offset_usize, limit_usize)
 }
 
 /// Reduced public view for claim/share-link pages.

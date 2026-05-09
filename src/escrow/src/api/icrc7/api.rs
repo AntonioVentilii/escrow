@@ -1,5 +1,3 @@
-#![expect(clippy::needless_pass_by_value)]
-
 use candid::Nat;
 use ic_cdk_macros::{query, update};
 
@@ -143,7 +141,7 @@ pub fn icrc7_collection_metadata() -> Vec<(String, Value)> {
 #[query]
 #[must_use]
 pub fn icrc7_token_metadata(token_ids: Vec<Nat>) -> Vec<Option<Vec<(String, Value)>>> {
-    services::icrc7::token_metadata(&token_ids)
+    services::icrc7::token_metadata(token_ids)
 }
 
 /// Returns the owner account for each requested token ID.
@@ -154,7 +152,7 @@ pub fn icrc7_token_metadata(token_ids: Vec<Nat>) -> Vec<Option<Vec<(String, Valu
 #[query]
 #[must_use]
 pub fn icrc7_owner_of(token_ids: Vec<Nat>) -> Vec<Option<Account>> {
-    services::icrc7::owner_of(&token_ids)
+    services::icrc7::owner_of(token_ids)
 }
 
 /// Returns the number of deal NFTs owned by each requested account.
@@ -163,7 +161,7 @@ pub fn icrc7_owner_of(token_ids: Vec<Nat>) -> Vec<Option<Account>> {
 #[query]
 #[must_use]
 pub fn icrc7_balance_of(accounts: Vec<Account>) -> Vec<Nat> {
-    services::icrc7::balance_of(&accounts)
+    services::icrc7::balance_of(accounts)
 }
 
 /// Returns a page of token IDs in ascending order.
@@ -173,7 +171,7 @@ pub fn icrc7_balance_of(accounts: Vec<Account>) -> Vec<Nat> {
 #[query]
 #[must_use]
 pub fn icrc7_tokens(prev: Option<Nat>, take: Option<Nat>) -> Vec<Nat> {
-    services::icrc7::tokens(prev.as_ref(), take.as_ref())
+    services::icrc7::tokens(prev, take)
 }
 
 /// Returns a page of token IDs owned by `account`, in ascending order.
@@ -182,7 +180,7 @@ pub fn icrc7_tokens(prev: Option<Nat>, take: Option<Nat>) -> Vec<Nat> {
 #[query]
 #[must_use]
 pub fn icrc7_tokens_of(account: Account, prev: Option<Nat>, take: Option<Nat>) -> Vec<Nat> {
-    services::icrc7::tokens_of(&account, prev.as_ref(), take.as_ref())
+    services::icrc7::tokens_of(account, prev, take)
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +195,7 @@ pub fn icrc7_tokens_of(account: Account, prev: Option<Nat>, take: Option<Nat>) -
 #[update(guard = "caller_is_not_anonymous")]
 #[must_use]
 pub fn icrc7_transfer(args: Vec<Icrc7TransferArg>) -> Vec<Option<Icrc7TransferResponse>> {
-    services::icrc7::transfer(&args)
+    services::icrc7::transfer(args)
 }
 
 // ---------------------------------------------------------------------------
