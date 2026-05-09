@@ -715,7 +715,27 @@ their time.
 Cleaner protocol but worse UX for parties who want to make peace.
 (b) Allow only before any evidence is submitted.
 
-**Decision:** _<TBD>_
+**Decision:** Accept `withdraw_dispute` for v1 — unconditional, not
+gated on this question. Caller must be payer or recipient.
+Restricted to the Evidence phase. `WithdrawDisputeArgs { dispute_id,
+proposal: Option<Vote> }` — `Some(ConcludedCorrectly)` /
+`Some(IncorrectlyConcluded)` records the caller's proposed
+outcome; `None` retracts. `Some(Abstain)` is rejected via
+`EscrowError::ValidationError`. Latest-wins overwrite. Resolution
+fires when both parties' proposals are `Some` and equal — dispute
+moves to `Resolved`, deal moves to `ArbitratedSettled` /
+`ArbitratedRefunded`, arbitrators receive a reduced fee
+(`DisputeConfig::withdraw_fee_pct: u32`, default 25, validator
+`0..=100`). Arbitrator score impact mirrors NoQuorum (only
+`disputes_assigned` updates). Disagreement is silent (both
+proposals stay recorded, no resolution fires; either party can
+call again to change or retract). No new error variants — reuses
+`NotAuthorised` / `InvalidDisputePhase` / `ValidationError`.
+
+Schema rider for batch F: `Dispute` gains
+`payer_withdraw_proposal: Option<Vote>` +
+`recipient_withdraw_proposal: Option<Vote>` (both default `None`).
+`DisputeConfig` gains `withdraw_fee_pct: u32`.
 
 ### Q13. Weighted voting now or v2?
 
@@ -915,6 +935,6 @@ proposed schema (stake field can be added later as `Option<u128>`).
 | Q9  | 2026-05-10 | Evidence window 3 days, voting window 2 days, both admin-tunable; no-quorum fallback refunds payer (`ArbitratedRefunded`). | RFC-001 design review (2026-05-10) |
 | Q10 | 2026-05-10 | Per-deal fee from disputed amount; `bps + min` admin-tunable; equally split among non-abstain voters; NoQuorum pays no fee. Schema refinement: `Dispute.panel: Vec<PanelMember>` replaces `arbitrators` + `votes` for per-arbitrator payout idempotency. | RFC-001 design review (2026-05-10) |
 | Q11 | 2026-05-10 | Schema as proposed; refinement: NoQuorum disputes only update `disputes_assigned` (not `voted` / `with_majority`). | RFC-001 design review (2026-05-10) |
-| Q12 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q12 | 2026-05-10 | Accept `withdraw_dispute` for v1 (unconditional). Evidence-phase only; latest-wins overwrite; `None`-to-retract; resolution fires on matching `Some` proposals; reduced-fee tunable via `withdraw_fee_pct` (default 25). | RFC-001 design review (2026-05-10) |
 | Q13 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
 | Q14 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
