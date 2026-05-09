@@ -15,7 +15,8 @@
 		"did": "./scripts/did.sh && npm run format && npm run lint",
 		"deploy": "dfx deploy --network local --upgrade-unchanged",
 		"deploy:staging": "dfx deploy --network staging --upgrade-unchanged",
-		"deploy:prod": "dfx deploy --ic --upgrade-unchanged"
+		"deploy:prod": "dfx deploy --ic --upgrade-unchanged",
+		"release": "./scripts/release.sh"
 	},
 	"devDependencies": {
 		"@icp-sdk/bindgen": "^0.3.0",
