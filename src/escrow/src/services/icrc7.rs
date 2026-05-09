@@ -176,7 +176,7 @@ pub fn balance_of(accounts: Vec<Account>) -> Vec<Nat> {
 ///
 /// `Option<Nat>` must be owned so the canister interface matches ICRC-7 Candid
 /// decoding (same approach as dfinity/chain-fusion-signer `http_request`).
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 #[must_use]
 pub fn tokens(prev: Option<Nat>, take: Option<Nat>) -> Vec<Nat> {
     let effective_take = effective_take(take.as_ref());
@@ -199,7 +199,7 @@ pub fn tokens(prev: Option<Nat>, take: Option<Nat>) -> Vec<Nat> {
 ///
 /// Owned `Account` / `Option<Nat>` match ICRC-7 Candid method signatures; see
 /// [`tokens`] for the same `needless_pass_by_value` note.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 #[must_use]
 pub fn tokens_of(account: Account, prev: Option<Nat>, take: Option<Nat>) -> Vec<Nat> {
     let effective_take = effective_take(take.as_ref());
