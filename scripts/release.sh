@@ -82,33 +82,8 @@ with open(path, "w") as f:
     f.write(new_content)
 PY
 
-# package.json: top-level "version".
-python3 - "$VERSION" <<'PY'
-import json, sys
-new = sys.argv[1]
-path = "package.json"
-with open(path) as f:
-    data = json.load(f)
-data["version"] = new
-with open(path, "w") as f:
-    json.dump(data, f, indent="\t")
-    f.write("\n")
-PY
-
-# package-lock.json: top-level "version" and the root "" package entry.
-python3 - "$VERSION" <<'PY'
-import json, sys
-new = sys.argv[1]
-path = "package-lock.json"
-with open(path) as f:
-    data = json.load(f)
-data["version"] = new
-if "packages" in data and "" in data["packages"]:
-    data["packages"][""]["version"] = new
-with open(path, "w") as f:
-    json.dump(data, f, indent="\t")
-    f.write("\n")
-PY
+# package.json + package-lock.json in one shot.
+npm version --no-git-tag-version "$VERSION" >/dev/null
 
 # Refresh Cargo.lock for the new workspace version.
 # `cargo check` (without --locked) will update the lockfile; prefer offline so
