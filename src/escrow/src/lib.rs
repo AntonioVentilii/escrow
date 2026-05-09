@@ -18,11 +18,16 @@ use crate::{
                 ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
             },
         },
+        disputes::{
+            params::{ListMyDisputesArgs, OpenDisputeArgs},
+            results::{DisputeView, GetDisputeResult, GetPublicDisputeResult, OpenDisputeResult},
+        },
         reliability::results::ReliabilityView,
     },
     types::{
         arbitrator::ArbitratorProfile,
         deal::DealId,
+        dispute::DisputeId,
         icrc7::{Icrc7TransferArg, Icrc7TransferResponse, SupportedStandard, Value},
         ledger_types::Account,
         state::Config,

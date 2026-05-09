@@ -219,6 +219,62 @@ type DisputeConfig = record {
 	// 25, validator clamps to `0..=100`).
 	withdraw_fee_pct : nat32
 };
+// Outcome of a resolved dispute. Set on the `Dispute` record at finalize
+// time. The mapping to `DealStatus` is:
+//
+// | `DisputeOutcome`                                 | Resulting `DealStatus`     |
+// | ------------------------------------------------ | -------------------------- |
+// | `Settled { … }`                                  | `ArbitratedSettled`        |
+// | `Refunded { … }`                                 | `ArbitratedRefunded`       |
+// | `NoQuorum { … }`                                 | `ArbitratedRefunded` (Q9)  |
+// | `Withdrawn { agreed: ConcludedCorrectly }` (Q12) | `ArbitratedSettled`        |
+// | `Withdrawn { agreed: IncorrectlyConcluded }`     | `ArbitratedRefunded`       |
+type DisputeOutcome = variant {
+	// Majority IC — funds refunded to payer.
+	Refunded : DisputeTally;
+	// Both parties agreed out-of-band on `agreed` (Q12 `withdraw_dispute`).
+	// Arbitrators receive the reduced `withdraw_fee_pct` slice of the fee.
+	Withdrawn : record { agreed : Vote };
+	// Voting deadline reached without enough non-abstain votes (Q9).
+	// Falls back to refunding the payer per the locked Q9 decision.
+	NoQuorum : DisputeTally;
+	// Majority CC — funds released to recipient.
+	Settled : DisputeTally
+};
+// Lifecycle phase of a dispute. The phase advances on a strict timeline
+// driven by `evidence_deadline_ns` / `voting_deadline_ns` (set at
+// `open_dispute` time using the windows in [`DisputeConfig`]).
+type DisputePhase = variant {
+	// Evidence submission window. Both parties + arbitrators may post
+	// evidence; voting is closed.
+	Evidence;
+	// Voting window. Evidence is frozen, arbitrators cast their votes.
+	Voting;
+	// Tally finalised; outcome propagated to the parent `Deal`. Terminal.
+	Resolved
+};
+// Per-outcome vote counts. Mirrors the shape inside
+// `DisputeOutcome::Settled` / `Refunded` / `NoQuorum` so the public view
+// can surface counts independently of the `DisputeOutcome` discriminant.
+type DisputeTally = record { cc : nat32; ic : nat32; abstain : nat32 };
+// Full dispute view returned to authorised callers (parties of the
+// parent deal + arbitrators on the panel). Mirrors the shape of
+// [`crate::types::dispute::Dispute`] one-to-one for simplicity.
+type DisputeView = record {
+	id : nat64;
+	recipient_withdraw_proposal : opt Vote;
+	opened_by : principal;
+	voting_deadline_ns : nat64;
+	opened_at_ns : nat64;
+	evidence : vec Evidence;
+	arbitration_fee : nat;
+	panel : vec PanelMember;
+	phase : DisputePhase;
+	deal_id : nat64;
+	payer_withdraw_proposal : opt Vote;
+	evidence_deadline_ns : nat64;
+	outcome : opt DisputeOutcome
+};
 // Canonical error type returned by all deal endpoints.
 type EscrowError = variant {
 	// The deal has already reached a terminal state (`Settled`, `Refunded`, `Cancelled`, or
@@ -307,6 +363,24 @@ type EscrowError = variant {
 	// ledger fees (Q10). Tiny deals are not disputable.
 	AmountTooSmallForArbitration : record { min : nat }
 };
+// A piece of evidence attached to a dispute.
+//
+// Per Q8, artefacts are stored **off-canister**: the canister only
+// records a URL + SHA-256 commitment + an optional short note. Length
+// limits are enforced at the canister boundary; this struct itself is
+// purely a data carrier.
+type Evidence = record {
+	submitted_at_ns : nat64;
+	submitter : principal;
+	// Free-form note (max 4 KiB at the boundary →
+	// [`EscrowError::EvidenceTooLarge`]).
+	note : opt text;
+	// Off-canister artefact URL (max 2 KiB at the boundary).
+	artefact_url : opt text;
+	// SHA-256 of the off-canister artefact. Always exactly 32 bytes when
+	// `Some` — the validator rejects other lengths.
+	artefact_sha256 : opt blob
+};
 // Arguments for funding a created deal via ICRC-2 `transfer_from`.
 type FundDealArgs = record {
 	// Identifier of the deal to fund.
@@ -318,7 +392,12 @@ type GetClaimableDealResult = variant {
 	Err : EscrowError
 };
 type GetDealResult = variant { Ok : DealView; Err : EscrowError };
+type GetDisputeResult = variant { Ok : DisputeView; Err : EscrowError };
 type GetEscrowAccountResult = variant { Ok : Account; Err : EscrowError };
+type GetPublicDisputeResult = variant {
+	Ok : PublicDisputeView;
+	Err : EscrowError
+};
 // ICRC-7 transfer argument for a single token.
 type Icrc7TransferArg = record {
 	to : Account;
@@ -361,7 +440,57 @@ type ListMyDealsArgs = record {
 	// Maximum number of deals to return. Defaults to `50`.
 	limit : opt nat64
 };
+// Pagination + filter arguments for `list_my_disputes`.
+type ListMyDisputesArgs = record {
+	// Number of disputes to skip (0-based). Defaults to `0`.
+	offset : opt nat64;
+	// Maximum number of disputes to return. Defaults to `50`, capped
+	// at `100`.
+	limit : opt nat64;
+	// Filter by phase. `None` returns disputes in all phases.
+	phase : opt DisputePhase
+};
+// One member of the dispute panel.
+//
+// Mirrors the `Deal.{funded_at_ns, funding_tx, settled_at_ns, payout_tx}`
+// pattern: `paid_at_ns` + `payout_tx` are populated when the per-arbitrator
+// fee transfer succeeds at finalize time, making the fan-out payout
+// replay-safe (the Q10 schema refinement).
+type PanelMember = record {
+	"principal" : principal;
+	// `None` until the arbitrator calls `cast_vote` during the Voting phase.
+	vote : opt Vote;
+	// ICRC-1 ledger block index of the per-arbitrator payout transfer.
+	payout_tx : opt nat;
+	// `None` until the arbitrator's slice of the arbitration fee has been
+	// successfully transferred via the ICRC-1 ledger at finalize.
+	paid_at_ns : opt nat64
+};
 type ProcessExpiredDealsResult = variant { Ok : vec nat64; Err : EscrowError };
+// Reduced public view for status pages (RFC-001 — Candid surface).
+//
+// No party principals, no panel principals, no evidence URLs — just
+// the minimum any authenticated caller needs to render a dispute's
+// progress. Exposing the `deal_id` is intentional (it's already public
+// via the ICRC-7 token mapping); exposing the cc/ic/abstain counts
+// after resolution lets external indexers display tally summaries.
+type PublicDisputeView = record {
+	id : nat64;
+	// Vote counts visible only after the dispute reaches `Resolved`
+	// (per phase-gated info disclosure). `None` while the dispute is
+	// still in `Evidence` / `Voting`.
+	tally : opt DisputeTally;
+	// Number of arbitrators on the panel (no principals).
+	panel_size : nat32;
+	voting_deadline_ns : nat64;
+	// Number of evidence submissions (no URLs).
+	evidence_count : nat32;
+	phase : DisputePhase;
+	deal_id : nat64;
+	evidence_deadline_ns : nat64;
+	// Outcome — set when phase is `Resolved`.
+	outcome : opt DisputeOutcome
+};
 // Arguments for `register_arbitrator`.
 //
 // Idempotent — calling `register_arbitrator` for a principal that is
@@ -409,6 +538,19 @@ type Vec = vec record {
 		Text : text;
 		Array : vec Value
 	}
+};
+// A single arbitrator's vote on a dispute, or — at the canister boundary —
+// the outcome a party proposes via `withdraw_dispute` (Q12). The validator
+// at the boundary rejects `Abstain` for out-of-band proposals.
+type Vote = variant {
+	// "Incorrectly Concluded" — refund payer.
+	IncorrectlyConcluded;
+	// Arbitrator abstained. Counts toward `disputes_assigned` but never
+	// toward `disputes_voted` / `disputes_with_majority` for the
+	// reliability score (Q11).
+	Abstain;
+	// "Concluded Correctly" — release funds to recipient.
+	ConcludedCorrectly
 };
 service : () -> {
 	// Accepts (claims) a funded deal, releasing the escrowed tokens to the caller.
@@ -468,8 +610,14 @@ service : () -> {
 	//
 	// Only the payer or the bound recipient may query a deal's full details.
 	get_deal : (nat64) -> (GetDealResult) query;
+	// Returns the full dispute view. Caller must be a party of the parent
+	// deal or an arbitrator on the panel.
+	get_dispute : (nat64) -> (GetDisputeResult) query;
 	// Returns the escrow `Account` (canister principal + deal subaccount) for a deal.
 	get_escrow_account : (nat64) -> (GetEscrowAccountResult) query;
+	// Returns a reduced public view of a dispute (no party / panel
+	// principals, no evidence URLs). Any non-anonymous caller may query.
+	get_public_dispute : (nat64) -> (GetPublicDisputeResult) query;
 	// Returns the reliability score for any principal.
 	//
 	// This is a public query — any authenticated caller may check any
@@ -562,6 +710,15 @@ service : () -> {
 	// Lists all deals where the caller is either the payer or the recipient,
 	// ordered by creation time with pagination support.
 	list_my_deals : (ListMyDealsArgs) -> (vec DealView) query;
+	// Lists disputes the caller is involved with (party of the parent
+	// deal or arbitrator on the panel), reverse-chronological by
+	// `opened_at_ns`.
+	list_my_disputes : (ListMyDisputesArgs) -> (vec DisputeView) query;
+	// Opens a new dispute on a `Funded` deal. Caller must be `payer` or
+	// `recipient`. Funds remain in the escrow subaccount; the deal
+	// transitions `Funded → Disputed`. The expiry sweep skips
+	// `Disputed` deals (per Q2 contract).
+	open_dispute : (FundDealArgs) -> (GetDisputeResult);
 	// Batch-processes expired deals by refunding escrowed tokens back to their
 	// payers.
 	//

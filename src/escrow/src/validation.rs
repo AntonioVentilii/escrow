@@ -292,6 +292,61 @@ pub fn validate_can_reject(deal: &Deal, caller: Principal) -> Result<bool, Escro
     resolve_caller_role(deal, caller)
 }
 
+// ---------------------------------------------------------------------------
+// Dispute validators (RFC-001 step 4)
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if the deal already has an open dispute (idempotent
+/// success — the caller short-circuits and returns the existing dispute
+/// view). Returns `Err` if opening a dispute is not allowed.
+///
+/// `open_dispute` is allowed when:
+/// - The deal exists in `Funded` state.
+/// - Both `payer` and `recipient` are bound (Q3 — tip flows are not disputable).
+/// - The caller is `payer` or `recipient` (Q2 — symmetric).
+/// - The deal has not yet expired.
+/// - No dispute is already attached to the deal.
+pub fn validate_can_open_dispute(
+    deal: &Deal,
+    caller: Principal,
+    now_ns: u64,
+) -> Result<bool, EscrowError> {
+    if deal.recipient.is_none() || deal.payer.is_none() {
+        return Err(EscrowError::DisputeRequiresBoundRecipient);
+    }
+
+    // Caller authorization — payer or recipient only.
+    let caller_is_party = deal.payer == Some(caller) || deal.recipient == Some(caller);
+    if !caller_is_party {
+        return Err(EscrowError::NotAuthorised);
+    }
+
+    match deal.status {
+        // Idempotent success — short-circuit at the service layer.
+        DealStatus::Disputed => return Ok(true),
+        DealStatus::Funded => {}
+        _ => {
+            return Err(EscrowError::InvalidState {
+                expected: "Funded".to_owned(),
+                actual: format!("{:?}", deal.status),
+            })
+        }
+    }
+
+    if deal.dispute.is_some() {
+        return Err(EscrowError::DisputeAlreadyExists);
+    }
+
+    // Expiry-at-open check: the auto-refund sweep skips Disputed deals
+    // (Q2 contract), so we must not let a dispute open after the
+    // expiry-claim window has already closed in the recipient's favour.
+    if deal.expires_at_ns <= now_ns {
+        return Err(EscrowError::Expired);
+    }
+
+    Ok(false)
+}
+
 fn resolve_caller_role(deal: &Deal, caller: Principal) -> Result<bool, EscrowError> {
     if deal.payer == Some(caller) {
         Ok(true)

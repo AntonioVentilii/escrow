@@ -1,0 +1,65 @@
+use ic_cdk::api::{msg_caller, time};
+use ic_cdk_macros::{query, update};
+
+use super::{
+    params::{ListMyDisputesArgs, OpenDisputeArgs},
+    results::{DisputeView, GetDisputeResult, GetPublicDisputeResult, OpenDisputeResult},
+};
+use crate::{guards::caller_is_not_anonymous, services, types::dispute::DisputeId};
+
+// ---------------------------------------------------------------------------
+// Update methods (RFC-001 step 4)
+// ---------------------------------------------------------------------------
+
+/// Opens a new dispute on a `Funded` deal. Caller must be `payer` or
+/// `recipient`. Funds remain in the escrow subaccount; the deal
+/// transitions `Funded → Disputed`. The expiry sweep skips
+/// `Disputed` deals (per Q2 contract).
+#[update(guard = "caller_is_not_anonymous")]
+pub async fn open_dispute(OpenDisputeArgs { deal_id }: OpenDisputeArgs) -> OpenDisputeResult {
+    services::disputes::open(msg_caller(), deal_id, time())
+        .await
+        .into()
+}
+
+// ---------------------------------------------------------------------------
+// Query methods (RFC-001 step 4)
+// ---------------------------------------------------------------------------
+
+/// Returns the full dispute view. Caller must be a party of the parent
+/// deal or an arbitrator on the panel.
+#[query(guard = "caller_is_not_anonymous")]
+#[must_use]
+pub fn get_dispute(dispute_id: DisputeId) -> GetDisputeResult {
+    services::disputes::get(msg_caller(), dispute_id).into()
+}
+
+/// Returns a reduced public view of a dispute (no party / panel
+/// principals, no evidence URLs). Any non-anonymous caller may query.
+#[query(guard = "caller_is_not_anonymous")]
+#[must_use]
+pub fn get_public_dispute(dispute_id: DisputeId) -> GetPublicDisputeResult {
+    services::disputes::get_public(dispute_id).into()
+}
+
+/// Lists disputes the caller is involved with (party of the parent
+/// deal or arbitrator on the panel), reverse-chronological by
+/// `opened_at_ns`.
+#[query(guard = "caller_is_not_anonymous")]
+#[must_use]
+pub fn list_my_disputes(
+    ListMyDisputesArgs {
+        offset,
+        limit,
+        phase,
+    }: ListMyDisputesArgs,
+) -> Vec<DisputeView> {
+    services::disputes::list_for_caller(
+        msg_caller(),
+        &ListMyDisputesArgs {
+            offset,
+            limit,
+            phase,
+        },
+    )
+}
