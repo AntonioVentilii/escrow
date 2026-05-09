@@ -9,6 +9,8 @@ use crate::{
 const MAX_TITLE_LEN: u32 = 200;
 const MAX_NOTE_LEN: u32 = 1000;
 const MAX_ACTIVE_DEALS_PER_PRINCIPAL: u32 = 50;
+/// Max byte length of an arbitrator's self-declared bio (RFC-001 Q4).
+pub const MAX_ARBITRATOR_BIO_LEN: u32 = 1024;
 
 /// ~500 years in nanoseconds — the practical u64 ceiling.
 const MAX_EXPIRY_WINDOW_NS: u64 = 500 * 365 * 24 * 60 * 60 * 1_000_000_000;
@@ -31,6 +33,18 @@ pub fn validate_create(amount: u128, expires_at_ns: u64, now_ns: u64) -> Result<
     }
     if expires_at_ns.saturating_sub(now_ns) > MAX_EXPIRY_WINDOW_NS {
         return Err(EscrowError::ExpiryTooFar);
+    }
+    Ok(())
+}
+
+/// Enforces the arbitrator-bio length cap (RFC-001 Q4).
+pub fn validate_arbitrator_bio(bio: Option<&str>) -> Result<(), EscrowError> {
+    if let Some(b) = bio {
+        if b.len() > MAX_ARBITRATOR_BIO_LEN as usize {
+            return Err(EscrowError::ValidationError(format!(
+                "bio exceeds {MAX_ARBITRATOR_BIO_LEN} bytes",
+            )));
+        }
     }
     Ok(())
 }

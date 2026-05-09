@@ -9,6 +9,51 @@ type AcceptDealArgs = record {
 };
 type AcceptDealResult = variant { Ok : DealView; Err : EscrowError };
 type Account = record { owner : principal; subaccount : opt blob };
+// Public profile of a registered arbitrator.
+//
+// Score-related fields follow the Q11 rules:
+//
+// | Outcome              | Voter type              | `assigned` | `voted` | `with_majority` |
+// | -------------------- | ----------------------- | ---------- | ------- | --------------- |
+// | `Settled` / `Refunded` | non-abstain w/ majority | +1         | +1      | +1              |
+// | `Settled` / `Refunded` | non-abstain vs majority | +1         | +1      | +0              |
+// | `Settled` / `Refunded` | abstain                 | +1         | +0      | +0              |
+// | `NoQuorum` (Q9)      | any (incl. non-abstain) | +1         | +0      | +0              |
+// | `Withdrawn` (Q12)    | any                     | +1         | +0      | +0              |
+//
+// `score` is computed via [`ArbitratorProfile::compute_score`] and is
+// `None` until `disputes_voted >= MIN_VOTES_FOR_SCORE`.
+type ArbitratorProfile = record {
+	// Plain-text introduction (max 1 KiB, validated at the boundary).
+	bio : opt text;
+	status : ArbitratorStatus;
+	"principal" : principal;
+	registered_at_ns : nat64;
+	// Total disputes the arbitrator was selected for.
+	disputes_assigned : nat32;
+	// 0–100 reliability score, or `None` until enough scored votes
+	// accumulate (`disputes_voted >= MIN_VOTES_FOR_SCORE`).
+	score : opt nat32;
+	// Disputes the arbitrator submitted a non-abstain vote on, excluding
+	// `NoQuorum` and `Withdrawn` outcomes (per Q11's refinement).
+	disputes_voted : nat32;
+	// Disputes where the arbitrator's non-abstain vote matched the
+	// eventual majority. `NoQuorum` / `Withdrawn` outcomes never
+	// increment this counter.
+	disputes_with_majority : nat32
+};
+// Lifecycle status of an arbitrator. Transitions:
+//
+// ```text
+// (unregistered) ──register──▶ Active ──admin──▶ Suspended
+// │
+// └──self──▶ Deregistered (terminal)
+// ```
+//
+// `Suspended` and `Deregistered` arbitrators cannot be selected for new
+// disputes, but in-flight assignments are honoured (a non-vote counts as
+// `Vote::Abstain` at finalize time per Q5).
+type ArbitratorStatus = variant { Deregistered; Active; Suspended };
 // Arguments for cancelling an unfunded deal.
 type CancelDealArgs = record {
 	// Identifier of the deal to cancel.
@@ -139,6 +184,10 @@ type DealView = record {
 	token_ledger : principal;
 	// Nanosecond UTC timestamp after which the deal expires.
 	expires_at_ns : nat64
+};
+type DeregisterArbitratorResult = variant {
+	Ok : ArbitratorProfile;
+	Err : EscrowError
 };
 // Admin-tunable dispute configuration. Lives nested in [`crate::types::state::Config`].
 //
@@ -292,6 +341,19 @@ type Icrc7TransferError = variant {
 // Explicit response variant for `icrc7_transfer` to avoid the generic
 // fallback name in the generated Candid interface.
 type Icrc7TransferResponse = variant { Ok : nat; Err : Icrc7TransferError };
+// Pagination + filter arguments for `list_arbitrators`.
+type ListArbitratorsArgs = record {
+	// Filter by status. `None` returns all statuses.
+	status : opt ArbitratorStatus;
+	// Number of arbitrators to skip (0-based). Defaults to `0`.
+	offset : opt nat64;
+	// Maximum number of arbitrators to return. Defaults to `50`, capped
+	// at `100`.
+	limit : opt nat64;
+	// Filter by minimum reliability score. Arbitrators with `score = None`
+	// are included only when `min_score` is `None`.
+	min_score : opt nat32
+};
 // Pagination arguments for listing the caller's deals.
 type ListMyDealsArgs = record {
 	// Number of deals to skip (0-based). Defaults to `0`.
@@ -300,6 +362,19 @@ type ListMyDealsArgs = record {
 	limit : opt nat64
 };
 type ProcessExpiredDealsResult = variant { Ok : vec nat64; Err : EscrowError };
+// Arguments for `register_arbitrator`.
+//
+// Idempotent — calling `register_arbitrator` for a principal that is
+// already registered returns the existing profile rather than erroring
+// (per RFC-001 Q4 decision). The `bio` is updated on re-registration.
+type RegisterArbitratorArgs = record {
+	// Plain-text introduction (max 1 KiB at the canister boundary).
+	bio : opt text
+};
+type RegisterArbitratorResult = variant {
+	Ok : ArbitratorProfile;
+	Err : EscrowError
+};
 // Public view of a principal's reliability score.
 type ReliabilityView = record {
 	// Total concluded deals (positive + counterparty rejections).
@@ -369,6 +444,10 @@ service : () -> {
 	// `DealView`. This code must be included in QR / share links so that an
 	// unbound recipient can later claim the deal.
 	create_deal : (CreateDealArgs) -> (AcceptDealResult);
+	// Self-deregisters the caller's arbitrator profile. In-flight assignments
+	// are honoured — a non-vote from a deregistered arbitrator counts as
+	// `Vote::Abstain` at finalize time (RFC-001 Q5).
+	deregister_arbitrator : () -> (DeregisterArbitratorResult);
 	// Funds a previously created deal by transferring tokens from the payer's
 	// account into the deal's escrow subaccount via ICRC-2 `transfer_from`.
 	//
@@ -376,6 +455,10 @@ service : () -> {
 	// the payer's consent to `Accepted`. For deals with a known recipient, the
 	// recipient must have consented first.
 	fund_deal : (FundDealArgs) -> (FundDealResult);
+	// Returns the arbitrator profile for `principal`, or `None` if the
+	// principal hasn't registered. Public read; any non-anonymous caller
+	// may query any principal.
+	get_arbitrator : (principal) -> (opt ArbitratorProfile) query;
 	// Reduced public view for claim/share-link pages.
 	// Returns limited info (no payer, no claim code, no internal fields). Any
 	// authenticated caller may query this — authorization is intentionally open
@@ -469,6 +552,13 @@ service : () -> {
 	icrc7_transfer : (vec Icrc7TransferArg) -> (vec opt Icrc7TransferResponse);
 	// Returns the transaction deduplication window. Currently `None`.
 	icrc7_tx_window : () -> (opt nat) query;
+	// Lists registered arbitrators with optional `status` and `min_score`
+	// filters and pagination.
+	//
+	// Destructured at the signature so clippy's `needless_pass_by_value` is
+	// satisfied — Candid decodes into owned values, then we hand the
+	// re-assembled struct to the service by reference.
+	list_arbitrators : (ListArbitratorsArgs) -> (vec ArbitratorProfile) query;
 	// Lists all deals where the caller is either the payer or the recipient,
 	// ordered by creation time with pagination support.
 	list_my_deals : (ListMyDealsArgs) -> (vec DealView) query;
@@ -483,6 +573,10 @@ service : () -> {
 	// Only callable after the deal's `expires_at_ns` deadline has passed. The deal
 	// transitions from `Funded` to `Refunded`.
 	reclaim_deal : (FundDealArgs) -> (GetDealResult);
+	// Self-registers the caller as an arbitrator. Idempotent — re-registration
+	// returns the existing profile (with the new bio if supplied) and
+	// reactivates a previously deregistered profile.
+	register_arbitrator : (RegisterArbitratorArgs) -> (RegisterArbitratorResult);
 	// Rejects a deal's terms. The deal transitions to `Rejected` (terminal).
 	//
 	// The caller must be the payer or recipient. Their consent is set to

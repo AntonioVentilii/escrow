@@ -3,6 +3,10 @@ use ic_cdk::{export_candid, init, post_upgrade, pre_upgrade};
 
 use crate::{
     api::{
+        arbitrators::{
+            params::{ListArbitratorsArgs, RegisterArbitratorArgs},
+            results::{DeregisterArbitratorResult, RegisterArbitratorResult},
+        },
         deals::{
             params::{
                 AcceptDealArgs, CancelDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs,
@@ -17,6 +21,7 @@ use crate::{
         reliability::results::ReliabilityView,
     },
     types::{
+        arbitrator::ArbitratorProfile,
         deal::DealId,
         icrc7::{Icrc7TransferArg, Icrc7TransferResponse, SupportedStandard, Value},
         ledger_types::Account,

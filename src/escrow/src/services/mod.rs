@@ -1,3 +1,4 @@
+pub mod arbitrators;
 pub mod deals;
 pub mod expiry;
 pub mod housekeeping;
