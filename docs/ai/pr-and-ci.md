@@ -139,8 +139,9 @@ configured); always run `npm run format` locally first.
 | `release.yml` | release       | Triggered on tag push from `npm run release`.               |
 
 If your change is doc-only, the `format` and `lint` jobs still run
-because they cover the whole repo. The `tests` workflow is doc-only
-trivial.
+because they cover the whole repo. The `tests` workflow runs too,
+but a doc-only change can't break it (no Rust source touched), so it
+passes trivially.
 
 ## 6. After CI fails
 

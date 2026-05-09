@@ -45,8 +45,8 @@ under [`.agents/workflows/`](../../.agents/workflows/):
 - `.claude/rules/*.md` — short Claude-only quick-reference cards.
   Defer to the matching `docs/ai/**` page; only Claude-specific tweaks
   live there.
-- `.agents/workflows/*.md` — operational runbooks (e.g. local + staging
-  - prod deploy).
+- `.agents/workflows/*.md` — operational runbooks (e.g. local /
+  staging / prod deploy).
 
 If two pages disagree, the page under `docs/ai/` wins (see the
 [truth hierarchy](./governance.md#truth-hierarchy)).

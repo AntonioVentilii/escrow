@@ -287,6 +287,11 @@ extend them rather than duplicating setup boilerplate.
   `npm run did` regen + a doc comment + a test that triggers it.
 - Catching an error and silently swallowing it — propagate via `?` or
   map to a typed variant.
-- A timer / `set_timer_interval` that doesn't have a re-entrancy guard
-  (the existing one in `housekeeping.rs` uses `PROCESSING` set —
-  follow the pattern).
+- A timer / `set_timer_interval` that doesn't have a re-entrancy
+  guard. The existing one in `services/housekeeping.rs` uses a
+  thread-local `SWEEP_RUNNING: Cell<bool>` flag plus an RAII
+  `SweepGuard` that resets the flag on drop — follow that pattern.
+  (Note: the per-deal lock `PROCESSING: BTreeSet<DealId>` in
+  `memory.rs` is a different mechanism — it serialises concurrent
+  async flows on the **same deal** via `try_acquire_lock` /
+  `release_lock`, used by the deal services, not by the sweep.)

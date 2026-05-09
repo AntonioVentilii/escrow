@@ -38,7 +38,7 @@ The canister is published as `v0.0.3` on staging
 
 ---
 
-## 2. The 10 commandments (read before every change)
+## 2. Core rules (read before every change)
 
 1. **Always idiomatic.** Match the conventions of the surrounding Rust —
    `Result<T, EscrowError>` for fallible work, `with_deal` / `with_deals`
@@ -48,8 +48,8 @@ The canister is published as `v0.0.3` on staging
    No "while I'm here" edits.
 3. **Always small.** Prefer 5 small PRs over 1 big PR. Recent merged
    history is the model: `chore: bump version to 0.0.3`,
-   `fix(clippy): restore allow_attributes = deny`, `ci(release): add
-Release workflow`.
+   `fix(clippy): restore allow_attributes = deny`,
+   `ci(release): add Release workflow`.
 4. **Always reusable.** Before adding a helper, search `services/`,
    `validation.rs`, `ledger.rs`, `subaccounts.rs`, `guards.rs`. Extend
    what's there.
@@ -117,23 +117,17 @@ new tag and adapts the call sites.
 
 ## 5. Governance & meta
 
-- **Truth hierarchy** (highest wins on conflict):
-  1. **Code** (`src/**`, `scripts/**`) — current state of the world.
-  2. **CI** ([`.github/workflows/**`](./.github/workflows/)) — non-negotiable
-     checks.
-  3. **CODEOWNERS** ([`.github/CODEOWNERS`](./.github/CODEOWNERS)) — review
-     routing.
-  4. **`escrow.did`** — the public Candid interface. Backward-compat is a
-     hard contract.
-  5. [`docs/ai/governance.md`](./docs/ai/governance.md) — policies & boundaries.
-  6. This file (`AGENTS.md`) — universal entry.
-  7. Tool-specific layers ([`CLAUDE.md`](./CLAUDE.md),
-     `.claude/rules/`, `.cursor/rules/`,
-     `.github/copilot-instructions.md`) — never contradict the above.
-- **RFCs** for substantive design decisions. The dispute / arbitration
-  flow is the first one — see
-  [`docs/rfcs/0001-dispute-resolution.md`](./docs/rfcs/0001-dispute-resolution.md)
-  (when published; tracked separately from this scaffold).
+- **Truth hierarchy.** When two sources disagree, the higher one wins
+  — full ladder lives in
+  [`docs/ai/governance.md#truth-hierarchy`](./docs/ai/governance.md#truth-hierarchy).
+  Briefly: code > CI workflows > CODEOWNERS > `escrow.did` >
+  `docs/ai/**` (this scaffold) > active RFCs > `AGENTS.md` >
+  tool-specific layers (`CLAUDE.md`, `.claude/rules/`, …).
+- **RFCs** for substantive design decisions. Process documented in
+  [`docs/ai/governance.md#rfc-workflow`](./docs/ai/governance.md#rfc-workflow);
+  filed RFCs live under [`docs/rfcs/`](./docs/rfcs/). The dispute /
+  arbitration flow is the first one — tracked separately from this
+  scaffold.
 - **Auto-adapting docs.** When a PR introduces a new pattern, convention,
   shared helper, error variant, or workflow, the agent **MUST** update
   the relevant `docs/ai/**` file in the same PR. See

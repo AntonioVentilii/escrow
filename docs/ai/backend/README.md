@@ -9,7 +9,7 @@ Read it once per session.
 ## Pre-flight checklist (every change)
 
 - [ ] I read [`AGENTS.md`](../../../AGENTS.md) and the
-      [10 commandments](../../../AGENTS.md#2-the-10-commandments-read-before-every-change).
+      [core rules](../../../AGENTS.md#2-core-rules-read-before-every-change).
 - [ ] I know which folder my code belongs in — see
       [`structure.md`](./structure.md).
 - [ ] My code follows [`patterns.md`](./patterns.md): `Result<T, EscrowError>` returns,

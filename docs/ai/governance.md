@@ -55,7 +55,7 @@ before declaring done.
 
 Before opening / merging, self-review against:
 
-- [10 commandments](../../AGENTS.md#2-the-10-commandments-read-before-every-change)
+- [core rules](../../AGENTS.md#2-core-rules-read-before-every-change)
 - [PR conventions](./pr-and-ci.md)
 - [`backend/patterns.md`](./backend/patterns.md) — flag unguarded state
   mutations, missing `Result` returns, missing idempotency, missing

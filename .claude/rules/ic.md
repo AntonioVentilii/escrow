@@ -54,8 +54,12 @@ Rust types via `ic-cdk`'s `export_candid!` macro at the bottom of
 - Every timestamp field uses the `_ns` suffix.
 - The expiry sweep runs every 5 minutes via
   `ic_cdk_timers::set_timer_interval` (see `services/housekeeping.rs`).
-  It uses a re-entrancy guard (`PROCESSING` set in `memory.rs`) so
-  concurrent sweeps don't double-refund.
+  It uses a thread-local `SWEEP_RUNNING: Cell<bool>` flag + RAII
+  `SweepGuard` so concurrent sweeps don't double-refund.
+- The per-deal lock `PROCESSING: BTreeSet<DealId>` in `memory.rs`
+  (`try_acquire_lock` / `release_lock`) is a different mechanism —
+  it serialises concurrent async flows on the **same deal**. Use it
+  in deal services, not in timers.
 
 ## Randomness
 

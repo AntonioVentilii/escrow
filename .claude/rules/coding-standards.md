@@ -4,7 +4,7 @@
 >
 > - Folder taxonomy + naming: [`docs/ai/backend/structure.md`](../../docs/ai/backend/structure.md)
 > - Patterns: [`docs/ai/backend/patterns.md`](../../docs/ai/backend/patterns.md)
-> - 10 commandments: [`AGENTS.md`](../../AGENTS.md#2-the-10-commandments-read-before-every-change)
+> - Core rules: [`AGENTS.md`](../../AGENTS.md#2-core-rules-read-before-every-change)
 >
 > This card is a Claude-only summary. If it disagrees with the docs
 > above, the docs above win.
