@@ -778,7 +778,15 @@ revisit after observing real disputes.
 - (d) lets us collect data before committing. Cheap to defer because
   the schema doesn't change.
 
-**Decision:** _<TBD>_
+**Decision:** Simple majority (greater of `cc` / `ic`) in v1;
+weighted voting deferred to a future RFC. Q11's score schema is
+already in v1, so the v2 switch is a service-level change with no
+schema migration. Avoids double-counting the score (already used by
+Q5's selection-weighting — combining selection + vote weighting
+concentrates power dangerously in established arbitrators) and
+keeps the protocol Sybil-resistant in v1 (a single high-score
+account is capped at "1 vote"). Matches the spec's "in future
+releases" framing in `Product.docx`.
 
 ### Q14. Competency / subject-matter tags
 
@@ -821,7 +829,23 @@ Adds a category taxonomy decision and a fallback algorithm.
   registration) that may not be worth it before the rest of the
   flow is battle-tested.
 
-**Decision:** _<TBD>_
+**Decision:** Skip entirely for v1 (alt a). **No** `tags:
+Vec<String>` on `ArbitratorProfile`; **no** `category:
+Option<String>` on `Deal`. Diverges from the RFC's "schema in v1,
+behaviour in v2" current proposal. Reasons: (a) self-declared tags
+without a verification mechanic (KYC, certifications, on-chain
+reputation primitive) are signal noise — an arbitrator can claim
+any tag, and selection bias on noise is worse than no bias; (b)
+public Candid fields carry permanent maintenance cost regardless
+of use; (c) "schema only" leaves fossil fields and selection-bias
+logic that's useless until enough new data accumulates. Backward-
+compat preserved either way: when competency-based selection has a
+real design, it lands as one focused RFC + impl PR with the schema
+and the behaviour together. Aligns with `AGENTS.md` core rule 11
+("Don't overengineer. A 10x engineer ships the smallest correct
+change"). The `services::arbitrators::select_panel` doc comment
+should mention competency-based selection bias is a v2 RFC away —
+keeps the door open without leaving a half-built thing.
 
 ## Implementation plan
 
@@ -936,5 +960,5 @@ proposed schema (stake field can be added later as `Option<u128>`).
 | Q10 | 2026-05-10 | Per-deal fee from disputed amount; `bps + min` admin-tunable; equally split among non-abstain voters; NoQuorum pays no fee. Schema refinement: `Dispute.panel: Vec<PanelMember>` replaces `arbitrators` + `votes` for per-arbitrator payout idempotency. | RFC-001 design review (2026-05-10) |
 | Q11 | 2026-05-10 | Schema as proposed; refinement: NoQuorum disputes only update `disputes_assigned` (not `voted` / `with_majority`). | RFC-001 design review (2026-05-10) |
 | Q12 | 2026-05-10 | Accept `withdraw_dispute` for v1 (unconditional). Evidence-phase only; latest-wins overwrite; `None`-to-retract; resolution fires on matching `Some` proposals; reduced-fee tunable via `withdraw_fee_pct` (default 25). | RFC-001 design review (2026-05-10) |
-| Q13 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
-| Q14 | _<TBD>_  | _<TBD>_    | _<TBD>_ |
+| Q13 | 2026-05-10 | Simple majority in v1; weighted voting deferred to a future RFC (Q11 schema is already in place, so v2 is service-level only). | RFC-001 design review (2026-05-10) |
+| Q14 | 2026-05-10 | Skip entirely for v1 — no `tags` on `ArbitratorProfile`, no `category` on `Deal`. Diverges from RFC draft's "schema-only in v1"; competency lands as one RFC + impl PR when a real verification mechanic exists. | RFC-001 design review (2026-05-10) |
