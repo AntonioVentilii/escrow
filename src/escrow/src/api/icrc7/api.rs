@@ -1,3 +1,5 @@
+#![expect(clippy::needless_pass_by_value)]
+
 use candid::Nat;
 use ic_cdk_macros::{query, update};
 
@@ -139,7 +141,6 @@ pub fn icrc7_collection_metadata() -> Vec<(String, Value)> {
 /// `escrow:payer`, `escrow:amount`, `escrow:token_ledger`, and other
 /// deal-specific fields. Unknown IDs produce `None` in the result vector.
 #[query]
-#[expect(clippy::needless_pass_by_value)]
 #[must_use]
 pub fn icrc7_token_metadata(token_ids: Vec<Nat>) -> Vec<Option<Vec<(String, Value)>>> {
     services::icrc7::token_metadata(&token_ids)
@@ -151,7 +152,6 @@ pub fn icrc7_token_metadata(token_ids: Vec<Nat>) -> Vec<Option<Vec<(String, Valu
 /// except `Settled`, where the recipient becomes the owner.
 /// Unknown IDs produce `None`.
 #[query]
-#[expect(clippy::needless_pass_by_value)]
 #[must_use]
 pub fn icrc7_owner_of(token_ids: Vec<Nat>) -> Vec<Option<Account>> {
     services::icrc7::owner_of(&token_ids)
@@ -161,7 +161,6 @@ pub fn icrc7_owner_of(token_ids: Vec<Nat>) -> Vec<Option<Account>> {
 ///
 /// Accounts with a non-default subaccount always return `0`.
 #[query]
-#[expect(clippy::needless_pass_by_value)]
 #[must_use]
 pub fn icrc7_balance_of(accounts: Vec<Account>) -> Vec<Nat> {
     services::icrc7::balance_of(&accounts)
@@ -172,7 +171,6 @@ pub fn icrc7_balance_of(accounts: Vec<Account>) -> Vec<Nat> {
 /// `prev` is the last token ID the caller received (exclusive cursor).
 /// `take` limits the page size (defaults to 50, capped at 500).
 #[query]
-#[expect(clippy::needless_pass_by_value)]
 #[must_use]
 pub fn icrc7_tokens(prev: Option<Nat>, take: Option<Nat>) -> Vec<Nat> {
     services::icrc7::tokens(prev.as_ref(), take.as_ref())
@@ -182,7 +180,6 @@ pub fn icrc7_tokens(prev: Option<Nat>, take: Option<Nat>) -> Vec<Nat> {
 ///
 /// See [`icrc7_tokens`] for cursor / take semantics.
 #[query]
-#[expect(clippy::needless_pass_by_value)]
 #[must_use]
 pub fn icrc7_tokens_of(account: Account, prev: Option<Nat>, take: Option<Nat>) -> Vec<Nat> {
     services::icrc7::tokens_of(&account, prev.as_ref(), take.as_ref())
@@ -198,7 +195,6 @@ pub fn icrc7_tokens_of(account: Account, prev: Option<Nat>, take: Option<Nat>) -
 /// operations (`accept_deal`, `reclaim_deal`, …), not via direct ICRC-7
 /// transfers.
 #[update(guard = "caller_is_not_anonymous")]
-#[expect(clippy::needless_pass_by_value)]
 #[must_use]
 pub fn icrc7_transfer(args: Vec<Icrc7TransferArg>) -> Vec<Option<Icrc7TransferResponse>> {
     services::icrc7::transfer(&args)
