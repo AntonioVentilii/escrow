@@ -19,10 +19,13 @@ use crate::{
             },
         },
         disputes::{
-            params::{CastVoteArgs, ListMyDisputesArgs, OpenDisputeArgs, SubmitEvidenceArgs},
+            params::{
+                CastVoteArgs, FinalizeDisputeArgs, ListMyDisputesArgs, OpenDisputeArgs,
+                SubmitEvidenceArgs,
+            },
             results::{
-                CastVoteResult, DisputeView, GetDisputeResult, GetPublicDisputeResult,
-                OpenDisputeResult, SubmitEvidenceResult,
+                CastVoteResult, DisputeView, FinalizeDisputeResult, GetDisputeResult,
+                GetPublicDisputeResult, OpenDisputeResult, SubmitEvidenceResult,
             },
         },
         reliability::results::ReliabilityView,

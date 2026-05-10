@@ -389,6 +389,12 @@ type Evidence = record {
 	// `Some` — the validator rejects other lengths.
 	artefact_sha256 : opt blob
 };
+// Arguments for `finalize_dispute` (RFC-001 step 7).
+//
+// Anyone (non-anonymous) can call. Idempotent — calling again after
+// successful resolution returns the resolved view; calling when not
+// yet past `voting_deadline_ns` returns `InvalidDisputePhase`.
+type FinalizeDisputeArgs = record { dispute_id : nat64 };
 // Arguments for funding a created deal via ICRC-2 `transfer_from`.
 type FundDealArgs = record {
 	// Identifier of the deal to fund.
@@ -620,6 +626,13 @@ service : () -> {
 	// are honoured — a non-vote from a deregistered arbitrator counts as
 	// `Vote::Abstain` at finalize time (RFC-001 Q5).
 	deregister_arbitrator : () -> (DeregisterArbitratorResult);
+	// Force-finalises a dispute past its `voting_deadline_ns`. Anyone
+	// (non-anonymous) can call. Idempotent — replays after a successful
+	// finalize return the resolved view; partial replays (some
+	// arbitrator transfers succeeded, others trapped) skip already-paid
+	// panel members. Triggers tally + outcome propagation + ledger
+	// transfers + arbitrator score updates. RFC-001 step 7.
+	finalize_dispute : (FinalizeDisputeArgs) -> (CastVoteResult);
 	// Funds a previously created deal by transferring tokens from the payer's
 	// account into the deal's escrow subaccount via ICRC-2 `transfer_from`.
 	//

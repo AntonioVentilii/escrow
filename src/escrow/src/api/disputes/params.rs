@@ -46,6 +46,16 @@ pub struct CastVoteArgs {
     pub vote: Vote,
 }
 
+/// Arguments for `finalize_dispute` (RFC-001 step 7).
+///
+/// Anyone (non-anonymous) can call. Idempotent — calling again after
+/// successful resolution returns the resolved view; calling when not
+/// yet past `voting_deadline_ns` returns `InvalidDisputePhase`.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct FinalizeDisputeArgs {
+    pub dispute_id: DisputeId,
+}
+
 /// Pagination + filter arguments for `list_my_disputes`.
 #[derive(CandidType, Deserialize, Clone, Debug, Default)]
 pub struct ListMyDisputesArgs {

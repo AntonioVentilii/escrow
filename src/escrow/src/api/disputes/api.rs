@@ -2,10 +2,12 @@ use ic_cdk::api::{msg_caller, time};
 use ic_cdk_macros::{query, update};
 
 use super::{
-    params::{CastVoteArgs, ListMyDisputesArgs, OpenDisputeArgs, SubmitEvidenceArgs},
+    params::{
+        CastVoteArgs, FinalizeDisputeArgs, ListMyDisputesArgs, OpenDisputeArgs, SubmitEvidenceArgs,
+    },
     results::{
-        CastVoteResult, DisputeView, GetDisputeResult, GetPublicDisputeResult, OpenDisputeResult,
-        SubmitEvidenceResult,
+        CastVoteResult, DisputeView, FinalizeDisputeResult, GetDisputeResult,
+        GetPublicDisputeResult, OpenDisputeResult, SubmitEvidenceResult,
     },
 };
 use crate::{guards::caller_is_not_anonymous, services, types::dispute::DisputeId};
@@ -58,6 +60,21 @@ pub fn submit_evidence(
 #[must_use]
 pub fn cast_vote(CastVoteArgs { dispute_id, vote }: CastVoteArgs) -> CastVoteResult {
     services::disputes::cast_vote(msg_caller(), dispute_id, vote, time()).into()
+}
+
+/// Force-finalises a dispute past its `voting_deadline_ns`. Anyone
+/// (non-anonymous) can call. Idempotent — replays after a successful
+/// finalize return the resolved view; partial replays (some
+/// arbitrator transfers succeeded, others trapped) skip already-paid
+/// panel members. Triggers tally + outcome propagation + ledger
+/// transfers + arbitrator score updates. RFC-001 step 7.
+#[update(guard = "caller_is_not_anonymous")]
+pub async fn finalize_dispute(
+    FinalizeDisputeArgs { dispute_id }: FinalizeDisputeArgs,
+) -> FinalizeDisputeResult {
+    services::disputes::finalize(dispute_id, time())
+        .await
+        .into()
 }
 
 // ---------------------------------------------------------------------------

@@ -4,9 +4,10 @@
 //! `submit_evidence` / `cast_vote` / `finalize_dispute` /
 //! `withdraw_dispute` land in subsequent steps.
 
-use core::cmp::Reverse;
+use core::cmp::{Ordering, Reverse};
 
 use candid::Principal;
+use ic_cdk::api::canister_self;
 
 use crate::{
     api::{
@@ -23,9 +24,13 @@ use crate::{
         with_disputes, CONFIG,
     },
     types::{
-        arbitrator::ArbitratorStatus,
+        arbitrator::{ArbitratorProfile, ArbitratorStatus, MIN_VOTES_FOR_SCORE},
         deal::{Deal, DealId, DealStatus},
-        dispute::{Dispute, DisputeConfig, DisputeId, DisputePhase, Evidence, PanelMember, Vote},
+        dispute::{
+            Dispute, DisputeConfig, DisputeId, DisputeOutcome, DisputePhase, Evidence, PanelMember,
+            Vote,
+        },
+        ledger_types::Account,
     },
     validation,
 };
@@ -336,6 +341,319 @@ pub fn cast_vote(
     .ok_or(EscrowError::DisputeNotFound)?;
 
     Ok(DisputeView::from(&updated))
+}
+
+// ---------------------------------------------------------------------------
+// Finalization (RFC-001 step 7)
+// ---------------------------------------------------------------------------
+
+/// Pure tally function — applies Q7 quorum + tie rules to a panel
+/// snapshot and returns the resulting `DisputeOutcome`.
+///
+/// - Non-voted panel members are counted as `Abstain` at finalize time (Q5: deregistered /
+///   suspended / silent arbitrators contribute no non-abstain vote).
+/// - Quorum = `floor(panel_size / 2) + 1` non-abstain votes.
+/// - If quorum is met: majority by greater of `cc` / `ic`. Ties resolve to `NoQuorum` (Q7).
+/// - Below quorum or on a tie: `NoQuorum`.
+#[must_use]
+pub fn tally_votes(panel: &[PanelMember], panel_size: u32) -> DisputeOutcome {
+    let mut cc: u32 = 0;
+    let mut ic: u32 = 0;
+    let mut explicit_abstain: u32 = 0;
+    let mut not_voted: u32 = 0;
+
+    for member in panel {
+        match &member.vote {
+            Some(Vote::ConcludedCorrectly) => cc = cc.saturating_add(1),
+            Some(Vote::IncorrectlyConcluded) => ic = ic.saturating_add(1),
+            Some(Vote::Abstain) => explicit_abstain = explicit_abstain.saturating_add(1),
+            None => not_voted = not_voted.saturating_add(1),
+        }
+    }
+
+    let abstain = explicit_abstain.saturating_add(not_voted);
+    let non_abstain = cc.saturating_add(ic);
+    let quorum_required = (panel_size / 2).saturating_add(1);
+
+    if non_abstain < quorum_required {
+        return DisputeOutcome::NoQuorum { cc, ic, abstain };
+    }
+    match cc.cmp(&ic) {
+        Ordering::Greater => DisputeOutcome::Settled { cc, ic, abstain },
+        Ordering::Less => DisputeOutcome::Refunded { cc, ic, abstain },
+        // Tie (Q7): no majority → NoQuorum fallthrough.
+        Ordering::Equal => DisputeOutcome::NoQuorum { cc, ic, abstain },
+    }
+}
+
+/// Returns whether a `DisputeOutcome` corresponds to a panel that
+/// reached a binding majority (i.e. arbitrators who voted with the
+/// majority should have their `disputes_with_majority` counter
+/// incremented per Q11).
+#[must_use]
+fn outcome_majority_vote(outcome: &DisputeOutcome) -> Option<Vote> {
+    match outcome {
+        DisputeOutcome::Settled { .. } => Some(Vote::ConcludedCorrectly),
+        DisputeOutcome::Refunded { .. } => Some(Vote::IncorrectlyConcluded),
+        DisputeOutcome::NoQuorum { .. } | DisputeOutcome::Withdrawn { .. } => None,
+    }
+}
+
+/// Maps a `DisputeOutcome` to the resulting `DealStatus` per Q1 + Q9 + Q12.
+fn outcome_to_deal_status(outcome: &DisputeOutcome) -> DealStatus {
+    match outcome {
+        DisputeOutcome::Settled { .. } => DealStatus::ArbitratedSettled,
+        DisputeOutcome::Refunded { .. } | DisputeOutcome::NoQuorum { .. } => {
+            DealStatus::ArbitratedRefunded
+        }
+        DisputeOutcome::Withdrawn { agreed } => match agreed {
+            Vote::ConcludedCorrectly => DealStatus::ArbitratedSettled,
+            Vote::IncorrectlyConcluded | Vote::Abstain => DealStatus::ArbitratedRefunded,
+        },
+    }
+}
+
+/// Finalises a dispute past its `voting_deadline_ns` (RFC-001 step 7).
+///
+/// Anyone (non-anonymous) can call. Idempotent — replays after a
+/// successful finalize return the resolved view; partial replays
+/// (e.g. some arbitrator transfers succeeded, others traped) skip
+/// the already-paid panel members via `paid_at_ns`.
+///
+/// Sequence:
+///
+/// 1. Load + auth-free dispute / deal lookups.
+/// 2. Phase gate: must be past `voting_deadline_ns` (else `InvalidDisputePhase`). `Resolved`
+///    returns the existing view.
+/// 3. Tally votes (`tally_votes`).
+/// 4. Per-arbitrator fan-out: for each non-abstain voter that hasn't been paid yet, transfer
+///    `fee_per_arbitrator` from the escrow subaccount; record `paid_at_ns` + `payout_tx`.
+///    `NoQuorum` pays no arbitrator fees (per Q9).
+/// 5. Update arbitrator score counters (Q11): bump `disputes_voted` for non-abstain voters; bump
+///    `disputes_with_majority` for those whose vote matched the outcome. `NoQuorum` / `Withdrawn`
+///    outcomes only updated `disputes_assigned` (already bumped at `open_dispute` time); they don't
+///    touch `voted` / `with_majority`.
+/// 6. Prevailing party transfer: send `prevailing_payout` from the escrow subaccount to recipient
+///    (`Settled`) or payer (`Refunded` / `NoQuorum`).
+/// 7. Mark deal as `ArbitratedSettled` / `ArbitratedRefunded`.
+/// 8. Mark dispute as `Resolved` with the outcome.
+pub async fn finalize(dispute_id: DisputeId, now_ns: u64) -> Result<DisputeView, EscrowError> {
+    let dispute = load_dispute(dispute_id).ok_or(EscrowError::DisputeNotFound)?;
+    let deal = get_deal(dispute.deal_id).ok_or(EscrowError::NotFound)?;
+
+    // Idempotent: already resolved → just return the view.
+    if matches!(dispute.phase, DisputePhase::Resolved) {
+        return Ok(DisputeView::from(&dispute));
+    }
+
+    if now_ns < dispute.voting_deadline_ns {
+        return Err(EscrowError::InvalidDisputePhase {
+            expected: "Voting (deadline passed)".to_owned(),
+            actual: format!("{:?} (voting still open)", dispute.phase),
+        });
+    }
+
+    // Per-deal lock — finalize is async + multiple-step ledger calls.
+    let deal_id = deal.id;
+    try_acquire_lock(deal_id)?;
+    let result = finalize_locked(dispute, deal, now_ns).await;
+    release_lock(deal_id);
+    result
+}
+
+#[expect(clippy::too_many_lines)]
+async fn finalize_locked(
+    dispute: Dispute,
+    deal: Deal,
+    now_ns: u64,
+) -> Result<DisputeView, EscrowError> {
+    let outcome = tally_votes(
+        &dispute.panel,
+        u32::try_from(dispute.panel.len()).unwrap_or(0),
+    );
+    let majority = outcome_majority_vote(&outcome);
+
+    // Compute the per-arbitrator slice. NoQuorum and Withdrawn pay no
+    // arbitrator fee (Q9 / Q12 — Q12 has its own reduced-fee path that
+    // lands in step 9, but the tally-derived outcomes here never produce
+    // Withdrawn).
+    let pays_arbitrators = !matches!(outcome, DisputeOutcome::NoQuorum { .. });
+    let non_abstain_count = dispute
+        .panel
+        .iter()
+        .filter(|m| {
+            matches!(
+                m.vote,
+                Some(Vote::ConcludedCorrectly | Vote::IncorrectlyConcluded)
+            )
+        })
+        .count();
+
+    let fee_per_arbitrator = if pays_arbitrators && non_abstain_count > 0 {
+        dispute.arbitration_fee / (non_abstain_count as u128)
+    } else {
+        0
+    };
+
+    // Query the ledger fee once — used for both per-arbitrator transfers
+    // and for the prevailing-party-payout calculation (Q10 refinement #1).
+    let ledger_fee = ledger::fee(deal.token_ledger).await?;
+
+    // 4 + 5: per-arbitrator fan-out + score update.
+    if pays_arbitrators && fee_per_arbitrator > 0 {
+        let escrow_account = deal.escrow_subaccount.clone();
+        let token_ledger = deal.token_ledger;
+        let dispute_id = dispute.id;
+
+        // We can't borrow `dispute.panel` across an await — clone the slice
+        // so we can iterate. Per-member state mutations go through
+        // `with_dispute` so storage stays the source of truth on retry.
+        let panel_snapshot: Vec<PanelMember> = dispute.panel.clone();
+        for member in panel_snapshot {
+            // Skip already-paid (replay safety).
+            if member.paid_at_ns.is_some() {
+                continue;
+            }
+            // Pay only non-abstain voters.
+            if !matches!(
+                member.vote,
+                Some(Vote::ConcludedCorrectly | Vote::IncorrectlyConcluded)
+            ) {
+                continue;
+            }
+            let arb_account = Account {
+                owner: member.principal,
+                subaccount: None,
+            };
+            let block_index = ledger::transfer(
+                token_ledger,
+                Some(escrow_account.clone()),
+                arb_account,
+                fee_per_arbitrator,
+            )
+            .await?;
+            with_dispute(dispute_id, |d| {
+                if let Some(m) = d.panel.iter_mut().find(|m| m.principal == member.principal) {
+                    m.paid_at_ns = Some(now_ns);
+                    m.payout_tx = Some(block_index);
+                }
+            });
+        }
+    }
+
+    // Update arbitrator reliability counters (Q11).
+    apply_score_updates(&dispute.panel, majority.as_ref());
+
+    // 6: prevailing party payout.
+    let total_arbitrator_outflow = (non_abstain_count as u128).saturating_mul(fee_per_arbitrator);
+    let total_ledger_fees = if pays_arbitrators {
+        (non_abstain_count as u128).saturating_mul(ledger_fee)
+    } else {
+        0
+    };
+    let prevailing_payout = deal
+        .amount
+        .saturating_sub(total_arbitrator_outflow)
+        .saturating_sub(total_ledger_fees)
+        // Subtract one more ledger fee for the prevailing-party transfer itself.
+        .saturating_sub(ledger_fee);
+
+    // If there's nothing left to pay, the dispute is structurally broken —
+    // surface it loudly rather than emit a malformed deal record.
+    if prevailing_payout == 0 {
+        return Err(EscrowError::AmountTooSmallForArbitration {
+            min: deal.amount.saturating_add(1),
+        });
+    }
+
+    let prevailing_principal = match outcome {
+        DisputeOutcome::Settled { .. } => deal.recipient.ok_or(EscrowError::ValidationError(
+            "Settled outcome but no recipient bound".to_owned(),
+        ))?,
+        DisputeOutcome::Refunded { .. } | DisputeOutcome::NoQuorum { .. } => {
+            deal.payer.ok_or(EscrowError::PayerNotSet)?
+        }
+        DisputeOutcome::Withdrawn { .. } => {
+            return Err(EscrowError::ValidationError(
+                "finalize cannot resolve a Withdrawn dispute (use withdraw_dispute)".to_owned(),
+            ));
+        }
+    };
+    let prevailing_account = Account {
+        owner: prevailing_principal,
+        subaccount: None,
+    };
+    let prevailing_block_index = ledger::transfer(
+        deal.token_ledger,
+        Some(deal.escrow_subaccount.clone()),
+        prevailing_account,
+        prevailing_payout,
+    )
+    .await?;
+
+    // 7 + 8: status flip on deal + dispute. Done in a single
+    // with_dispute / with_deal pair to keep storage consistent.
+    let canister = canister_self();
+    let new_deal_status = outcome_to_deal_status(&outcome);
+    with_deal(deal.id, |d| {
+        d.status = new_deal_status.clone();
+        d.updated_at_ns = Some(now_ns);
+        d.updated_by = Some(canister);
+        match new_deal_status {
+            DealStatus::ArbitratedSettled => {
+                d.settled_at_ns = Some(now_ns);
+                d.payout_tx = Some(prevailing_block_index);
+            }
+            DealStatus::ArbitratedRefunded => {
+                d.refunded_at_ns = Some(now_ns);
+                d.refund_tx = Some(prevailing_block_index);
+            }
+            _ => {}
+        }
+    });
+    let resolved = with_dispute(dispute.id, |d| {
+        d.phase = DisputePhase::Resolved;
+        d.outcome = Some(outcome.clone());
+        d.clone()
+    })
+    .ok_or(EscrowError::DisputeNotFound)?;
+
+    Ok(DisputeView::from(&resolved))
+}
+
+/// Applies Q11 score-counter updates after finalize. The rule table:
+///
+/// | Outcome class                | Voter type            | `voted` | `with_majority` |
+/// | ---------------------------- | --------------------- | ------- | --------------- |
+/// | Majority outcome (CC or IC)  | non-abstain w/ majority | +1      | +1              |
+/// | Majority outcome (CC or IC)  | non-abstain vs majority | +1      | +0              |
+/// | Majority outcome (CC or IC)  | abstain / not voted   | +0      | +0              |
+/// | `NoQuorum` / `Withdrawn`     | any                   | +0      | +0              |
+///
+/// `disputes_assigned` is bumped at `open_dispute` time; this function
+/// only updates the post-finalize counters.
+fn apply_score_updates(panel: &[PanelMember], majority: Option<&Vote>) {
+    let Some(majority_vote) = majority else {
+        // NoQuorum / Withdrawn — no signal, no updates.
+        return;
+    };
+    for member in panel {
+        if !matches!(
+            member.vote,
+            Some(Vote::ConcludedCorrectly | Vote::IncorrectlyConcluded)
+        ) {
+            continue;
+        }
+        let voted_with_majority = member.vote.as_ref() == Some(majority_vote);
+        with_arbitrator(member.principal, |a| {
+            a.disputes_voted = a.disputes_voted.saturating_add(1);
+            if voted_with_majority {
+                a.disputes_with_majority = a.disputes_with_majority.saturating_add(1);
+            }
+            a.score = ArbitratorProfile::compute_score(a.disputes_voted, a.disputes_with_majority);
+        });
+    }
+    let _ = MIN_VOTES_FOR_SCORE; // Touch to keep import in scope when unused above.
 }
 
 /// Submits a piece of evidence on a dispute (RFC-001 step 5).
@@ -1285,6 +1603,164 @@ mod tests {
         let arb = make_arbitrator(199, None, ArbitratorStatus::Active);
         let err = cast_vote(arb, 999_999, super::Vote::Abstain, 200).unwrap_err();
         assert_eq!(err, EscrowError::DisputeNotFound);
+    }
+
+    // --- tally_votes (RFC-001 step 7, Q7 quorum + tie semantics) ---
+
+    use super::tally_votes;
+    use crate::types::dispute::DisputeOutcome;
+
+    fn pm(vote: Option<super::Vote>) -> PanelMember {
+        PanelMember {
+            principal: principal(0),
+            vote,
+            paid_at_ns: None,
+            payout_tx: None,
+        }
+    }
+
+    #[test]
+    fn tally_two_cc_one_ic_settles() {
+        let panel = vec![
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::IncorrectlyConcluded)),
+        ];
+        match tally_votes(&panel, 3) {
+            DisputeOutcome::Settled { cc, ic, abstain } => {
+                assert_eq!((cc, ic, abstain), (2, 1, 0));
+            }
+            other => panic!("wrong outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tally_two_cc_one_abstain_settles_with_quorum() {
+        let panel = vec![
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::Abstain)),
+        ];
+        match tally_votes(&panel, 3) {
+            DisputeOutcome::Settled { cc, ic, abstain } => {
+                assert_eq!((cc, ic, abstain), (2, 0, 1));
+            }
+            other => panic!("wrong outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tally_two_ic_refunds() {
+        let panel = vec![
+            pm(Some(super::Vote::IncorrectlyConcluded)),
+            pm(Some(super::Vote::IncorrectlyConcluded)),
+            pm(Some(super::Vote::Abstain)),
+        ];
+        match tally_votes(&panel, 3) {
+            DisputeOutcome::Refunded { cc, ic, abstain } => {
+                assert_eq!((cc, ic, abstain), (0, 2, 1));
+            }
+            other => panic!("wrong outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tally_one_cc_one_ic_one_abstain_no_quorum() {
+        let panel = vec![
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::IncorrectlyConcluded)),
+            pm(Some(super::Vote::Abstain)),
+        ];
+        match tally_votes(&panel, 3) {
+            DisputeOutcome::NoQuorum { cc, ic, abstain } => {
+                assert_eq!((cc, ic, abstain), (1, 1, 1));
+            }
+            other => panic!("wrong outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tally_one_cc_two_abstain_no_quorum() {
+        let panel = vec![
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::Abstain)),
+            pm(Some(super::Vote::Abstain)),
+        ];
+        match tally_votes(&panel, 3) {
+            DisputeOutcome::NoQuorum { cc, ic, abstain } => {
+                assert_eq!((cc, ic, abstain), (1, 0, 2));
+            }
+            other => panic!("wrong outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tally_three_abstain_no_quorum() {
+        let panel = vec![
+            pm(Some(super::Vote::Abstain)),
+            pm(Some(super::Vote::Abstain)),
+            pm(Some(super::Vote::Abstain)),
+        ];
+        match tally_votes(&panel, 3) {
+            DisputeOutcome::NoQuorum { cc, ic, abstain } => {
+                assert_eq!((cc, ic, abstain), (0, 0, 3));
+            }
+            other => panic!("wrong outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tally_non_voted_treated_as_abstain() {
+        // Per Q5: a non-vote (vote = None) from a deregistered or
+        // suspended arbitrator counts as Abstain at finalize time.
+        let panel = vec![
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(None),
+        ];
+        match tally_votes(&panel, 3) {
+            DisputeOutcome::Settled { cc, ic, abstain } => {
+                // The None counts toward `abstain` rolled up.
+                assert_eq!((cc, ic, abstain), (2, 0, 1));
+            }
+            other => panic!("wrong outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tally_panel_5_two_two_one_no_quorum() {
+        // Panel of 5: quorum = 3 non-abstain. 2-2-1 with one abstain
+        // → tie → NoQuorum.
+        let panel = vec![
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::IncorrectlyConcluded)),
+            pm(Some(super::Vote::IncorrectlyConcluded)),
+            pm(Some(super::Vote::Abstain)),
+        ];
+        match tally_votes(&panel, 5) {
+            DisputeOutcome::NoQuorum { cc, ic, abstain } => {
+                assert_eq!((cc, ic, abstain), (2, 2, 1));
+            }
+            other => panic!("wrong outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tally_panel_5_three_two_settles() {
+        let panel = vec![
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::ConcludedCorrectly)),
+            pm(Some(super::Vote::IncorrectlyConcluded)),
+            pm(Some(super::Vote::IncorrectlyConcluded)),
+        ];
+        match tally_votes(&panel, 5) {
+            DisputeOutcome::Settled { cc, ic, abstain } => {
+                assert_eq!((cc, ic, abstain), (3, 2, 0));
+            }
+            other => panic!("wrong outcome: {other:?}"),
+        }
     }
 
     // --- assigned counter sanity (single-arbitrator case) ---

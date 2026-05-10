@@ -68,6 +68,11 @@ pub fn deal_count() -> u64 {
 }
 
 /// Counts non-terminal deals created by `principal`.
+///
+/// Terminal statuses (RFC-001 step 7 update) are now: `Settled`,
+/// `Refunded`, `Cancelled`, `Rejected`, `ArbitratedSettled`,
+/// `ArbitratedRefunded`. `Disputed` is **non-terminal** — funds are
+/// still in escrow pending resolution.
 #[must_use]
 pub fn count_active_deals_for(principal: Principal) -> u32 {
     DEALS.with(|d| {
@@ -82,6 +87,8 @@ pub fn count_active_deals_for(principal: Principal) -> u32 {
                                 | DealStatus::Refunded
                                 | DealStatus::Cancelled
                                 | DealStatus::Rejected
+                                | DealStatus::ArbitratedSettled
+                                | DealStatus::ArbitratedRefunded
                         )
                 })
                 .count(),
@@ -105,7 +112,14 @@ pub fn compute_reliability_for(principal: Principal) -> (u32, u32) {
                 continue;
             }
             match deal.status {
-                DealStatus::Settled | DealStatus::Refunded => {
+                // RFC-001 step 7: arbitrated outcomes count as positive
+                // for reliability, just like their unilateral counterparts.
+                // Successful resolution via arbitration still represents
+                // a "deal that ended in a fund-release decision".
+                DealStatus::Settled
+                | DealStatus::Refunded
+                | DealStatus::ArbitratedSettled
+                | DealStatus::ArbitratedRefunded => {
                     positive = positive.saturating_add(1);
                     concluded = concluded.saturating_add(1);
                 }
