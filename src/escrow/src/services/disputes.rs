@@ -656,6 +656,46 @@ fn apply_score_updates(panel: &[PanelMember], majority: Option<&Vote>) {
     let _ = MIN_VOTES_FOR_SCORE; // Touch to keep import in scope when unused above.
 }
 
+/// Scans all open disputes whose `voting_deadline_ns` has passed and
+/// returns up to `limit` of their IDs. Used by the auto-finalize
+/// sweep (RFC-001 step 8). Pure read — no mutation.
+#[must_use]
+pub fn due_for_finalization(limit: u32, now_ns: u64) -> Vec<DisputeId> {
+    with_disputes(|map| {
+        map.values()
+            .filter(|d| {
+                !matches!(d.phase, DisputePhase::Resolved) && d.voting_deadline_ns <= now_ns
+            })
+            .take(limit as usize)
+            .map(|d| d.id)
+            .collect()
+    })
+}
+
+/// Auto-finalizes up to `limit` disputes whose voting deadline has
+/// passed (RFC-001 step 8). Returns the IDs that resolved successfully.
+///
+/// Mirrors `services::expiry::process_expired` shape: scan, then
+/// per-id `try_acquire_lock` + `finalize`. Errors per-dispute are
+/// swallowed so a single failed dispute doesn't block the sweep —
+/// failed disputes will be retried on the next cycle.
+pub async fn auto_finalize_due(limit: u32, now_ns: u64) -> Vec<DisputeId> {
+    let due = due_for_finalization(limit, now_ns);
+    let mut processed = Vec::new();
+
+    for dispute_id in due {
+        // `finalize` itself acquires the per-deal lock; we call it and
+        // swallow the per-dispute error so a single failed dispute (e.g.
+        // ledger is temporarily unreachable) doesn't block the sweep —
+        // it gets retried on the next cycle.
+        if finalize(dispute_id, now_ns).await.is_ok() {
+            processed.push(dispute_id);
+        }
+    }
+
+    processed
+}
+
 /// Submits a piece of evidence on a dispute (RFC-001 step 5).
 ///
 /// Allowed during the `Evidence` phase only. Caller must be a party of

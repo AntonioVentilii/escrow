@@ -52,6 +52,7 @@ pub mod validation;
 #[init]
 fn init() {
     services::housekeeping::start_expiry_sweep();
+    services::housekeeping::start_dispute_sweep();
 }
 
 #[pre_upgrade]
@@ -64,6 +65,7 @@ fn post_upgrade() {
     memory::restore_state();
 
     services::housekeeping::start_expiry_sweep();
+    services::housekeeping::start_dispute_sweep();
 }
 
 export_candid!();
