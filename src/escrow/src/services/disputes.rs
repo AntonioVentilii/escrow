@@ -24,7 +24,7 @@ use crate::{
         with_disputes, CONFIG,
     },
     types::{
-        arbitrator::{ArbitratorProfile, ArbitratorStatus, MIN_VOTES_FOR_SCORE},
+        arbitrator::{ArbitratorProfile, ArbitratorStatus},
         deal::{Deal, DealId, DealStatus},
         dispute::{
             Dispute, DisputeConfig, DisputeId, DisputeOutcome, DisputePhase, Evidence, PanelMember,
@@ -167,16 +167,26 @@ pub async fn open(
 
     let cfg = load_dispute_config();
 
-    // Fee math: validator already checks Funded + bound; here we ensure the
-    // amount can cover at least the configured fee with at least 1 unit
-    // remaining for the prevailing party. Per-arbitrator ledger fees are
-    // absorbed at finalize — the validator can't know the exact ICRC-1
-    // fee without an inter-canister call, so the amount-too-small check
-    // here stays conservative.
+    // Fee + ledger-fee headroom. The deal must have enough to cover:
+    //   - The arbitration fee itself.
+    //   - One ICRC-1 fee per arbitrator transfer (worst case = full panel takes their slice).
+    //   - One ICRC-1 fee for the prevailing-party transfer.
+    // If the deal can't cover all of that with at least 1 unit left
+    // for the prevailing party, finalize would later subtract it down
+    // to zero and either trap or leave funds stuck. Reject up front.
+    //
+    // Querying `ledger::fee` is async, but `open` is async anyway —
+    // failing fast here is cheaper than recovering from a stuck
+    // `Disputed` deal later.
     let fee = compute_arbitration_fee(deal.amount, &cfg);
-    if deal.amount <= fee {
+    let ledger_fee = ledger::fee(deal.token_ledger).await?;
+    let total_required = fee
+        .checked_add(u128::from(cfg.panel_size).saturating_mul(ledger_fee))
+        .and_then(|v| v.checked_add(ledger_fee))
+        .unwrap_or(u128::MAX);
+    if deal.amount <= total_required {
         return Err(EscrowError::AmountTooSmallForArbitration {
-            min: fee.saturating_add(1),
+            min: total_required.saturating_add(1),
         });
     }
 
@@ -663,7 +673,6 @@ fn apply_score_updates(panel: &[PanelMember], majority: Option<&Vote>) {
             a.score = ArbitratorProfile::compute_score(a.disputes_voted, a.disputes_with_majority);
         });
     }
-    let _ = MIN_VOTES_FOR_SCORE; // Touch to keep import in scope when unused above.
 }
 
 /// Submits or retracts a party's out-of-band withdrawal proposal.
@@ -711,11 +720,28 @@ pub async fn withdraw(
         return Err(EscrowError::NotAuthorised);
     }
 
-    // Phase gate: Evidence only.
+    // Phase + deadline gate. The stored `phase` is lazily advanced
+    // (it only flips to `Voting` on the first `cast_vote`), so a
+    // dispute with no votes can sit in `Evidence` indefinitely past
+    // both deadlines. We must reject withdrawals based on the *real*
+    // time-based phase, not just the stored phase, otherwise withdrawal
+    // would race with `finalize` after the voting deadline has passed.
+    if matches!(dispute.phase, DisputePhase::Resolved) {
+        return Err(EscrowError::InvalidDisputePhase {
+            expected: "Evidence (within deadline)".to_owned(),
+            actual: "Resolved".to_owned(),
+        });
+    }
     if !matches!(dispute.phase, DisputePhase::Evidence) {
         return Err(EscrowError::InvalidDisputePhase {
-            expected: "Evidence".to_owned(),
+            expected: "Evidence (within deadline)".to_owned(),
             actual: format!("{:?}", dispute.phase),
+        });
+    }
+    if now_ns >= dispute.evidence_deadline_ns {
+        return Err(EscrowError::InvalidDisputePhase {
+            expected: "Evidence (within deadline)".to_owned(),
+            actual: "Evidence (deadline passed)".to_owned(),
         });
     }
 
