@@ -9,14 +9,20 @@ pub const MIN_VOTES_FOR_SCORE: u32 = 5;
 /// Lifecycle status of an arbitrator. Transitions:
 ///
 /// ```text
-/// (unregistered) ──register──▶ Active ──admin──▶ Suspended
-///                                  │
-///                                  └──self──▶ Deregistered (terminal)
+/// (unregistered) ──admin_register──▶ Active ──admin──▶ Suspended
+///                                       │                │
+///                                       └──self──▶ Deregistered ◀──admin──┘
+///                                                       │
+///                                                       └──admin_register──▶ Active (reactivation)
 /// ```
 ///
-/// `Suspended` and `Deregistered` arbitrators cannot be selected for new
-/// disputes, but in-flight assignments are honoured (a non-vote counts as
-/// `Vote::Abstain` at finalize time).
+/// `Suspended` and `Deregistered` arbitrators cannot be selected for
+/// new disputes, but in-flight assignments are honoured — a non-vote
+/// from a non-Active panel member counts as `Vote::Abstain` at
+/// finalize time. Both statuses are recoverable: admin can flip the
+/// arbitrator back to `Active` via `admin_set_arbitrator_status`, and
+/// an `admin_register_arbitrator` call on a `Deregistered` profile
+/// reactivates it (idempotent).
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum ArbitratorStatus {
     Active,
@@ -43,12 +49,18 @@ pub enum ArbitratorStatus {
 ///
 /// `score` is computed via [`ArbitratorProfile::compute_score`] and is
 /// `None` until `disputes_voted >= MIN_VOTES_FOR_SCORE`.
+///
+/// Human-readable description (name, jurisdiction, languages, contact,
+/// etc.) is intentionally **not** stored on-canister — it lives in the
+/// consuming app's off-chain directory keyed by `principal`. The
+/// canister only carries data its own logic actually reads.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct ArbitratorProfile {
     pub principal: Principal,
     pub registered_at_ns: u64,
-    /// Plain-text introduction (max 1 KiB, validated at the boundary).
-    pub bio: Option<String>,
+    /// The controller principal that registered this arbitrator. Audit
+    /// trail for the curated registration model.
+    pub registered_by: Principal,
     /// Total disputes the arbitrator was selected for.
     pub disputes_assigned: u32,
     /// Disputes the arbitrator submitted a non-abstain vote on, excluding
@@ -139,7 +151,7 @@ mod tests {
         let profile = ArbitratorProfile {
             principal: Principal::from_slice(&[42]),
             registered_at_ns: 100,
-            bio: Some("hello".to_owned()),
+            registered_by: Principal::from_slice(&[1]),
             disputes_assigned: 7,
             disputes_voted: 6,
             disputes_with_majority: 4,
@@ -149,6 +161,7 @@ mod tests {
         let bytes = Encode!(&profile).expect("encode");
         let decoded: ArbitratorProfile = Decode!(&bytes, ArbitratorProfile).expect("decode");
         assert_eq!(decoded.principal, profile.principal);
+        assert_eq!(decoded.registered_by, Principal::from_slice(&[1]));
         assert_eq!(decoded.disputes_assigned, 7);
         assert_eq!(decoded.score, Some(66));
         assert_eq!(decoded.status, ArbitratorStatus::Active);

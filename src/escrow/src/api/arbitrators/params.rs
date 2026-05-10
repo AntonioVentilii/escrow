@@ -2,17 +2,6 @@ use candid::{CandidType, Deserialize};
 
 use crate::types::arbitrator::ArbitratorStatus;
 
-/// Arguments for `register_arbitrator`.
-///
-/// Idempotent — calling `register_arbitrator` for a principal that is
-/// already registered returns the existing profile rather than erroring
-/// The `bio` is updated on re-registration.
-#[derive(CandidType, Deserialize, Clone, Debug, Default)]
-pub struct RegisterArbitratorArgs {
-    /// Plain-text introduction (max 1 KiB at the canister boundary).
-    pub bio: Option<String>,
-}
-
 /// Pagination + filter arguments for `list_arbitrators`.
 #[derive(CandidType, Deserialize, Clone, Debug, Default)]
 pub struct ListArbitratorsArgs {

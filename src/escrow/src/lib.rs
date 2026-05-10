@@ -3,10 +3,11 @@ use ic_cdk::{export_candid, init, post_upgrade, pre_upgrade};
 
 use crate::{
     api::{
-        arbitrators::{
-            params::{ListArbitratorsArgs, RegisterArbitratorArgs},
-            results::{DeregisterArbitratorResult, RegisterArbitratorResult},
+        admin::{
+            params::{AdminRegisterArbitratorArgs, AdminSetArbitratorStatusArgs},
+            results::{AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult},
         },
+        arbitrators::{params::ListArbitratorsArgs, results::DeregisterArbitratorResult},
         deals::{
             params::{
                 AcceptDealArgs, CancelDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs,

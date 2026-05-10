@@ -9,8 +9,6 @@ use crate::{
 const MAX_TITLE_LEN: u32 = 200;
 const MAX_NOTE_LEN: u32 = 1000;
 const MAX_ACTIVE_DEALS_PER_PRINCIPAL: u32 = 50;
-/// Max byte length of an arbitrator's self-declared bio.
-pub const MAX_ARBITRATOR_BIO_LEN: u32 = 1024;
 
 /// ~500 years in nanoseconds — the practical u64 ceiling.
 const MAX_EXPIRY_WINDOW_NS: u64 = 500 * 365 * 24 * 60 * 60 * 1_000_000_000;
@@ -44,14 +42,22 @@ pub const MAX_EVIDENCE_URL_LEN: u32 = 2048;
 /// SHA-256 length in bytes — invariant for evidence artefact hashes.
 pub const SHA256_LEN: usize = 32;
 
-/// Enforces the arbitrator-bio length cap.
-pub fn validate_arbitrator_bio(bio: Option<&str>) -> Result<(), EscrowError> {
-    if let Some(b) = bio {
-        if b.len() > MAX_ARBITRATOR_BIO_LEN as usize {
-            return Err(EscrowError::ValidationError(format!(
-                "bio exceeds {MAX_ARBITRATOR_BIO_LEN} bytes",
-            )));
-        }
+/// Validates that `principal` is a legal target for arbitrator
+/// registration. Rejects:
+/// - The anonymous principal — degenerate; cannot vote anyway.
+/// - The canister's own principal — would create circular self- arbitration risks if the canister
+///   ever became its own caller via timer-driven flows.
+pub fn validate_arbitrator_principal(
+    principal: Principal,
+    canister_id: Principal,
+) -> Result<(), EscrowError> {
+    if principal == Principal::anonymous() {
+        return Err(EscrowError::AnonymousParty);
+    }
+    if principal == canister_id {
+        return Err(EscrowError::ValidationError(
+            "cannot register the canister's own principal as an arbitrator".to_owned(),
+        ));
     }
     Ok(())
 }

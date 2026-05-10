@@ -1,29 +1,22 @@
 use candid::Principal;
-use ic_cdk::api::{msg_caller, time};
+use ic_cdk::api::msg_caller;
 use ic_cdk_macros::{query, update};
 
-use super::{
-    params::{ListArbitratorsArgs, RegisterArbitratorArgs},
-    results::{DeregisterArbitratorResult, RegisterArbitratorResult},
-};
+use super::{params::ListArbitratorsArgs, results::DeregisterArbitratorResult};
 use crate::{guards::caller_is_not_anonymous, services, types::arbitrator::ArbitratorProfile};
 
 // ---------------------------------------------------------------------------
 // Update methods
 // ---------------------------------------------------------------------------
 
-/// Self-registers the caller as an arbitrator. Idempotent — re-registration
-/// returns the existing profile (with the new bio if supplied) and
-/// reactivates a previously deregistered profile.
-#[update(guard = "caller_is_not_anonymous")]
-#[must_use]
-pub fn register_arbitrator(args: RegisterArbitratorArgs) -> RegisterArbitratorResult {
-    services::arbitrators::register(msg_caller(), args.bio, time()).into()
-}
-
-/// Self-deregisters the caller's arbitrator profile. In-flight assignments
-/// are honoured — a non-vote from a deregistered arbitrator counts as
-/// `Vote::Abstain` at finalize time.
+/// Self-deregisters the caller's arbitrator profile. Opt-out is a
+/// fundamental right that doesn't require admin intervention. The
+/// status flips to `Deregistered`; in-flight assignments are honoured
+/// (a non-vote then counts as `Vote::Abstain` at finalize time).
+///
+/// To re-enter the pool the caller must be re-registered by an admin
+/// via `admin_register_arbitrator` — the curated registration model
+/// (admin chooses who's in) does not allow self-resurrection.
 #[update(guard = "caller_is_not_anonymous")]
 #[must_use]
 pub fn deregister_arbitrator() -> DeregisterArbitratorResult {
@@ -35,8 +28,8 @@ pub fn deregister_arbitrator() -> DeregisterArbitratorResult {
 // ---------------------------------------------------------------------------
 
 /// Returns the arbitrator profile for `principal`, or `None` if the
-/// principal hasn't registered. Public read; any non-anonymous caller
-/// may query any principal.
+/// principal hasn't been registered. Public read; any non-anonymous
+/// caller may query any principal.
 #[query(guard = "caller_is_not_anonymous")]
 #[must_use]
 pub fn get_arbitrator(principal: Principal) -> Option<ArbitratorProfile> {
@@ -45,10 +38,6 @@ pub fn get_arbitrator(principal: Principal) -> Option<ArbitratorProfile> {
 
 /// Lists registered arbitrators with optional `status` and `min_score`
 /// filters and pagination.
-///
-/// Destructured at the signature so clippy's `needless_pass_by_value` is
-/// satisfied — Candid decodes into owned values, then we hand the
-/// re-assembled struct to the service by reference.
 #[query(guard = "caller_is_not_anonymous")]
 #[must_use]
 pub fn list_arbitrators(

@@ -1,9 +1,9 @@
 //! Arbitrator registry service.
 //!
-//! Owns the lifecycle of the per-principal `ArbitratorProfile` records.
-//! Endpoints in `api/arbitrators/api.rs` are thin wrappers over the
-//! functions here; per the four-layer rule this module never calls
-//! `ic_cdk::api::msg_caller()` directly — the caller is passed in.
+//! Curated model: only canister controllers can add arbitrators to the
+//! pool (`admin_register`); the registered principal can self-opt-out
+//! (`deregister`). Status moderation is admin-only
+//! (`admin_set_status`). Read endpoints (`get`, `list`) are public.
 
 use candid::Principal;
 
@@ -14,25 +14,30 @@ use crate::{
     validation,
 };
 
-/// Registers `caller` as an arbitrator, or returns the existing profile
-/// if already registered (idempotent).
+/// Admin-side registration. Idempotent — re-registering an existing
+/// principal returns the existing profile (reactivating if it was
+/// `Suspended` or `Deregistered`); score counters and
+/// `registered_at_ns` are preserved across reactivation.
 ///
-/// Re-registration updates the bio if supplied. The on-chain record's
-/// `registered_at_ns` and score-related counters are preserved across
-/// re-registration.
-pub fn register(
-    caller: Principal,
-    bio: Option<String>,
+/// `caller_admin` is the controller principal making the registration
+/// call; it's recorded on the profile as `registered_by` for audit.
+/// `canister_id` is used by the validator to reject the canister's
+/// own principal as a registration target.
+pub fn admin_register(
+    caller_admin: Principal,
+    target: Principal,
+    canister_id: Principal,
     now_ns: u64,
 ) -> Result<ArbitratorProfile, EscrowError> {
-    validation::validate_arbitrator_bio(bio.as_deref())?;
+    validation::validate_arbitrator_principal(target, canister_id)?;
 
-    if let Some(existing) = memory::get_arbitrator(caller) {
-        // Idempotent re-registration: refresh bio + reactivate if Suspended/Deregistered.
-        // (Deregistration is reversible by re-registering — the canister doesn't
-        // permanently bar a principal; admin Suspend remains the bad-actor lever.)
+    if let Some(existing) = memory::get_arbitrator(target) {
+        // Idempotent: refresh `registered_by` to the calling admin (so
+        // the audit trail reflects the most recent curation event) and
+        // reactivate if Suspended/Deregistered. Counters + first-seen
+        // timestamp preserved.
         let updated = ArbitratorProfile {
-            bio: bio.or(existing.bio),
+            registered_by: caller_admin,
             status: ArbitratorStatus::Active,
             ..existing
         };
@@ -41,9 +46,9 @@ pub fn register(
     }
 
     let profile = ArbitratorProfile {
-        principal: caller,
+        principal: target,
         registered_at_ns: now_ns,
-        bio,
+        registered_by: caller_admin,
         disputes_assigned: 0,
         disputes_voted: 0,
         disputes_with_majority: 0,
@@ -54,14 +59,35 @@ pub fn register(
     Ok(profile)
 }
 
-/// Marks `caller`'s arbitrator profile as `Deregistered`.
+/// Admin-side status flip. All transitions are allowed; the canister
+/// doesn't model a state machine on `ArbitratorStatus` (there's no
+/// invariant that depends on the *order* of transitions, only on the
+/// current value). Self-transitions are no-op success.
 ///
-/// Returns `EscrowError::NotFound` if the caller isn't registered. Calling
-/// `deregister` on an already-deregistered profile is a no-op success
-/// (idempotent — matches the canister-wide idempotency contract).
+/// Returns `EscrowError::NotFound` if `target` isn't registered.
+pub fn admin_set_status(
+    target: Principal,
+    new_status: ArbitratorStatus,
+) -> Result<ArbitratorProfile, EscrowError> {
+    let updated = memory::with_arbitrator(target, move |a| {
+        a.status = new_status;
+        a.clone()
+    })
+    .ok_or(EscrowError::NotFound)?;
+    Ok(updated)
+}
+
+/// Self-deregister. Caller's profile flips to `Deregistered`. In-flight
+/// assignments are honoured (a non-vote then counts as `Vote::Abstain`
+/// at finalize time).
 ///
-/// In-flight assignments are honoured: a non-vote from a
-/// deregistered arbitrator counts as `Vote::Abstain` at finalize time.
+/// Returns `EscrowError::NotFound` if the caller isn't registered.
+/// Idempotent: calling on an already-deregistered profile returns the
+/// existing profile unchanged.
+///
+/// To re-enter the pool the caller must be re-registered by an admin
+/// via `admin_register` — the curated model does not allow
+/// self-resurrection.
 pub fn deregister(caller: Principal) -> Result<ArbitratorProfile, EscrowError> {
     let existing = memory::get_arbitrator(caller).ok_or(EscrowError::NotFound)?;
     if matches!(existing.status, ArbitratorStatus::Deregistered) {
@@ -77,7 +103,8 @@ pub fn deregister(caller: Principal) -> Result<ArbitratorProfile, EscrowError> {
 }
 
 /// Returns the arbitrator profile for `principal`, or `None` if the
-/// principal hasn't registered. Public read; no auth beyond non-anonymous.
+/// principal hasn't been registered. Public read; no auth beyond
+/// non-anonymous.
 #[must_use]
 pub fn get(principal: Principal) -> Option<ArbitratorProfile> {
     memory::get_arbitrator(principal)
@@ -85,9 +112,10 @@ pub fn get(principal: Principal) -> Option<ArbitratorProfile> {
 
 /// Lists arbitrators with optional filters + pagination.
 ///
-/// Filters compose as AND: `status` (when set) AND `min_score` (when set).
-/// Arbitrators with `score = None` are excluded only when `min_score` is
-/// `Some`. Results are ordered by principal (`BTreeMap` iteration order).
+/// Filters compose as AND: `status` (when set) AND `min_score` (when
+/// set). Arbitrators with `score = None` are excluded only when
+/// `min_score` is `Some`. Results are ordered by principal
+/// (`BTreeMap` iteration order).
 #[must_use]
 pub fn list(args: &ListArbitratorsArgs) -> Vec<ArbitratorProfile> {
     let offset = args
@@ -119,7 +147,7 @@ pub fn list(args: &ListArbitratorsArgs) -> Vec<ArbitratorProfile> {
 mod tests {
     use candid::Principal;
 
-    use super::{deregister, get, list, register};
+    use super::{admin_register, admin_set_status, deregister, get, list};
     use crate::{
         api::{arbitrators::params::ListArbitratorsArgs, deals::errors::EscrowError},
         memory::with_arbitrator,
@@ -130,37 +158,47 @@ mod tests {
         Principal::from_slice(&[id])
     }
 
+    fn admin() -> Principal {
+        Principal::from_slice(&[200])
+    }
+
+    fn canister() -> Principal {
+        Principal::management_canister()
+    }
+
+    // --- admin_register ---
+
     #[test]
-    fn register_creates_active_profile() {
+    fn admin_register_creates_active_profile() {
         let p = principal(101);
-        let profile = register(p, Some("hello".to_owned()), 100).unwrap();
+        let profile = admin_register(admin(), p, canister(), 100).unwrap();
         assert_eq!(profile.principal, p);
+        assert_eq!(profile.registered_by, admin());
         assert_eq!(profile.status, ArbitratorStatus::Active);
-        assert_eq!(profile.bio.as_deref(), Some("hello"));
-        assert_eq!(profile.disputes_assigned, 0);
-        assert_eq!(profile.disputes_voted, 0);
-        assert_eq!(profile.disputes_with_majority, 0);
-        assert!(profile.score.is_none());
         assert_eq!(profile.registered_at_ns, 100);
+        assert_eq!(profile.disputes_assigned, 0);
     }
 
     #[test]
-    fn register_is_idempotent_and_preserves_counters() {
+    fn admin_register_is_idempotent_and_preserves_counters() {
         let p = principal(102);
-        let _first = register(p, Some("v1".to_owned()), 100).unwrap();
+        let _first = admin_register(admin(), p, canister(), 100).unwrap();
 
-        // Simulate prior activity.
         with_arbitrator(p, |a| {
             a.disputes_assigned = 7;
             a.disputes_voted = 5;
             a.disputes_with_majority = 4;
         });
 
-        let second = register(p, Some("v2".to_owned()), 999).unwrap();
-        assert_eq!(second.bio.as_deref(), Some("v2"), "bio is updated");
+        let admin2 = principal(201);
+        let second = admin_register(admin2, p, canister(), 999).unwrap();
+        assert_eq!(
+            second.registered_by, admin2,
+            "registered_by reflects most recent admin"
+        );
         assert_eq!(
             second.registered_at_ns, 100,
-            "registered_at_ns is preserved on re-registration",
+            "first-seen timestamp preserved on re-registration",
         );
         assert_eq!(second.disputes_assigned, 7);
         assert_eq!(second.disputes_voted, 5);
@@ -168,75 +206,116 @@ mod tests {
     }
 
     #[test]
-    fn register_reactivates_deregistered() {
+    fn admin_register_reactivates_suspended() {
         let p = principal(103);
-        register(p, None, 100).unwrap();
-        let _ = deregister(p).unwrap();
-        assert_eq!(
-            get(p).unwrap().status,
-            ArbitratorStatus::Deregistered,
-            "deregister flips status",
-        );
-        let reregistered = register(p, None, 200).unwrap();
-        assert_eq!(reregistered.status, ArbitratorStatus::Active);
+        admin_register(admin(), p, canister(), 100).unwrap();
+        admin_set_status(p, ArbitratorStatus::Suspended).unwrap();
+        let reactivated = admin_register(admin(), p, canister(), 200).unwrap();
+        assert_eq!(reactivated.status, ArbitratorStatus::Active);
     }
 
     #[test]
-    fn register_rejects_oversized_bio() {
+    fn admin_register_reactivates_deregistered() {
         let p = principal(104);
-        let huge = "x".repeat(2000);
-        let err = register(p, Some(huge), 100).unwrap_err();
-        assert!(matches!(err, EscrowError::ValidationError(_)));
+        admin_register(admin(), p, canister(), 100).unwrap();
+        deregister(p).unwrap();
+        assert_eq!(get(p).unwrap().status, ArbitratorStatus::Deregistered);
+        let reactivated = admin_register(admin(), p, canister(), 200).unwrap();
+        assert_eq!(reactivated.status, ArbitratorStatus::Active);
     }
+
+    #[test]
+    fn admin_register_rejects_anonymous_target() {
+        let err = admin_register(admin(), Principal::anonymous(), canister(), 100).unwrap_err();
+        assert!(matches!(err, EscrowError::AnonymousParty));
+    }
+
+    #[test]
+    fn admin_register_rejects_canister_self() {
+        let err = admin_register(admin(), canister(), canister(), 100).unwrap_err();
+        match err {
+            EscrowError::ValidationError(msg) => {
+                assert!(msg.contains("canister's own principal"), "msg: {msg}");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    // --- admin_set_status ---
+
+    #[test]
+    fn admin_set_status_returns_not_found_for_unregistered() {
+        let err = admin_set_status(principal(110), ArbitratorStatus::Suspended).unwrap_err();
+        assert!(matches!(err, EscrowError::NotFound));
+    }
+
+    #[test]
+    fn admin_set_status_supports_all_transitions() {
+        let p = principal(111);
+        admin_register(admin(), p, canister(), 100).unwrap();
+        // Active → Suspended.
+        let v = admin_set_status(p, ArbitratorStatus::Suspended).unwrap();
+        assert_eq!(v.status, ArbitratorStatus::Suspended);
+        // Suspended → Deregistered.
+        let v = admin_set_status(p, ArbitratorStatus::Deregistered).unwrap();
+        assert_eq!(v.status, ArbitratorStatus::Deregistered);
+        // Deregistered → Active (reactivation).
+        let v = admin_set_status(p, ArbitratorStatus::Active).unwrap();
+        assert_eq!(v.status, ArbitratorStatus::Active);
+        // Active → Active (self-transition no-op).
+        let v = admin_set_status(p, ArbitratorStatus::Active).unwrap();
+        assert_eq!(v.status, ArbitratorStatus::Active);
+    }
+
+    // --- deregister (self) ---
 
     #[test]
     fn deregister_returns_not_found_for_unregistered() {
-        let err = deregister(principal(105)).unwrap_err();
+        let err = deregister(principal(120)).unwrap_err();
         assert!(matches!(err, EscrowError::NotFound));
     }
 
     #[test]
     fn deregister_is_idempotent_when_already_deregistered() {
-        let p = principal(106);
-        register(p, None, 100).unwrap();
+        let p = principal(121);
+        admin_register(admin(), p, canister(), 100).unwrap();
         let first = deregister(p).unwrap();
         assert_eq!(first.status, ArbitratorStatus::Deregistered);
         let second = deregister(p).unwrap();
         assert_eq!(second.status, ArbitratorStatus::Deregistered);
     }
 
+    // --- queries ---
+
     #[test]
     fn get_returns_none_for_unregistered() {
-        assert!(get(principal(107)).is_none());
+        assert!(get(principal(130)).is_none());
     }
 
     #[test]
     fn list_filters_by_status() {
-        let active = principal(110);
-        let suspended = principal(111);
-        register(active, None, 100).unwrap();
-        register(suspended, None, 100).unwrap();
-        with_arbitrator(suspended, |a| a.status = ArbitratorStatus::Suspended);
+        let active = principal(140);
+        let suspended = principal(141);
+        admin_register(admin(), active, canister(), 100).unwrap();
+        admin_register(admin(), suspended, canister(), 100).unwrap();
+        admin_set_status(suspended, ArbitratorStatus::Suspended).unwrap();
 
         let only_active = list(&ListArbitratorsArgs {
             status: Some(ArbitratorStatus::Active),
             ..Default::default()
         });
-        assert!(only_active
-            .iter()
-            .all(|a| a.status == ArbitratorStatus::Active));
         assert!(only_active.iter().any(|a| a.principal == active));
         assert!(!only_active.iter().any(|a| a.principal == suspended));
     }
 
     #[test]
     fn list_filters_by_min_score() {
-        let high = principal(120);
-        let low = principal(121);
-        let unscored = principal(122);
-        register(high, None, 100).unwrap();
-        register(low, None, 100).unwrap();
-        register(unscored, None, 100).unwrap();
+        let high = principal(150);
+        let low = principal(151);
+        let unscored = principal(152);
+        admin_register(admin(), high, canister(), 100).unwrap();
+        admin_register(admin(), low, canister(), 100).unwrap();
+        admin_register(admin(), unscored, canister(), 100).unwrap();
         with_arbitrator(high, |a| a.score = Some(80));
         with_arbitrator(low, |a| a.score = Some(20));
 
@@ -246,16 +325,13 @@ mod tests {
         });
         assert!(above_50.iter().any(|a| a.principal == high));
         assert!(!above_50.iter().any(|a| a.principal == low));
-        assert!(
-            !above_50.iter().any(|a| a.principal == unscored),
-            "unscored arbitrators excluded when min_score is Some",
-        );
+        assert!(!above_50.iter().any(|a| a.principal == unscored));
     }
 
     #[test]
     fn list_paginates() {
         for i in 200..210_u8 {
-            register(principal(i), None, 100).unwrap();
+            admin_register(admin(), principal(i), canister(), 100).unwrap();
         }
         let page1 = list(&ListArbitratorsArgs {
             offset: Some(0),
@@ -269,7 +345,6 @@ mod tests {
         });
         assert_eq!(page1.len(), 3);
         assert_eq!(page2.len(), 3);
-        // Disjoint slices.
         for a in &page1 {
             assert!(!page2.iter().any(|b| b.principal == a.principal));
         }
@@ -277,8 +352,10 @@ mod tests {
 
     #[test]
     fn list_caps_limit_at_100() {
-        for i in 0..150_u8 {
-            register(principal(i), None, 100).unwrap();
+        // Skip principal byte 4 — it collides with `Principal::anonymous()`
+        // which the registration validator rejects.
+        for i in 5..160_u8 {
+            admin_register(admin(), principal(i), canister(), 100).unwrap();
         }
         let huge = list(&ListArbitratorsArgs {
             offset: Some(0),

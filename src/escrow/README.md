@@ -61,15 +61,14 @@ Both parties to a deal must consent before funds can move:
 
 ### Dispute & arbitrator methods (RFC-001)
 
-| Method                                        | Description                                                                                                                                                                                                           |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `open_dispute(OpenDisputeArgs)`               | Either bound party of a `Funded` deal opens a dispute. Selects a randomly-weighted arbitrator panel via `raw_rand`. Deal transitions `Funded → Disputed`. (RFC-001 step 4)                                            |
-| `submit_evidence(SubmitEvidenceArgs)`         | Party of the deal or arbitrator on the panel submits evidence (note + off-canister URL + SHA-256 hash) during the Evidence phase. (RFC-001 step 5)                                                                    |
-| `cast_vote(CastVoteArgs)`                     | Active arbitrator on the panel votes `ConcludedCorrectly` / `IncorrectlyConcluded` / `Abstain`. Allowed during the open voting window. Latest-wins. (RFC-001 step 6)                                                  |
-| `finalize_dispute(FinalizeDisputeArgs)`       | Anyone (non-anonymous) can trigger after `voting_deadline_ns`. Tallies, fans out per-arbitrator fees, transfers prevailing-party payout, flips deal to `ArbitratedSettled` / `ArbitratedRefunded`. (RFC-001 step 7)   |
-| `withdraw_dispute(WithdrawDisputeArgs)`       | Out-of-band settlement during the Evidence phase. Either party proposes an outcome; resolution fires when both proposals match. Arbitrators receive a reduced fee (`withdraw_fee_pct`, default 25%). (RFC-001 step 9) |
-| `register_arbitrator(RegisterArbitratorArgs)` | Self-register as an arbitrator. Idempotent; updates bio + reactivates a previously deregistered profile. (RFC-001 step 3)                                                                                             |
-| `deregister_arbitrator()`                     | Self-deregister. In-flight assignments still honoured (non-vote counts as `Abstain` at finalize). (RFC-001 step 3)                                                                                                    |
+| Method                                  | Description                                                                                                                                                                                                           |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `open_dispute(OpenDisputeArgs)`         | Either bound party of a `Funded` deal opens a dispute. Selects a randomly-weighted arbitrator panel via `raw_rand`. Deal transitions `Funded → Disputed`. (RFC-001 step 4)                                            |
+| `submit_evidence(SubmitEvidenceArgs)`   | Party of the deal or arbitrator on the panel submits evidence (note + off-canister URL + SHA-256 hash) during the Evidence phase. (RFC-001 step 5)                                                                    |
+| `cast_vote(CastVoteArgs)`               | Active arbitrator on the panel votes `ConcludedCorrectly` / `IncorrectlyConcluded` / `Abstain`. Allowed during the open voting window. Latest-wins. (RFC-001 step 6)                                                  |
+| `finalize_dispute(FinalizeDisputeArgs)` | Anyone (non-anonymous) can trigger after `voting_deadline_ns`. Tallies, fans out per-arbitrator fees, transfers prevailing-party payout, flips deal to `ArbitratedSettled` / `ArbitratedRefunded`. (RFC-001 step 7)   |
+| `withdraw_dispute(WithdrawDisputeArgs)` | Out-of-band settlement during the Evidence phase. Either party proposes an outcome; resolution fires when both proposals match. Arbitrators receive a reduced fee (`withdraw_fee_pct`, default 25%). (RFC-001 step 9) |
+| `deregister_arbitrator()`               | Self-deregister (opt-out). In-flight assignments still honoured (non-vote counts as `Abstain` at finalize). To re-enter the pool requires admin re-registration.                                                      |
 
 ### Dispute & arbitrator queries
 
@@ -133,10 +132,14 @@ Every deal is a non-fungible token. Ownership follows deal lifecycle: the payer 
 
 ### Admin methods
 
-| Method                  | Description                                      |
-| ----------------------- | ------------------------------------------------ |
-| `config()`              | Read canister configuration (controller-only).   |
-| `update_config(Config)` | Update canister configuration (controller-only). |
+All controller-only.
+
+| Method                              | Description                                                                                                                                                                                          |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config()`                          | Read canister configuration.                                                                                                                                                                         |
+| `update_config(Config)`             | Update canister configuration.                                                                                                                                                                       |
+| `admin_register_arbitrator(args)`   | Register `args.principal` as an arbitrator (curated registration). Idempotent; reactivates `Suspended` / `Deregistered` profiles. Validators reject anonymous + the canister's own principal.        |
+| `admin_set_arbitrator_status(args)` | Set an arbitrator's status (`Active` ↔ `Suspended` ↔ `Deregistered`). All transitions allowed; self-transitions are no-op success. `Deregistered → Active` reactivates a previously-removed profile. |
 
 ## Deal lifecycle
 
@@ -305,7 +308,7 @@ Until ICRC-3 is implemented, the existing `updated_at_ns` / `updated_by` fields 
 
 - `DealStatus` gained `Disputed`, `ArbitratedSettled`, `ArbitratedRefunded` variants.
 - `Deal` gained `dispute: Option<DisputeId>` linking to the optional dispute record.
-- A parallel arbitrator pool (`ArbitratorProfile` keyed by principal) with self-service registration, score-weighted random panel selection, and admin suspension as a backstop.
+- A parallel arbitrator pool (`ArbitratorProfile` keyed by principal) with **admin-curated registration** (controllers add arbitrators via `admin_register_arbitrator`; arbitrators can self-opt-out via `deregister_arbitrator`), score-weighted random panel selection, and admin status moderation via `admin_set_arbitrator_status`. The original RFC sketched permissionless self-registration (Q4); a post-implementation Q4-revisit moved it to admin-curated to prevent Sybil flooding during the bootstrap window. Each profile records `registered_by` for audit.
 - Five new lifecycle endpoints: `open_dispute`, `submit_evidence`, `cast_vote`, `finalize_dispute`, `withdraw_dispute`.
 - Q12 out-of-band settlement (`withdraw_dispute`) lets parties resolve in the Evidence phase with a reduced arbitrator fee.
 - A second housekeeping timer auto-finalises disputes whose voting deadline has passed.

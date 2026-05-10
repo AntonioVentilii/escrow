@@ -541,7 +541,7 @@ mod tests {
         let profile = ArbitratorProfile {
             principal: test_principal(p),
             registered_at_ns: 100,
-            bio: None,
+            registered_by: test_principal(200),
             disputes_assigned: 0,
             disputes_voted: 0,
             disputes_with_majority: 0,
