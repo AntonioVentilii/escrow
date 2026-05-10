@@ -198,9 +198,10 @@ fn allocate_dispute_id() -> DisputeId {
 
 /// Inserts or replaces an arbitrator profile keyed by principal.
 ///
-/// Used by `register_arbitrator` (idempotent — re-registration returns
-/// the existing profile rather than erroring) and by
-/// `services::arbitrators::update_score_after_finalize`.
+/// Used by `services::arbitrators::admin_register` (idempotent
+/// re-registration that reactivates Suspended/Deregistered profiles)
+/// and by `services::disputes::apply_score_updates` (called from
+/// `finalize` to bump per-arbitrator score counters).
 pub fn upsert_arbitrator(profile: ArbitratorProfile) {
     ARBITRATORS.with(|a| a.borrow_mut().insert(profile.principal, profile));
 }

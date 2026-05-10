@@ -176,7 +176,7 @@ Rejected                  Cancelled             │  Disputed
                                                 │    ├─[majority CC]──▶ ArbitratedSettled
                                                 │    ├─[majority IC]──▶ ArbitratedRefunded
                                                 │    ├─[no quorum]────▶ ArbitratedRefunded (Q9)
-                                                │    └─[Q12 withdrawn]▶ ArbitratedSettled / Refunded
+                                                │    └─[Q12 withdrawn]▶ ArbitratedSettled / ArbitratedRefunded
                                                 │ reclaim (after expiry, if not Disputed)
                                                 ▼
                                             Refunded
@@ -213,37 +213,37 @@ Rejected                  Cancelled             │  Disputed
 
 ## Module structure
 
-| Module                       | Responsibility                                                                                                                                |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types/deal.rs`              | Internal `Deal`, `DealStatus` (incl. `Disputed` / `ArbitratedSettled` / `ArbitratedRefunded`), `Consent`, `DealMetadata` types                |
-| `types/dispute.rs`           | Internal `Dispute`, `DisputeId`, `DisputePhase`, `Vote`, `Evidence`, `PanelMember`, `DisputeOutcome`, `DisputeConfig` (RFC-001)               |
-| `types/arbitrator.rs`        | Internal `ArbitratorProfile`, `ArbitratorStatus`, `MIN_VOTES_FOR_SCORE`, `compute_score` helper (RFC-001)                                     |
-| `types/ledger_types.rs`      | ICRC-1/ICRC-2 Account and transfer types                                                                                                      |
-| `types/icrc7.rs`             | ICRC-7/ICRC-16 `Value` type, ownership helpers, metadata builders                                                                             |
-| `types/state.rs`             | `Config` (incl. `dispute_config: Option<DisputeConfig>`), `StableState` for persistence                                                       |
-| `api/deals/api.rs`           | Thin deal endpoint layer (delegates to services)                                                                                              |
-| `api/deals/params.rs`        | Public argument structs (`CreateDealArgs`, `AcceptDealArgs`, …)                                                                               |
-| `api/deals/results.rs`       | Public view structs (`DealView` (incl. `dispute: Option<DisputeId>`), `ClaimableDealView`)                                                    |
-| `api/deals/errors.rs`        | Typed `EscrowError` enum (incl. RFC-001 dispute / arbitrator variants)                                                                        |
-| `api/disputes/api.rs`        | RFC-001 dispute endpoints (`open_dispute`, `submit_evidence`, `cast_vote`, `finalize_dispute`, `withdraw_dispute`, `get_*`, `list_my_*`)      |
-| `api/disputes/params.rs`     | Public dispute argument structs                                                                                                               |
-| `api/disputes/results.rs`    | Public dispute view structs (`DisputeView`, `PublicDisputeView`, `DisputeTally`)                                                              |
-| `api/arbitrators/api.rs`     | RFC-001 arbitrator registry endpoints (`register_arbitrator`, `deregister_arbitrator`, `get_arbitrator`, `list_arbitrators`)                  |
-| `api/arbitrators/params.rs`  | Public arbitrator argument structs                                                                                                            |
-| `api/arbitrators/results.rs` | Public arbitrator result types                                                                                                                |
-| `api/icrc7/api.rs`           | ICRC-7 NFT standard query/update endpoints + ICRC-10 supported standards                                                                      |
-| `api/admin/api.rs`           | Controller-only admin endpoints                                                                                                               |
-| `services/deals.rs`          | Core deal business logic (create, fund, accept, reclaim, cancel, consent, reject)                                                             |
-| `services/disputes.rs`       | Dispute lifecycle (open, submit_evidence, cast_vote, finalize, withdraw, queries) + tally + panel selection + auto-finalize sweep (RFC-001)   |
-| `services/arbitrators.rs`    | Arbitrator registry service (register / deregister / get / list) (RFC-001)                                                                    |
-| `services/expiry.rs`         | Batch expired-deal refund processing (skips `Disputed`)                                                                                       |
-| `services/housekeeping.rs`   | Two repeating timers: expiry auto-refund (every 5 min) + dispute auto-finalize (every 5 min, RFC-001 step 8) — independent re-entrancy guards |
-| `services/icrc7.rs`          | ICRC-7 service logic (token metadata, ownership, pagination, transfer rejection)                                                              |
-| `memory.rs`                  | Thread-local storage (deals + disputes + arbitrators), atomic ID allocation, save/restore, processing locks                                   |
-| `ledger.rs`                  | ICRC inter-canister call helpers (transfer, transfer_from, fee, raw_rand)                                                                     |
-| `subaccounts.rs`             | Deterministic deal subaccount derivation                                                                                                      |
-| `validation.rs`              | State transition, consent, dispute, evidence, and input validation                                                                            |
-| `guards.rs`                  | Caller authentication/authorization guards                                                                                                    |
+| Module                       | Responsibility                                                                                                                                                   |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types/deal.rs`              | Internal `Deal`, `DealStatus` (incl. `Disputed` / `ArbitratedSettled` / `ArbitratedRefunded`), `Consent`, `DealMetadata` types                                   |
+| `types/dispute.rs`           | Internal `Dispute`, `DisputeId`, `DisputePhase`, `Vote`, `Evidence`, `PanelMember`, `DisputeOutcome`, `DisputeConfig` (RFC-001)                                  |
+| `types/arbitrator.rs`        | Internal `ArbitratorProfile`, `ArbitratorStatus`, `MIN_VOTES_FOR_SCORE`, `compute_score` helper (RFC-001)                                                        |
+| `types/ledger_types.rs`      | ICRC-1/ICRC-2 Account and transfer types                                                                                                                         |
+| `types/icrc7.rs`             | ICRC-7/ICRC-16 `Value` type, ownership helpers, metadata builders                                                                                                |
+| `types/state.rs`             | `Config` (incl. `dispute_config: Option<DisputeConfig>`), `StableState` for persistence                                                                          |
+| `api/deals/api.rs`           | Thin deal endpoint layer (delegates to services)                                                                                                                 |
+| `api/deals/params.rs`        | Public argument structs (`CreateDealArgs`, `AcceptDealArgs`, …)                                                                                                  |
+| `api/deals/results.rs`       | Public view structs (`DealView` (incl. `dispute: Option<DisputeId>`), `ClaimableDealView`)                                                                       |
+| `api/deals/errors.rs`        | Typed `EscrowError` enum (incl. RFC-001 dispute / arbitrator variants)                                                                                           |
+| `api/disputes/api.rs`        | RFC-001 dispute endpoints (`open_dispute`, `submit_evidence`, `cast_vote`, `finalize_dispute`, `withdraw_dispute`, `get_*`, `list_my_*`)                         |
+| `api/disputes/params.rs`     | Public dispute argument structs                                                                                                                                  |
+| `api/disputes/results.rs`    | Public dispute view structs (`DisputeView`, `PublicDisputeView`, `DisputeTally`)                                                                                 |
+| `api/arbitrators/api.rs`     | Public + self-service arbitrator endpoints (`deregister_arbitrator`, `get_arbitrator`, `list_arbitrators`). Admin-side registration lives in `api/admin/api.rs`. |
+| `api/arbitrators/params.rs`  | Public arbitrator argument structs                                                                                                                               |
+| `api/arbitrators/results.rs` | Public arbitrator result types                                                                                                                                   |
+| `api/icrc7/api.rs`           | ICRC-7 NFT standard query/update endpoints + ICRC-10 supported standards                                                                                         |
+| `api/admin/api.rs`           | Controller-only admin endpoints (`config`, `update_config`, `admin_register_arbitrator`, `admin_set_arbitrator_status`)                                          |
+| `services/deals.rs`          | Core deal business logic (create, fund, accept, reclaim, cancel, consent, reject)                                                                                |
+| `services/disputes.rs`       | Dispute lifecycle (open, submit_evidence, cast_vote, finalize, withdraw, queries) + tally + panel selection + auto-finalize sweep (RFC-001)                      |
+| `services/arbitrators.rs`    | Arbitrator registry service (register / deregister / get / list) (RFC-001)                                                                                       |
+| `services/expiry.rs`         | Batch expired-deal refund processing (skips `Disputed`)                                                                                                          |
+| `services/housekeeping.rs`   | Two repeating timers: expiry auto-refund (every 5 min) + dispute auto-finalize (every 5 min, RFC-001 step 8) — independent re-entrancy guards                    |
+| `services/icrc7.rs`          | ICRC-7 service logic (token metadata, ownership, pagination, transfer rejection)                                                                                 |
+| `memory.rs`                  | Thread-local storage (deals + disputes + arbitrators), atomic ID allocation, save/restore, processing locks                                                      |
+| `ledger.rs`                  | ICRC inter-canister call helpers (transfer, transfer_from, fee, raw_rand)                                                                                        |
+| `subaccounts.rs`             | Deterministic deal subaccount derivation                                                                                                                         |
+| `validation.rs`              | State transition, consent, dispute, evidence, and input validation                                                                                               |
+| `guards.rs`                  | Caller authentication/authorization guards                                                                                                                       |
 
 ## Scalability & limitations
 

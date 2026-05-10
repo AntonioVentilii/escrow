@@ -167,18 +167,66 @@ pub async fn open(
 
     let cfg = load_dispute_config();
 
-    // Fee + ledger-fee headroom. The deal must have enough to cover:
-    //   - The arbitration fee itself.
-    //   - One ICRC-1 fee per arbitrator transfer (worst case = full panel takes their slice).
-    //   - One ICRC-1 fee for the prevailing-party transfer.
-    // If the deal can't cover all of that with at least 1 unit left
-    // for the prevailing party, finalize would later subtract it down
-    // to zero and either trap or leave funds stuck. Reject up front.
-    //
-    // Querying `ledger::fee` is async, but `open` is async anyway —
-    // failing fast here is cheaper than recovering from a stuck
-    // `Disputed` deal later.
+    // Sync pre-checks first (fail fast before grabbing the lock).
+    // The eligible-pool size is read here purely for the early
+    // `InsufficientArbitrators` rejection; the actual selection runs
+    // inside the lock against a re-read snapshot in case the pool
+    // changes between this check and lock acquisition.
     let fee = compute_arbitration_fee(deal.amount, &cfg);
+    let eligible_preview = eligible_arbitrators(&deal, &cfg);
+    let needed = cfg.panel_size;
+    let have = u32::try_from(eligible_preview.len()).unwrap_or(u32::MAX);
+    if have < needed {
+        return Err(EscrowError::InsufficientArbitrators { need: needed, have });
+    }
+
+    // Acquire the per-deal lock BEFORE any async work. Querying
+    // `ledger::fee` is async; if it ran before the lock another
+    // canister call (e.g. accept_deal, reclaim_deal) could change
+    // the deal state in the gap, leaving us to transition a stale
+    // snapshot to `Disputed`. Locking first serialises the entire
+    // open-dispute flow against other deal mutations.
+    try_acquire_lock(deal_id)?;
+    let result = open_with_lock(deal_id, caller, now_ns, cfg, fee, needed).await;
+    release_lock(deal_id);
+    result
+}
+
+async fn open_with_lock(
+    deal_id: DealId,
+    caller: Principal,
+    now_ns: u64,
+    cfg: DisputeConfig,
+    fee: u128,
+    needed: u32,
+) -> Result<DisputeView, EscrowError> {
+    // Re-read deal under the lock so any state change since the
+    // initial validation is observed. Re-validate the open-dispute
+    // preconditions; abort if the deal is no longer `Funded`, has
+    // expired, or has acquired a dispute attachment.
+    let deal = get_deal(deal_id).ok_or(EscrowError::NotFound)?;
+    let already_done = validation::validate_can_open_dispute(&deal, caller, now_ns)?;
+    if already_done {
+        let existing_id = deal.dispute.ok_or(EscrowError::DisputeNotFound)?;
+        let dispute = load_dispute(existing_id).ok_or(EscrowError::DisputeNotFound)?;
+        return Ok(DisputeView::from(&dispute));
+    }
+
+    // Re-evaluate the eligible pool inside the lock so we don't open
+    // a dispute against an arbitrator who self-deregistered between
+    // the preview check and now.
+    let eligible = eligible_arbitrators(&deal, &cfg);
+    let have = u32::try_from(eligible.len()).unwrap_or(u32::MAX);
+    if have < needed {
+        return Err(EscrowError::InsufficientArbitrators { need: needed, have });
+    }
+
+    // Fee headroom: the deal must cover the arbitration fee, one
+    // ICRC-1 fee per arbitrator transfer (worst case = full panel
+    // takes their slice), and one ICRC-1 fee for the prevailing-party
+    // transfer. If the amount can't cover all of that with at least
+    // 1 unit left for the prevailing party, finalize would later
+    // subtract it down to zero. Reject up front.
     let ledger_fee = ledger::fee(deal.token_ledger).await?;
     let total_required = fee
         .checked_add(u128::from(cfg.panel_size).saturating_mul(ledger_fee))
@@ -190,18 +238,7 @@ pub async fn open(
         });
     }
 
-    // Eligible-pool gate (sync, before async raw_rand to fail fast).
-    let eligible = eligible_arbitrators(&deal, &cfg);
-    let needed = cfg.panel_size;
-    let have = u32::try_from(eligible.len()).unwrap_or(u32::MAX);
-    if have < needed {
-        return Err(EscrowError::InsufficientArbitrators { need: needed, have });
-    }
-
-    try_acquire_lock(deal_id)?;
-    let result = open_locked(deal, caller, now_ns, cfg, eligible, needed).await;
-    release_lock(deal_id);
-    result
+    open_locked(deal, caller, now_ns, cfg, eligible, needed).await
 }
 
 async fn open_locked(
@@ -337,6 +374,18 @@ pub fn cast_vote(
         return Err(EscrowError::InvalidDisputePhase {
             expected: "Voting (within deadline)".to_owned(),
             actual: "Voting (deadline passed)".to_owned(),
+        });
+    }
+    if dispute.outcome.is_some() {
+        // A resolution has already been recorded (e.g. `withdraw_dispute`
+        // matched both party proposals during the Evidence phase). The
+        // deadline check above protects most cases since voting opens
+        // at the evidence deadline, but a Withdrawn outcome can be set
+        // mid-Evidence-phase before voting ever opens — guard against
+        // it explicitly here for symmetry with `submit_evidence`.
+        return Err(EscrowError::InvalidDisputePhase {
+            expected: "Voting (no outcome set)".to_owned(),
+            actual: "Resolution in progress".to_owned(),
         });
     }
 
@@ -768,6 +817,27 @@ pub async fn withdraw(
 
     if let Some(agreed_outcome) = agreed {
         let deal_id = deal.id;
+
+        // Mark the resolution intent SYNC, before any await. Sets
+        // `outcome = Some(Withdrawn { agreed })` on the dispute so
+        // concurrent `submit_evidence` / `cast_vote` calls (both
+        // gated on `outcome.is_none()`) reject — without this, those
+        // sync calls could interleave between awaits inside
+        // `withdraw_finalize_locked` and pollute the resolved dispute
+        // with new evidence or votes.
+        //
+        // Use `get_or_insert` so a retry that re-enters this branch
+        // (e.g. the previous attempt's ledger calls failed) doesn't
+        // overwrite the already-set outcome with a fresh clone.
+        let outcome_for_storage = DisputeOutcome::Withdrawn {
+            agreed: agreed_outcome.clone(),
+        };
+        let snapshot = with_dispute(dispute_id, move |d| {
+            d.outcome.get_or_insert(outcome_for_storage);
+            d.clone()
+        })
+        .ok_or(EscrowError::DisputeNotFound)?;
+
         try_acquire_lock(deal_id)?;
         let result = withdraw_finalize_locked(deal, snapshot, agreed_outcome, now_ns).await;
         release_lock(deal_id);
@@ -986,6 +1056,18 @@ pub fn submit_evidence(
         return Err(EscrowError::InvalidDisputePhase {
             expected: "Evidence (within deadline)".to_owned(),
             actual: "Evidence (deadline passed)".to_owned(),
+        });
+    }
+    if dispute.outcome.is_some() {
+        // A resolution has already been recorded (e.g. `withdraw_dispute`
+        // matched both party proposals and set the outcome before
+        // running its async payouts). Reject new evidence even though
+        // the stored `phase` is still `Evidence` — the canister has
+        // committed to a final outcome and new submissions would
+        // pollute the resolved record.
+        return Err(EscrowError::InvalidDisputePhase {
+            expected: "Evidence (no outcome set)".to_owned(),
+            actual: "Resolution in progress".to_owned(),
         });
     }
 
