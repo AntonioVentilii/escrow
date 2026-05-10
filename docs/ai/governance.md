@@ -142,9 +142,7 @@ through an **RFC** before any code lands.
 
 Existing RFCs:
 
-- `docs/rfcs/0001-dispute-resolution.md` — dispute resolution +
-  arbitrator + voting (when published; tracked separately from the
-  agent-doc scaffold).
+- [`docs/rfcs/0001-dispute-resolution.md`](../rfcs/0001-dispute-resolution.md) — dispute resolution + arbitrator pool + voting. **Accepted** 2026-05-10; full implementation landed in PR #29. Q4 was revised post-implementation in the same PR (permissionless self-registration → admin-curated), captured as a "revised same day" entry in the RFC's Decision Log.
 
 ## Meta-update rule
 
