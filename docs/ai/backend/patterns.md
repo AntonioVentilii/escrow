@@ -223,14 +223,29 @@ inline — go through the helper.
 Every `DealStatus` transition goes through a `validate_can_*` function.
 The current map (in `validation.rs`):
 
-| Function               | From               | To                                                    |
-| ---------------------- | ------------------ | ----------------------------------------------------- |
-| `validate_can_fund`    | `Created`          | `Funded`                                              |
-| `validate_can_accept`  | `Funded`           | `Settled` (returns `Ok(true)` if already `Settled`)   |
-| `validate_can_reclaim` | `Funded` + expired | `Refunded` (returns `Ok(true)` if already `Refunded`) |
-| `validate_can_cancel`  | `Created`          | `Cancelled`                                           |
-| `validate_can_consent` | `Created`          | `Created` (consent flag flip; status unchanged)       |
-| `validate_can_reject`  | `Created`          | `Rejected`                                            |
+| Function                    | From               | To                                                              |
+| --------------------------- | ------------------ | --------------------------------------------------------------- |
+| `validate_can_fund`         | `Created`          | `Funded`                                                        |
+| `validate_can_accept`       | `Funded`           | `Settled` (returns `Ok(true)` if already `Settled`)             |
+| `validate_can_reclaim`      | `Funded` + expired | `Refunded` (returns `Ok(true)` if already `Refunded`)           |
+| `validate_can_cancel`       | `Created`          | `Cancelled`                                                     |
+| `validate_can_consent`      | `Created`          | `Created` (consent flag flip; status unchanged)                 |
+| `validate_can_reject`       | `Created`          | `Rejected`                                                      |
+| `validate_can_open_dispute` | `Funded` + bound   | `Disputed` (returns `Ok(true)` if already `Disputed`) — RFC-001 |
+
+The dispute-side state then advances inside `services/disputes.rs`
+without further `validate_can_*` entries (phase / deadline gates live
+in the service itself):
+
+| Service function             | Dispute phase before   | Dispute phase after | Deal status after          |
+| ---------------------------- | ---------------------- | ------------------- | -------------------------- |
+| `submit_evidence`            | `Evidence`             | `Evidence`          | `Disputed` (unchanged)     |
+| `cast_vote`                  | `Evidence` / `Voting`  | `Voting`            | `Disputed` (unchanged)     |
+| `finalize` (majority CC)     | `Voting` past deadline | `Resolved`          | `ArbitratedSettled`        |
+| `finalize` (majority IC)     | `Voting` past deadline | `Resolved`          | `ArbitratedRefunded`       |
+| `finalize` (no quorum / tie) | `Voting` past deadline | `Resolved`          | `ArbitratedRefunded` (Q9)  |
+| `withdraw` (matching CC)     | `Evidence`             | `Resolved`          | `ArbitratedSettled` (Q12)  |
+| `withdraw` (matching IC)     | `Evidence`             | `Resolved`          | `ArbitratedRefunded` (Q12) |
 
 **Adding a new transition** requires an [RFC](../governance.md#rfc-workflow).
 The accepted RFC dictates the transition table; the implementation PR

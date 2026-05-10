@@ -57,7 +57,29 @@ Both parties to a deal must consent before funds can move:
 | `cancel_deal(CancelDealArgs)`   | Either party cancels an unfunded (Created) deal.                                                                                                                  |
 | `consent_deal(ConsentDealArgs)` | Explicitly consent to a deal's terms. Required for the counterparty before the payer can fund a deal with a known recipient.                                      |
 | `reject_deal(RejectDealArgs)`   | Reject a deal's terms. The deal transitions to `Rejected` (terminal).                                                                                             |
-| `process_expired_deals(limit)`  | Batch-refund up to `limit` expired funded deals. Idempotent.                                                                                                      |
+| `process_expired_deals(limit)`  | Batch-refund up to `limit` expired funded deals. Idempotent. Skips deals in `Disputed` state per RFC-001 Q2 contract.                                             |
+
+### Dispute & arbitrator methods (RFC-001)
+
+| Method                                        | Description                                                                                                                                                                                                           |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `open_dispute(OpenDisputeArgs)`               | Either bound party of a `Funded` deal opens a dispute. Selects a randomly-weighted arbitrator panel via `raw_rand`. Deal transitions `Funded → Disputed`. (RFC-001 step 4)                                            |
+| `submit_evidence(SubmitEvidenceArgs)`         | Party of the deal or arbitrator on the panel submits evidence (note + off-canister URL + SHA-256 hash) during the Evidence phase. (RFC-001 step 5)                                                                    |
+| `cast_vote(CastVoteArgs)`                     | Active arbitrator on the panel votes `ConcludedCorrectly` / `IncorrectlyConcluded` / `Abstain`. Allowed during the open voting window. Latest-wins. (RFC-001 step 6)                                                  |
+| `finalize_dispute(FinalizeDisputeArgs)`       | Anyone (non-anonymous) can trigger after `voting_deadline_ns`. Tallies, fans out per-arbitrator fees, transfers prevailing-party payout, flips deal to `ArbitratedSettled` / `ArbitratedRefunded`. (RFC-001 step 7)   |
+| `withdraw_dispute(WithdrawDisputeArgs)`       | Out-of-band settlement during the Evidence phase. Either party proposes an outcome; resolution fires when both proposals match. Arbitrators receive a reduced fee (`withdraw_fee_pct`, default 25%). (RFC-001 step 9) |
+| `register_arbitrator(RegisterArbitratorArgs)` | Self-register as an arbitrator. Idempotent; updates bio + reactivates a previously deregistered profile. (RFC-001 step 3)                                                                                             |
+| `deregister_arbitrator()`                     | Self-deregister. In-flight assignments still honoured (non-vote counts as `Abstain` at finalize). (RFC-001 step 3)                                                                                                    |
+
+### Dispute & arbitrator queries
+
+| Method                                  | Description                                                                                                                                                           |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_dispute(dispute_id)`               | Full dispute view. Caller must be a party of the parent deal or an arbitrator on the panel.                                                                           |
+| `get_public_dispute(dispute_id)`        | Reduced public view — no party / panel principals, no evidence URLs. Tally + outcome are revealed only after the dispute reaches `Resolved` (phase-gated disclosure). |
+| `list_my_disputes(ListMyDisputesArgs)`  | Paginated reverse-chronological list of disputes the caller is involved with (party or arbitrator on the panel). Optional `phase` filter.                             |
+| `get_arbitrator(principal)`             | Returns the arbitrator profile for `principal`, or `None` if unregistered. Public read.                                                                               |
+| `list_arbitrators(ListArbitratorsArgs)` | Paginated arbitrator list with optional `status` and `min_score` filters.                                                                                             |
 
 ### Escrow query methods
 
@@ -120,14 +142,17 @@ Every deal is a non-fungible token. Ownership follows deal lifecycle: the payer 
 
 ### Status
 
-| Status      | Description                                            |
-| ----------- | ------------------------------------------------------ |
-| `Created`   | Deal exists, possibly waiting for counterparty consent |
-| `Funded`    | Tokens locked in escrow                                |
-| `Settled`   | Funds released to recipient (happy path)               |
-| `Refunded`  | Funds returned to payer (expiry)                       |
-| `Cancelled` | Creator or counterparty cancelled before funding       |
-| `Rejected`  | Counterparty refused the deal terms                    |
+| Status               | Description                                                                                                                                    |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Created`            | Deal exists, possibly waiting for counterparty consent                                                                                         |
+| `Funded`             | Tokens locked in escrow                                                                                                                        |
+| `Settled`            | Funds released to recipient (happy path)                                                                                                       |
+| `Refunded`           | Funds returned to payer (expiry)                                                                                                               |
+| `Cancelled`          | Creator or counterparty cancelled before funding                                                                                               |
+| `Rejected`           | Counterparty refused the deal terms                                                                                                            |
+| `Disputed`           | A dispute is open on the deal (RFC-001). Funds remain in the escrow subaccount; expiry sweep skips it.                                         |
+| `ArbitratedSettled`  | Dispute resolved with a `ConcludedCorrectly` outcome (panel majority CC, or out-of-band Q12 agreement). Funds released to recipient. Terminal. |
+| `ArbitratedRefunded` | Dispute resolved with an `IncorrectlyConcluded` / `NoQuorum` outcome (Q9 fallback). Funds refunded to payer. Terminal.                         |
 
 ### Consent
 
@@ -141,15 +166,24 @@ Every deal is a non-fungible token. Ownership follows deal lifecycle: the payer 
 
 ```
 Created ──[both consent]──▶ Created ──fund──▶ Funded ──accept──▶ Settled
-  │                           │                 │
-  │ reject                    │ cancel          │ reclaim (after expiry)
-  ▼                           ▼                 ▼
-Rejected                  Cancelled          Refunded
+  │                           │                 │  │
+  │ reject                    │ cancel          │  │ open_dispute
+  ▼                           ▼                 │  ▼
+Rejected                  Cancelled             │  Disputed
+                                                │    ├─[majority CC]──▶ ArbitratedSettled
+                                                │    ├─[majority IC]──▶ ArbitratedRefunded
+                                                │    ├─[no quorum]────▶ ArbitratedRefunded (Q9)
+                                                │    └─[Q12 withdrawn]▶ ArbitratedSettled / Refunded
+                                                │ reclaim (after expiry, if not Disputed)
+                                                ▼
+                                            Refunded
 ```
 
-`Settled`, `Refunded`, `Cancelled`, and `Rejected` are terminal states.
+`Settled`, `Refunded`, `Cancelled`, `Rejected`, `ArbitratedSettled`, and `ArbitratedRefunded` are terminal states. `Disputed` is non-terminal — funds stay in escrow until the dispute resolves.
 
-> **Automatic refund:** A repeating timer (every 5 minutes) sweeps expired funded deals and refunds them automatically. The `reclaim_deal` endpoint serves as a manual fallback. Both paths are idempotent.
+> **Automatic refund:** A repeating timer (every 5 minutes) sweeps expired funded deals and refunds them automatically. The `reclaim_deal` endpoint serves as a manual fallback. Both paths are idempotent. The sweep skips deals in `Disputed` state per the RFC-001 Q2 contract.
+
+> **Automatic dispute finalize:** A second repeating timer (every 5 minutes) auto-finalises disputes whose `voting_deadline_ns` has passed (RFC-001 step 8). Per-dispute errors are swallowed so a single failure (e.g. ledger temporarily unreachable) doesn't block the sweep — it gets retried on the next cycle. The two sweeps share the re-entrancy-guard pattern but use independent flags so they can interleave.
 
 ### Flows
 
@@ -176,27 +210,37 @@ Rejected                  Cancelled          Refunded
 
 ## Module structure
 
-| Module                     | Responsibility                                                                    |
-| -------------------------- | --------------------------------------------------------------------------------- |
-| `types/deal.rs`            | Internal `Deal`, `DealStatus`, `Consent`, `DealMetadata` types                    |
-| `types/ledger_types.rs`    | ICRC-1/ICRC-2 Account and transfer types                                          |
-| `types/icrc7.rs`           | ICRC-7/ICRC-16 `Value` type, ownership helpers, metadata builders                 |
-| `types/state.rs`           | Config, StableState for persistence                                               |
-| `api/deals/api.rs`         | Thin deal endpoint layer (delegates to services)                                  |
-| `api/deals/params.rs`      | Public argument structs (`CreateDealArgs`, `AcceptDealArgs`, …)                   |
-| `api/deals/results.rs`     | Public view structs (`DealView`, `ClaimableDealView`)                             |
-| `api/deals/errors.rs`      | Typed `EscrowError` enum                                                          |
-| `api/icrc7/api.rs`         | ICRC-7 NFT standard query/update endpoints + ICRC-10 supported standards          |
-| `api/admin/api.rs`         | Controller-only admin endpoints                                                   |
-| `services/deals.rs`        | Core deal business logic (create, fund, accept, reclaim, cancel, consent, reject) |
-| `services/expiry.rs`       | Batch expired-deal refund processing                                              |
-| `services/housekeeping.rs` | Repeating timer that auto-refunds expired deals every 5 minutes                   |
-| `services/icrc7.rs`        | ICRC-7 service logic (token metadata, ownership, pagination, transfer rejection)  |
-| `memory.rs`                | Thread-local storage, atomic deal-ID allocation, save/restore, processing locks   |
-| `ledger.rs`                | ICRC inter-canister call helpers (transfer, transfer_from, raw_rand)              |
-| `subaccounts.rs`           | Deterministic deal subaccount derivation                                          |
-| `validation.rs`            | State transition, consent, and input validation                                   |
-| `guards.rs`                | Caller authentication/authorization guards                                        |
+| Module                       | Responsibility                                                                                                                                |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types/deal.rs`              | Internal `Deal`, `DealStatus` (incl. `Disputed` / `ArbitratedSettled` / `ArbitratedRefunded`), `Consent`, `DealMetadata` types                |
+| `types/dispute.rs`           | Internal `Dispute`, `DisputeId`, `DisputePhase`, `Vote`, `Evidence`, `PanelMember`, `DisputeOutcome`, `DisputeConfig` (RFC-001)               |
+| `types/arbitrator.rs`        | Internal `ArbitratorProfile`, `ArbitratorStatus`, `MIN_VOTES_FOR_SCORE`, `compute_score` helper (RFC-001)                                     |
+| `types/ledger_types.rs`      | ICRC-1/ICRC-2 Account and transfer types                                                                                                      |
+| `types/icrc7.rs`             | ICRC-7/ICRC-16 `Value` type, ownership helpers, metadata builders                                                                             |
+| `types/state.rs`             | `Config` (incl. `dispute_config: Option<DisputeConfig>`), `StableState` for persistence                                                       |
+| `api/deals/api.rs`           | Thin deal endpoint layer (delegates to services)                                                                                              |
+| `api/deals/params.rs`        | Public argument structs (`CreateDealArgs`, `AcceptDealArgs`, …)                                                                               |
+| `api/deals/results.rs`       | Public view structs (`DealView` (incl. `dispute: Option<DisputeId>`), `ClaimableDealView`)                                                    |
+| `api/deals/errors.rs`        | Typed `EscrowError` enum (incl. RFC-001 dispute / arbitrator variants)                                                                        |
+| `api/disputes/api.rs`        | RFC-001 dispute endpoints (`open_dispute`, `submit_evidence`, `cast_vote`, `finalize_dispute`, `withdraw_dispute`, `get_*`, `list_my_*`)      |
+| `api/disputes/params.rs`     | Public dispute argument structs                                                                                                               |
+| `api/disputes/results.rs`    | Public dispute view structs (`DisputeView`, `PublicDisputeView`, `DisputeTally`)                                                              |
+| `api/arbitrators/api.rs`     | RFC-001 arbitrator registry endpoints (`register_arbitrator`, `deregister_arbitrator`, `get_arbitrator`, `list_arbitrators`)                  |
+| `api/arbitrators/params.rs`  | Public arbitrator argument structs                                                                                                            |
+| `api/arbitrators/results.rs` | Public arbitrator result types                                                                                                                |
+| `api/icrc7/api.rs`           | ICRC-7 NFT standard query/update endpoints + ICRC-10 supported standards                                                                      |
+| `api/admin/api.rs`           | Controller-only admin endpoints                                                                                                               |
+| `services/deals.rs`          | Core deal business logic (create, fund, accept, reclaim, cancel, consent, reject)                                                             |
+| `services/disputes.rs`       | Dispute lifecycle (open, submit_evidence, cast_vote, finalize, withdraw, queries) + tally + panel selection + auto-finalize sweep (RFC-001)   |
+| `services/arbitrators.rs`    | Arbitrator registry service (register / deregister / get / list) (RFC-001)                                                                    |
+| `services/expiry.rs`         | Batch expired-deal refund processing (skips `Disputed`)                                                                                       |
+| `services/housekeeping.rs`   | Two repeating timers: expiry auto-refund (every 5 min) + dispute auto-finalize (every 5 min, RFC-001 step 8) — independent re-entrancy guards |
+| `services/icrc7.rs`          | ICRC-7 service logic (token metadata, ownership, pagination, transfer rejection)                                                              |
+| `memory.rs`                  | Thread-local storage (deals + disputes + arbitrators), atomic ID allocation, save/restore, processing locks                                   |
+| `ledger.rs`                  | ICRC inter-canister call helpers (transfer, transfer_from, fee, raw_rand)                                                                     |
+| `subaccounts.rs`             | Deterministic deal subaccount derivation                                                                                                      |
+| `validation.rs`              | State transition, consent, dispute, evidence, and input validation                                                                            |
+| `guards.rs`                  | Caller authentication/authorization guards                                                                                                    |
 
 ## Scalability & limitations
 
@@ -255,9 +299,21 @@ The `Deal` struct intentionally stores only the **current state**, not a history
 
 Until ICRC-3 is implemented, the existing `updated_at_ns` / `updated_by` fields on `Deal` provide a lightweight last-modified record, and the `DealStatus` + `Consent` fields fully describe the current state. A temporary `BTreeMap<DealId, Vec<StateTransition>>` audit log can be added as an intermediate step if needed before the full ICRC-3 integration.
 
-### Disputes and resolution
+### Disputes and resolution (implemented)
 
-The next major addition — design captured in [RFC-001](../../docs/rfcs/0001-dispute-resolution.md) (currently open for comment). At a high level: add `Disputed` / `ArbitratedSettled` / `ArbitratedRefunded` variants to `DealStatus`, a parallel arbitrator pool with simple-majority voting, and an evidence + voting phase model. The explicit state machine in `validation.rs` already gates every transition — new edges (e.g. `Funded -> Disputed`, `Disputed -> ArbitratedSettled`) plug in alongside the existing ones. The `Deal` struct gains a `dispute: Option<DisputeId>` field (backward-compatible). The proposed schema and open design questions live in the RFC.
+[RFC-001](../../docs/rfcs/0001-dispute-resolution.md) is **Accepted** and its 10-step implementation plan has fully landed:
+
+- `DealStatus` gained `Disputed`, `ArbitratedSettled`, `ArbitratedRefunded` variants.
+- `Deal` gained `dispute: Option<DisputeId>` linking to the optional dispute record.
+- A parallel arbitrator pool (`ArbitratorProfile` keyed by principal) with self-service registration, score-weighted random panel selection, and admin suspension as a backstop.
+- Five new lifecycle endpoints: `open_dispute`, `submit_evidence`, `cast_vote`, `finalize_dispute`, `withdraw_dispute`.
+- Q12 out-of-band settlement (`withdraw_dispute`) lets parties resolve in the Evidence phase with a reduced arbitrator fee.
+- A second housekeeping timer auto-finalises disputes whose voting deadline has passed.
+- The expiry sweep skips `Disputed` deals so a deal mid-arbitration cannot be auto-refunded out from under the panel.
+- `compute_reliability_for` and `count_active_deals_for` treat the new arbitrated terminals symmetrically with their unilateral counterparts.
+- All knobs (`panel_size`, `evidence_window_ns`, `voting_window_ns`, `arbitration_fee_bps`, `arbitration_min_fee`, `withdraw_fee_pct`, `min_arbitrator_score`) live on `Config::dispute_config: Option<DisputeConfig>` and are admin-tunable via `update_config`.
+
+The full Q1–Q14 decision rationale is captured in the RFC's Decision Log.
 
 ### Multi-asset / multi-ledger
 
