@@ -28,6 +28,7 @@ macro_rules! candid_result {
 }
 
 candid_result!(OpenDisputeResult, DisputeView);
+candid_result!(SubmitEvidenceResult, DisputeView);
 candid_result!(GetDisputeResult, DisputeView);
 candid_result!(GetPublicDisputeResult, PublicDisputeView);
 

@@ -514,6 +514,23 @@ type ReliabilityView = record {
 	// Deals that ended positively (Settled or Refunded).
 	positive : nat32
 };
+// Arguments for `submit_evidence` (RFC-001 step 5).
+//
+// Per Q8: at least one of `note` / `(artefact_url + artefact_sha256)`
+// must be present; URL and hash are paired (one without the other is
+// rejected); `note` <= 4 KiB; `artefact_url` <= 2 KiB;
+// `artefact_sha256` exactly 32 bytes when set.
+type SubmitEvidenceArgs = record {
+	// Free-form note (max 4 KiB).
+	note : opt text;
+	// Identifier of the dispute receiving the evidence.
+	dispute_id : nat64;
+	// Off-canister artefact URL (max 2 KiB).
+	artefact_url : opt text;
+	// SHA-256 of the off-canister artefact. Always exactly 32 bytes
+	// when `Some`.
+	artefact_sha256 : opt blob
+};
 // ICRC-10 supported standard descriptor.
 type SupportedStandard = record { url : text; name : text };
 // Generic metadata value following the ICRC-16 specification.
@@ -739,6 +756,10 @@ service : () -> {
 	// The caller must be the payer or recipient. Their consent is set to
 	// `Rejected` and the deal becomes final.
 	reject_deal : (FundDealArgs) -> (GetDealResult);
+	// Submits a piece of evidence on a dispute. Caller must be a party
+	// of the parent deal or an arbitrator on the panel. Allowed during
+	// the `Evidence` phase only. RFC-001 step 5.
+	submit_evidence : (SubmitEvidenceArgs) -> (GetDisputeResult);
 	// Updates the global configuration for the Escrow canister.
 	//
 	// This method is gated to canister controllers.

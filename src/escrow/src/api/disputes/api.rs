@@ -2,8 +2,11 @@ use ic_cdk::api::{msg_caller, time};
 use ic_cdk_macros::{query, update};
 
 use super::{
-    params::{ListMyDisputesArgs, OpenDisputeArgs},
-    results::{DisputeView, GetDisputeResult, GetPublicDisputeResult, OpenDisputeResult},
+    params::{ListMyDisputesArgs, OpenDisputeArgs, SubmitEvidenceArgs},
+    results::{
+        DisputeView, GetDisputeResult, GetPublicDisputeResult, OpenDisputeResult,
+        SubmitEvidenceResult,
+    },
 };
 use crate::{guards::caller_is_not_anonymous, services, types::dispute::DisputeId};
 
@@ -20,6 +23,30 @@ pub async fn open_dispute(OpenDisputeArgs { deal_id }: OpenDisputeArgs) -> OpenD
     services::disputes::open(msg_caller(), deal_id, time())
         .await
         .into()
+}
+
+/// Submits a piece of evidence on a dispute. Caller must be a party
+/// of the parent deal or an arbitrator on the panel. Allowed during
+/// the `Evidence` phase only. RFC-001 step 5.
+#[update(guard = "caller_is_not_anonymous")]
+#[must_use]
+pub fn submit_evidence(
+    SubmitEvidenceArgs {
+        dispute_id,
+        note,
+        artefact_url,
+        artefact_sha256,
+    }: SubmitEvidenceArgs,
+) -> SubmitEvidenceResult {
+    services::disputes::submit_evidence(
+        msg_caller(),
+        dispute_id,
+        note,
+        artefact_url,
+        artefact_sha256,
+        time(),
+    )
+    .into()
 }
 
 // ---------------------------------------------------------------------------

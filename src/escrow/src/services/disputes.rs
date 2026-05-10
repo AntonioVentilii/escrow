@@ -19,12 +19,12 @@ use crate::{
     ledger,
     memory::{
         get_deal, get_dispute as load_dispute, insert_new_dispute, release_lock, try_acquire_lock,
-        with_arbitrator, with_arbitrators, with_deal, with_disputes, CONFIG,
+        with_arbitrator, with_arbitrators, with_deal, with_dispute, with_disputes, CONFIG,
     },
     types::{
         arbitrator::ArbitratorStatus,
         deal::{Deal, DealId, DealStatus},
-        dispute::{Dispute, DisputeConfig, DisputeId, DisputePhase, PanelMember},
+        dispute::{Dispute, DisputeConfig, DisputeId, DisputePhase, Evidence, PanelMember},
     },
     validation,
 };
@@ -256,6 +256,69 @@ async fn open_locked(
     }
 
     Ok(DisputeView::from(&dispute))
+}
+
+/// Submits a piece of evidence on a dispute (RFC-001 step 5).
+///
+/// Allowed during the `Evidence` phase only. Caller must be a party of
+/// the parent deal or an arbitrator on the panel. Length / shape
+/// invariants enforced by `validation::validate_evidence`.
+///
+/// Idempotent contract: each successful call appends a new `Evidence`
+/// entry with the current `now_ns` timestamp. Replays are *not*
+/// suppressed (each submission is a distinct event) — callers should
+/// throttle on the FE if they want client-side deduplication.
+pub fn submit_evidence(
+    caller: Principal,
+    dispute_id: DisputeId,
+    note: Option<String>,
+    artefact_url: Option<String>,
+    artefact_sha256: Option<Vec<u8>>,
+    now_ns: u64,
+) -> Result<DisputeView, EscrowError> {
+    validation::validate_evidence(
+        note.as_deref(),
+        artefact_url.as_deref(),
+        artefact_sha256.as_deref(),
+    )?;
+
+    let dispute = load_dispute(dispute_id).ok_or(EscrowError::DisputeNotFound)?;
+    let deal = get_deal(dispute.deal_id).ok_or(EscrowError::NotFound)?;
+
+    // Same auth as `get_dispute`: party of parent deal OR arbitrator on panel.
+    authorize_dispute_view(&dispute, &deal, caller)?;
+
+    if !matches!(dispute.phase, DisputePhase::Evidence) {
+        return Err(EscrowError::InvalidDisputePhase {
+            expected: "Evidence".to_owned(),
+            actual: format!("{:?}", dispute.phase),
+        });
+    }
+    if dispute.evidence_deadline_ns <= now_ns {
+        // Past the evidence deadline — phase still says `Evidence` (lazy
+        // advance happens at vote / finalize time), but new submissions
+        // are no longer accepted.
+        return Err(EscrowError::InvalidDisputePhase {
+            expected: "Evidence (within deadline)".to_owned(),
+            actual: "Evidence (deadline passed)".to_owned(),
+        });
+    }
+
+    let entry = Evidence {
+        submitter: caller,
+        submitted_at_ns: now_ns,
+        note,
+        artefact_url,
+        artefact_sha256,
+    };
+
+    let updated = with_dispute(dispute_id, |d| {
+        d.evidence.push(entry.clone());
+        d.clone()
+    })
+    .ok_or(EscrowError::DisputeNotFound)?;
+
+    Ok(DisputeView::from(&updated))
 }
 
 // ---------------------------------------------------------------------------
@@ -728,6 +791,279 @@ mod tests {
         let cfg = load_dispute_config();
         assert_eq!(cfg.panel_size, DisputeConfig::default().panel_size);
     }
+
+    // --- submit_evidence (RFC-001 step 5) ---
+
+    use super::submit_evidence;
+    use crate::{
+        memory::with_deal,
+        types::{
+            deal::Deal as DealRef,
+            dispute::{Dispute as DisputeRef, Evidence, Vote},
+        },
+    };
+
+    fn make_disputed_deal_with_dispute(
+        payer: Principal,
+        recipient: Principal,
+        arbitrators: Vec<Principal>,
+        phase: DisputePhase,
+        evidence_deadline_ns: u64,
+    ) -> (DealRef, DisputeRef) {
+        let deal = make_deal(payer, recipient, DealStatus::Disputed);
+        let panel = arbitrators
+            .into_iter()
+            .map(|p| PanelMember {
+                principal: p,
+                vote: None,
+                paid_at_ns: None,
+                payout_tx: None,
+            })
+            .collect();
+        let dispute = insert_new_dispute(|id| Dispute {
+            id,
+            deal_id: deal.id,
+            opened_by: payer,
+            opened_at_ns: 100,
+            phase,
+            evidence_deadline_ns,
+            voting_deadline_ns: evidence_deadline_ns + 1000,
+            panel,
+            evidence: vec![],
+            arbitration_fee: 50_000,
+            outcome: None,
+            payer_withdraw_proposal: None,
+            recipient_withdraw_proposal: None,
+        });
+        with_deal(deal.id, |d| {
+            d.dispute = Some(dispute.id);
+        });
+        (deal, dispute)
+    }
+
+    #[test]
+    fn submit_evidence_appends_for_party() {
+        let payer = principal(190);
+        let recipient = principal(191);
+        let (_, dispute) = make_disputed_deal_with_dispute(
+            payer,
+            recipient,
+            vec![],
+            DisputePhase::Evidence,
+            10_000,
+        );
+        let view =
+            submit_evidence(payer, dispute.id, Some("hi".to_owned()), None, None, 200).unwrap();
+        assert_eq!(view.evidence.len(), 1);
+        assert_eq!(view.evidence[0].submitter, payer);
+        assert_eq!(view.evidence[0].submitted_at_ns, 200);
+    }
+
+    #[test]
+    fn submit_evidence_appends_for_panel_member() {
+        let payer = principal(195);
+        let recipient = principal(196);
+        let arbitrator = principal(197);
+        let (_, dispute) = make_disputed_deal_with_dispute(
+            payer,
+            recipient,
+            vec![arbitrator],
+            DisputePhase::Evidence,
+            10_000,
+        );
+        let view = submit_evidence(
+            arbitrator,
+            dispute.id,
+            Some("from arb".to_owned()),
+            None,
+            None,
+            200,
+        )
+        .unwrap();
+        assert_eq!(view.evidence.len(), 1);
+    }
+
+    #[test]
+    fn submit_evidence_replays_append() {
+        let payer = principal(200);
+        let recipient = principal(201);
+        let (_, dispute) = make_disputed_deal_with_dispute(
+            payer,
+            recipient,
+            vec![],
+            DisputePhase::Evidence,
+            10_000,
+        );
+        for i in 0_u64..3 {
+            submit_evidence(
+                payer,
+                dispute.id,
+                Some(format!("entry {i}")),
+                None,
+                None,
+                200 + i,
+            )
+            .unwrap();
+        }
+        let view = get(payer, dispute.id).unwrap();
+        assert_eq!(view.evidence.len(), 3);
+        assert_eq!(view.evidence[0].submitted_at_ns, 200);
+        assert_eq!(view.evidence[2].submitted_at_ns, 202);
+    }
+
+    #[test]
+    fn submit_evidence_rejects_unrelated_caller() {
+        let payer = principal(210);
+        let recipient = principal(211);
+        let stranger = principal(212);
+        let (_, dispute) = make_disputed_deal_with_dispute(
+            payer,
+            recipient,
+            vec![],
+            DisputePhase::Evidence,
+            10_000,
+        );
+        let err = submit_evidence(stranger, dispute.id, Some("no".to_owned()), None, None, 200)
+            .unwrap_err();
+        assert_eq!(err, EscrowError::NotAuthorised);
+    }
+
+    #[test]
+    fn submit_evidence_rejects_after_phase_advance() {
+        let payer = principal(220);
+        let recipient = principal(221);
+        let (_, dispute) =
+            make_disputed_deal_with_dispute(payer, recipient, vec![], DisputePhase::Voting, 10_000);
+        let err = submit_evidence(payer, dispute.id, Some("late".to_owned()), None, None, 200)
+            .unwrap_err();
+        match err {
+            EscrowError::InvalidDisputePhase { expected, actual } => {
+                assert_eq!(expected, "Evidence");
+                assert!(actual.contains("Voting"), "actual: {actual}");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_evidence_rejects_after_deadline() {
+        let payer = principal(230);
+        let recipient = principal(231);
+        let (_, dispute) = make_disputed_deal_with_dispute(
+            payer,
+            recipient,
+            vec![],
+            DisputePhase::Evidence,
+            500, // deadline at 500
+        );
+        // now_ns = 600 → past the deadline.
+        let err = submit_evidence(payer, dispute.id, Some("late".to_owned()), None, None, 600)
+            .unwrap_err();
+        match err {
+            EscrowError::InvalidDisputePhase { expected, actual } => {
+                assert!(expected.contains("Evidence"));
+                assert!(actual.contains("deadline passed"), "actual: {actual}");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_evidence_rejects_empty_payload() {
+        let payer = principal(240);
+        let recipient = principal(241);
+        let (_, dispute) = make_disputed_deal_with_dispute(
+            payer,
+            recipient,
+            vec![],
+            DisputePhase::Evidence,
+            10_000,
+        );
+        let err = submit_evidence(payer, dispute.id, None, None, None, 200).unwrap_err();
+        assert!(matches!(err, EscrowError::ValidationError(_)));
+    }
+
+    #[test]
+    fn submit_evidence_rejects_oversized_note() {
+        let payer = principal(250);
+        let recipient = principal(251);
+        let (_, dispute) = make_disputed_deal_with_dispute(
+            payer,
+            recipient,
+            vec![],
+            DisputePhase::Evidence,
+            10_000,
+        );
+        let huge = "x".repeat(5000);
+        let err = submit_evidence(payer, dispute.id, Some(huge), None, None, 200).unwrap_err();
+        assert!(matches!(err, EscrowError::EvidenceTooLarge { .. }));
+    }
+
+    #[test]
+    fn submit_evidence_requires_paired_url_hash() {
+        let payer = principal(13);
+        let recipient = principal(14);
+        let (_, dispute) = make_disputed_deal_with_dispute(
+            payer,
+            recipient,
+            vec![],
+            DisputePhase::Evidence,
+            10_000,
+        );
+        // URL without hash → ValidationError.
+        let err = submit_evidence(
+            payer,
+            dispute.id,
+            None,
+            Some("https://example.com".to_owned()),
+            None,
+            200,
+        )
+        .unwrap_err();
+        assert!(matches!(err, EscrowError::ValidationError(_)));
+        // Hash without URL → ValidationError.
+        let err =
+            submit_evidence(payer, dispute.id, None, None, Some(vec![0_u8; 32]), 200).unwrap_err();
+        assert!(matches!(err, EscrowError::ValidationError(_)));
+    }
+
+    #[test]
+    fn submit_evidence_rejects_short_hash() {
+        let payer = principal(60);
+        let recipient = principal(61);
+        let (_, dispute) = make_disputed_deal_with_dispute(
+            payer,
+            recipient,
+            vec![],
+            DisputePhase::Evidence,
+            10_000,
+        );
+        let err = submit_evidence(
+            payer,
+            dispute.id,
+            None,
+            Some("https://example.com".to_owned()),
+            Some(vec![0_u8; 16]),
+            200,
+        )
+        .unwrap_err();
+        match err {
+            EscrowError::ValidationError(msg) => {
+                assert!(msg.contains("32 bytes"), "msg: {msg}");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_evidence_returns_dispute_not_found() {
+        let err = submit_evidence(principal(1), 999_999, Some("x".to_owned()), None, None, 200)
+            .unwrap_err();
+        assert_eq!(err, EscrowError::DisputeNotFound);
+    }
+
+    // --- supporting types referenced by the helper ---
+    fn _imports_used_by_helper(_e: Evidence, _v: Vote) {}
 
     // --- assigned counter sanity (single-arbitrator case) ---
 

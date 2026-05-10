@@ -1,14 +1,14 @@
 //! Integration tests for `open_dispute` (RFC-001 step 4).
 //!
 //! Covers the error paths reachable without a real ICRC ledger:
-//! - `NotFound` on unknown deal_id.
+//! - `NotFound` on unknown `deal_id`.
 //! - `InvalidState` on `Created` deals (no funds at risk yet).
 //! - `DisputeRequiresBoundRecipient` on tip-flow deals.
 //! - `NotAuthorised` for unrelated callers.
 //! - Anonymous caller blocked by guard.
 //!
 //! The full happy-path test (`Funded → Disputed`, panel selection,
-//! dispute_id wired back to the deal) requires a deal that's actually
+//! `dispute_id` wired back to the deal) requires a deal that's actually
 //! `Funded` — which requires an ICRC-1/2 ledger canister installed in
 //! `pocket-ic`. That infrastructure lands in step 7 (finalize) where
 //! actual transfers happen; the open-dispute happy path will be
@@ -85,11 +85,7 @@ fn create_tip_deal(escrow: &PicCanister, payer: Principal) -> DealView {
     }
 }
 
-fn try_open_dispute(
-    escrow: &PicCanister,
-    caller: Principal,
-    deal_id: u64,
-) -> OpenDisputeResult {
+fn try_open_dispute(escrow: &PicCanister, caller: Principal, deal_id: u64) -> OpenDisputeResult {
     escrow
         .update(caller, "open_dispute", (OpenDisputeArgs { deal_id },))
         .expect("open_dispute call failed")
@@ -216,7 +212,11 @@ fn list_my_disputes_returns_empty_when_none() {
     use escrow::api::disputes::{params::ListMyDisputesArgs, results::DisputeView};
     let (_pic, escrow) = setup();
     let result: Vec<DisputeView> = escrow
-        .query(user(1), "list_my_disputes", (ListMyDisputesArgs::default(),))
+        .query(
+            user(1),
+            "list_my_disputes",
+            (ListMyDisputesArgs::default(),),
+        )
         .expect("query failed");
     assert!(result.is_empty());
 }

@@ -19,8 +19,11 @@ use crate::{
             },
         },
         disputes::{
-            params::{ListMyDisputesArgs, OpenDisputeArgs},
-            results::{DisputeView, GetDisputeResult, GetPublicDisputeResult, OpenDisputeResult},
+            params::{ListMyDisputesArgs, OpenDisputeArgs, SubmitEvidenceArgs},
+            results::{
+                DisputeView, GetDisputeResult, GetPublicDisputeResult, OpenDisputeResult,
+                SubmitEvidenceResult,
+            },
         },
         reliability::results::ReliabilityView,
     },

@@ -37,6 +37,13 @@ pub fn validate_create(amount: u128, expires_at_ns: u64, now_ns: u64) -> Result<
     Ok(())
 }
 
+/// Max byte length of an evidence note (RFC-001 Q8).
+pub const MAX_EVIDENCE_NOTE_LEN: u32 = 4096;
+/// Max byte length of an evidence artefact URL (RFC-001 Q8).
+pub const MAX_EVIDENCE_URL_LEN: u32 = 2048;
+/// SHA-256 length in bytes — invariant for evidence artefact hashes.
+pub const SHA256_LEN: usize = 32;
+
 /// Enforces the arbitrator-bio length cap (RFC-001 Q4).
 pub fn validate_arbitrator_bio(bio: Option<&str>) -> Result<(), EscrowError> {
     if let Some(b) = bio {
@@ -290,6 +297,53 @@ pub fn validate_can_reject(deal: &Deal, caller: Principal) -> Result<bool, Escro
     }
 
     resolve_caller_role(deal, caller)
+}
+
+/// Validates a single evidence submission per Q8 boundary rules:
+/// at least one of `note` / `(artefact_url + artefact_sha256)` present;
+/// URL and hash paired; size + length caps.
+pub fn validate_evidence(
+    note: Option<&str>,
+    artefact_url: Option<&str>,
+    artefact_sha256: Option<&[u8]>,
+) -> Result<(), EscrowError> {
+    if note.is_none() && artefact_url.is_none() && artefact_sha256.is_none() {
+        return Err(EscrowError::ValidationError(
+            "evidence must contain at least a note or an artefact".to_owned(),
+        ));
+    }
+
+    if artefact_url.is_some() != artefact_sha256.is_some() {
+        return Err(EscrowError::ValidationError(
+            "artefact_url and artefact_sha256 must be supplied together".to_owned(),
+        ));
+    }
+
+    if let Some(n) = note {
+        if n.len() > MAX_EVIDENCE_NOTE_LEN as usize {
+            return Err(EscrowError::EvidenceTooLarge {
+                max: MAX_EVIDENCE_NOTE_LEN,
+            });
+        }
+    }
+
+    if let Some(url) = artefact_url {
+        if url.len() > MAX_EVIDENCE_URL_LEN as usize {
+            return Err(EscrowError::ValidationError(format!(
+                "artefact_url exceeds {MAX_EVIDENCE_URL_LEN} bytes",
+            )));
+        }
+    }
+
+    if let Some(hash) = artefact_sha256 {
+        if hash.len() != SHA256_LEN {
+            return Err(EscrowError::ValidationError(format!(
+                "artefact_sha256 must be exactly {SHA256_LEN} bytes",
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
