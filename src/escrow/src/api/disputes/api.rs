@@ -2,9 +2,9 @@ use ic_cdk::api::{msg_caller, time};
 use ic_cdk_macros::{query, update};
 
 use super::{
-    params::{ListMyDisputesArgs, OpenDisputeArgs, SubmitEvidenceArgs},
+    params::{CastVoteArgs, ListMyDisputesArgs, OpenDisputeArgs, SubmitEvidenceArgs},
     results::{
-        DisputeView, GetDisputeResult, GetPublicDisputeResult, OpenDisputeResult,
+        CastVoteResult, DisputeView, GetDisputeResult, GetPublicDisputeResult, OpenDisputeResult,
         SubmitEvidenceResult,
     },
 };
@@ -47,6 +47,17 @@ pub fn submit_evidence(
         time(),
     )
     .into()
+}
+
+/// Casts a vote on a dispute. Caller must be on the panel and
+/// currently `Active`. Allowed only during the open voting window
+/// (`evidence_deadline_ns <= now < voting_deadline_ns`). Latest-wins
+/// semantics — calling repeatedly during the window updates the vote.
+/// RFC-001 step 6.
+#[update(guard = "caller_is_not_anonymous")]
+#[must_use]
+pub fn cast_vote(CastVoteArgs { dispute_id, vote }: CastVoteArgs) -> CastVoteResult {
+    services::disputes::cast_vote(msg_caller(), dispute_id, vote, time()).into()
 }
 
 // ---------------------------------------------------------------------------

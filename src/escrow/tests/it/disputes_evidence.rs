@@ -27,7 +27,11 @@ fn setup() -> (Arc<PocketIc>, PicCanister) {
     (pic, escrow)
 }
 
-fn try_submit(escrow: &PicCanister, caller: Principal, args: SubmitEvidenceArgs) -> SubmitEvidenceResult {
+fn try_submit(
+    escrow: &PicCanister,
+    caller: Principal,
+    args: SubmitEvidenceArgs,
+) -> SubmitEvidenceResult {
     escrow
         .update(caller, "submit_evidence", (args,))
         .expect("submit_evidence call failed")

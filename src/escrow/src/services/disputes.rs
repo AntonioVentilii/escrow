@@ -18,13 +18,14 @@ use crate::{
     },
     ledger,
     memory::{
-        get_deal, get_dispute as load_dispute, insert_new_dispute, release_lock, try_acquire_lock,
-        with_arbitrator, with_arbitrators, with_deal, with_dispute, with_disputes, CONFIG,
+        get_arbitrator, get_deal, get_dispute as load_dispute, insert_new_dispute, release_lock,
+        try_acquire_lock, with_arbitrator, with_arbitrators, with_deal, with_dispute,
+        with_disputes, CONFIG,
     },
     types::{
         arbitrator::ArbitratorStatus,
         deal::{Deal, DealId, DealStatus},
-        dispute::{Dispute, DisputeConfig, DisputeId, DisputePhase, Evidence, PanelMember},
+        dispute::{Dispute, DisputeConfig, DisputeId, DisputePhase, Evidence, PanelMember, Vote},
     },
     validation,
 };
@@ -256,6 +257,85 @@ async fn open_locked(
     }
 
     Ok(DisputeView::from(&dispute))
+}
+
+/// Casts an arbitrator's vote on a dispute (RFC-001 step 6).
+///
+/// Caller must be on the dispute's `panel` (else
+/// `NotAssignedArbitrator`) and currently `Active` in the arbitrator
+/// registry (else `ArbitratorNotActive`).
+///
+/// **Phase rules** — voting opens at `evidence_deadline_ns` and
+/// closes at `voting_deadline_ns`:
+///
+/// - Phase `Evidence`, deadline not yet reached → `InvalidDisputePhase` (vote arrived before voting
+///   opens).
+/// - Phase `Evidence`, deadline reached → lazy-advance to `Voting`, then record the vote (this is
+///   the canonical entry path).
+/// - Phase `Voting`, deadline not yet reached → record the vote.
+/// - Phase `Voting`, deadline reached → `InvalidDisputePhase` (vote arrived after voting closes;
+///   finalize takes over in step 7).
+/// - Phase `Resolved` → `InvalidDisputePhase`.
+///
+/// **Idempotency / overwrite** — Q11's score rule (only the *eventual
+/// majority* counter increments) lets us treat votes as latest-wins:
+/// an arbitrator can change their vote any time during the open
+/// voting window. Recording the same vote twice is a no-op success.
+pub fn cast_vote(
+    caller: Principal,
+    dispute_id: DisputeId,
+    vote: Vote,
+    now_ns: u64,
+) -> Result<DisputeView, EscrowError> {
+    let dispute = load_dispute(dispute_id).ok_or(EscrowError::DisputeNotFound)?;
+
+    // Caller must be on the panel.
+    if !dispute.panel.iter().any(|m| m.principal == caller) {
+        return Err(EscrowError::NotAssignedArbitrator);
+    }
+
+    // Arbitrator must be Active. Suspended / Deregistered arbitrators
+    // can't vote — non-vote counts as Abstain at finalize per Q5.
+    let profile = get_arbitrator(caller).ok_or(EscrowError::ArbitratorNotActive)?;
+    if !matches!(profile.status, ArbitratorStatus::Active) {
+        return Err(EscrowError::ArbitratorNotActive);
+    }
+
+    // Phase / deadline gates.
+    if matches!(dispute.phase, DisputePhase::Resolved) {
+        return Err(EscrowError::InvalidDisputePhase {
+            expected: "Voting".to_owned(),
+            actual: "Resolved".to_owned(),
+        });
+    }
+    if now_ns < dispute.evidence_deadline_ns {
+        // Voting hasn't opened yet.
+        return Err(EscrowError::InvalidDisputePhase {
+            expected: "Voting".to_owned(),
+            actual: "Evidence (voting not yet open)".to_owned(),
+        });
+    }
+    if now_ns >= dispute.voting_deadline_ns {
+        // Voting has closed; finalize takes over (step 7).
+        return Err(EscrowError::InvalidDisputePhase {
+            expected: "Voting (within deadline)".to_owned(),
+            actual: "Voting (deadline passed)".to_owned(),
+        });
+    }
+
+    let updated = with_dispute(dispute_id, move |d| {
+        // Lazy-advance phase.
+        if !matches!(d.phase, DisputePhase::Voting) {
+            d.phase = DisputePhase::Voting;
+        }
+        if let Some(member) = d.panel.iter_mut().find(|m| m.principal == caller) {
+            member.vote = Some(vote);
+        }
+        d.clone()
+    })
+    .ok_or(EscrowError::DisputeNotFound)?;
+
+    Ok(DisputeView::from(&updated))
 }
 
 /// Submits a piece of evidence on a dispute (RFC-001 step 5).
@@ -794,12 +874,12 @@ mod tests {
 
     // --- submit_evidence (RFC-001 step 5) ---
 
-    use super::submit_evidence;
+    use super::{cast_vote, submit_evidence};
     use crate::{
         memory::with_deal,
         types::{
             deal::Deal as DealRef,
-            dispute::{Dispute as DisputeRef, Evidence, Vote},
+            dispute::{Dispute as DisputeRef, Evidence},
         },
     };
 
@@ -1063,7 +1143,149 @@ mod tests {
     }
 
     // --- supporting types referenced by the helper ---
-    fn _imports_used_by_helper(_e: Evidence, _v: Vote) {}
+    fn _imports_used_by_helper(_e: Evidence) {}
+
+    // --- cast_vote (RFC-001 step 6) ---
+
+    fn make_dispute_with_panel(
+        payer_id: u8,
+        recipient_id: u8,
+        arbitrator_ids: &[u8],
+        phase: DisputePhase,
+        evidence_deadline_ns: u64,
+        voting_deadline_ns: u64,
+    ) -> (Principal, Vec<Principal>, super::DisputeId) {
+        let payer = principal(payer_id);
+        let recipient = principal(recipient_id);
+        let arbitrators: Vec<_> = arbitrator_ids
+            .iter()
+            .map(|id| make_arbitrator(*id, None, ArbitratorStatus::Active))
+            .collect();
+        let deal = make_deal(payer, recipient, DealStatus::Disputed);
+        let panel = arbitrators
+            .iter()
+            .map(|p| PanelMember {
+                principal: *p,
+                vote: None,
+                paid_at_ns: None,
+                payout_tx: None,
+            })
+            .collect();
+        let dispute = insert_new_dispute(|id| Dispute {
+            id,
+            deal_id: deal.id,
+            opened_by: payer,
+            opened_at_ns: 100,
+            phase,
+            evidence_deadline_ns,
+            voting_deadline_ns,
+            panel,
+            evidence: vec![],
+            arbitration_fee: 50_000,
+            outcome: None,
+            payer_withdraw_proposal: None,
+            recipient_withdraw_proposal: None,
+        });
+        (payer, arbitrators, dispute.id)
+    }
+
+    #[test]
+    fn cast_vote_records_panel_vote() {
+        let (_, arbs, dispute_id) =
+            make_dispute_with_panel(10, 11, &[20, 21, 22], DisputePhase::Voting, 100, 1_000);
+        let view = cast_vote(arbs[0], dispute_id, super::Vote::ConcludedCorrectly, 200).unwrap();
+        let member = view.panel.iter().find(|m| m.principal == arbs[0]).unwrap();
+        assert_eq!(member.vote, Some(super::Vote::ConcludedCorrectly));
+    }
+
+    #[test]
+    fn cast_vote_lazy_advances_phase() {
+        let (_, arbs, dispute_id) =
+            make_dispute_with_panel(30, 31, &[32, 33, 34], DisputePhase::Evidence, 100, 1_000);
+        // now_ns = 200 → past evidence deadline → lazy-advance should set Voting.
+        let view = cast_vote(arbs[0], dispute_id, super::Vote::IncorrectlyConcluded, 200).unwrap();
+        assert_eq!(view.phase, DisputePhase::Voting);
+    }
+
+    #[test]
+    fn cast_vote_latest_wins_overwrite() {
+        let (_, arbs, dispute_id) =
+            make_dispute_with_panel(40, 41, &[42, 43, 44], DisputePhase::Voting, 100, 1_000);
+        cast_vote(arbs[0], dispute_id, super::Vote::ConcludedCorrectly, 200).unwrap();
+        let view2 = cast_vote(arbs[0], dispute_id, super::Vote::IncorrectlyConcluded, 300).unwrap();
+        let member = view2.panel.iter().find(|m| m.principal == arbs[0]).unwrap();
+        assert_eq!(member.vote, Some(super::Vote::IncorrectlyConcluded));
+    }
+
+    #[test]
+    fn cast_vote_rejects_non_panel_caller() {
+        let (_, _, dispute_id) =
+            make_dispute_with_panel(50, 51, &[52, 53, 54], DisputePhase::Voting, 100, 1_000);
+        let stranger = make_arbitrator(99, None, ArbitratorStatus::Active);
+        let err =
+            cast_vote(stranger, dispute_id, super::Vote::ConcludedCorrectly, 200).unwrap_err();
+        assert_eq!(err, EscrowError::NotAssignedArbitrator);
+    }
+
+    #[test]
+    fn cast_vote_rejects_suspended_arbitrator() {
+        let (_, arbs, dispute_id) =
+            make_dispute_with_panel(60, 61, &[62, 63, 64], DisputePhase::Voting, 100, 1_000);
+        with_arbitrator(arbs[0], |a| a.status = ArbitratorStatus::Suspended);
+        let err = cast_vote(arbs[0], dispute_id, super::Vote::ConcludedCorrectly, 200).unwrap_err();
+        assert_eq!(err, EscrowError::ArbitratorNotActive);
+    }
+
+    #[test]
+    fn cast_vote_rejects_before_voting_opens() {
+        let (_, arbs, dispute_id) =
+            make_dispute_with_panel(70, 71, &[72, 73, 74], DisputePhase::Evidence, 1_000, 5_000);
+        // now_ns = 500 → still inside Evidence window.
+        let err = cast_vote(arbs[0], dispute_id, super::Vote::ConcludedCorrectly, 500).unwrap_err();
+        match err {
+            EscrowError::InvalidDisputePhase { expected, actual } => {
+                assert_eq!(expected, "Voting");
+                assert!(actual.contains("not yet open"), "actual: {actual}");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cast_vote_rejects_after_voting_closes() {
+        let (_, arbs, dispute_id) =
+            make_dispute_with_panel(80, 81, &[82, 83, 84], DisputePhase::Voting, 100, 1_000);
+        let err =
+            cast_vote(arbs[0], dispute_id, super::Vote::ConcludedCorrectly, 1_500).unwrap_err();
+        match err {
+            EscrowError::InvalidDisputePhase { expected, actual } => {
+                assert!(expected.contains("Voting"));
+                assert!(actual.contains("deadline passed"), "actual: {actual}");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cast_vote_rejects_resolved_dispute() {
+        let (_, arbs, dispute_id) =
+            make_dispute_with_panel(90, 91, &[92, 93, 94], DisputePhase::Resolved, 100, 1_000);
+        let err = cast_vote(arbs[0], dispute_id, super::Vote::ConcludedCorrectly, 200).unwrap_err();
+        match err {
+            EscrowError::InvalidDisputePhase { expected, actual } => {
+                assert_eq!(expected, "Voting");
+                assert_eq!(actual, "Resolved");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cast_vote_returns_dispute_not_found_for_unknown_id() {
+        let arb = make_arbitrator(199, None, ArbitratorStatus::Active);
+        let err = cast_vote(arb, 999_999, super::Vote::Abstain, 200).unwrap_err();
+        assert_eq!(err, EscrowError::DisputeNotFound);
+    }
 
     // --- assigned counter sanity (single-arbitrator case) ---
 

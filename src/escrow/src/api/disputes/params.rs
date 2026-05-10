@@ -2,7 +2,7 @@ use candid::{CandidType, Deserialize};
 
 use crate::types::{
     deal::DealId,
-    dispute::{DisputeId, DisputePhase},
+    dispute::{DisputeId, DisputePhase, Vote},
 };
 
 /// Arguments for `open_dispute`.
@@ -32,6 +32,18 @@ pub struct SubmitEvidenceArgs {
     /// SHA-256 of the off-canister artefact. Always exactly 32 bytes
     /// when `Some`.
     pub artefact_sha256: Option<Vec<u8>>,
+}
+
+/// Arguments for `cast_vote` (RFC-001 step 6).
+///
+/// Caller must be on the dispute's panel and currently `Active`.
+/// Allowed only during the open voting window
+/// (`evidence_deadline_ns <= now_ns < voting_deadline_ns`). Latest-wins
+/// — calling repeatedly during the window updates the recorded vote.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct CastVoteArgs {
+    pub dispute_id: DisputeId,
+    pub vote: Vote,
 }
 
 /// Pagination + filter arguments for `list_my_disputes`.

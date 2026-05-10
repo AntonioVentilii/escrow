@@ -59,6 +59,14 @@ type CancelDealArgs = record {
 	// Identifier of the deal to cancel.
 	deal_id : nat64
 };
+// Arguments for `cast_vote` (RFC-001 step 6).
+//
+// Caller must be on the dispute's panel and currently `Active`.
+// Allowed only during the open voting window
+// (`evidence_deadline_ns <= now_ns < voting_deadline_ns`). Latest-wins
+// — calling repeatedly during the window updates the recorded vote.
+type CastVoteArgs = record { vote : Vote; dispute_id : nat64 };
+type CastVoteResult = variant { Ok : DisputeView; Err : EscrowError };
 // Reduced view for public claim pages — does not expose payer, claim code,
 // or internal fields.
 type ClaimableDealView = record {
@@ -392,7 +400,6 @@ type GetClaimableDealResult = variant {
 	Err : EscrowError
 };
 type GetDealResult = variant { Ok : DealView; Err : EscrowError };
-type GetDisputeResult = variant { Ok : DisputeView; Err : EscrowError };
 type GetEscrowAccountResult = variant { Ok : Account; Err : EscrowError };
 type GetPublicDisputeResult = variant {
 	Ok : PublicDisputeView;
@@ -583,6 +590,12 @@ service : () -> {
 	// `Cancelled`. Funded deals cannot be cancelled — use [`reclaim_deal`] after
 	// expiry instead.
 	cancel_deal : (CancelDealArgs) -> (AcceptDealResult);
+	// Casts a vote on a dispute. Caller must be on the panel and
+	// currently `Active`. Allowed only during the open voting window
+	// (`evidence_deadline_ns <= now < voting_deadline_ns`). Latest-wins
+	// semantics — calling repeatedly during the window updates the vote.
+	// RFC-001 step 6.
+	cast_vote : (CastVoteArgs) -> (CastVoteResult);
 	// Returns the current global configuration of the Escrow canister.
 	//
 	// This method is gated to canister controllers.
@@ -629,7 +642,7 @@ service : () -> {
 	get_deal : (nat64) -> (GetDealResult) query;
 	// Returns the full dispute view. Caller must be a party of the parent
 	// deal or an arbitrator on the panel.
-	get_dispute : (nat64) -> (GetDisputeResult) query;
+	get_dispute : (nat64) -> (CastVoteResult) query;
 	// Returns the escrow `Account` (canister principal + deal subaccount) for a deal.
 	get_escrow_account : (nat64) -> (GetEscrowAccountResult) query;
 	// Returns a reduced public view of a dispute (no party / panel
@@ -735,7 +748,7 @@ service : () -> {
 	// `recipient`. Funds remain in the escrow subaccount; the deal
 	// transitions `Funded → Disputed`. The expiry sweep skips
 	// `Disputed` deals (per Q2 contract).
-	open_dispute : (FundDealArgs) -> (GetDisputeResult);
+	open_dispute : (FundDealArgs) -> (CastVoteResult);
 	// Batch-processes expired deals by refunding escrowed tokens back to their
 	// payers.
 	//
@@ -759,7 +772,7 @@ service : () -> {
 	// Submits a piece of evidence on a dispute. Caller must be a party
 	// of the parent deal or an arbitrator on the panel. Allowed during
 	// the `Evidence` phase only. RFC-001 step 5.
-	submit_evidence : (SubmitEvidenceArgs) -> (GetDisputeResult);
+	submit_evidence : (SubmitEvidenceArgs) -> (CastVoteResult);
 	// Updates the global configuration for the Escrow canister.
 	//
 	// This method is gated to canister controllers.
