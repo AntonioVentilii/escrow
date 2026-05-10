@@ -21,11 +21,12 @@ use crate::{
         disputes::{
             params::{
                 CastVoteArgs, FinalizeDisputeArgs, ListMyDisputesArgs, OpenDisputeArgs,
-                SubmitEvidenceArgs,
+                SubmitEvidenceArgs, WithdrawDisputeArgs,
             },
             results::{
                 CastVoteResult, DisputeView, FinalizeDisputeResult, GetDisputeResult,
                 GetPublicDisputeResult, OpenDisputeResult, SubmitEvidenceResult,
+                WithdrawDisputeResult,
             },
         },
         reliability::results::ReliabilityView,

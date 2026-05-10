@@ -582,6 +582,14 @@ type Vote = variant {
 	// "Concluded Correctly" — release funds to recipient.
 	ConcludedCorrectly
 };
+// Arguments for `withdraw_dispute` (RFC-001 step 9 / Q12).
+//
+// Caller must be `payer` or `recipient` of the parent deal. Allowed
+// during the `Evidence` phase only. `proposal: Some(_)` records the
+// caller's proposed outcome (latest-wins overwrite); `None` retracts.
+// `Some(Abstain)` is rejected. Resolution fires when both party
+// fields are `Some` and equal.
+type WithdrawDisputeArgs = record { dispute_id : nat64; proposal : opt Vote };
 service : () -> {
 	// Accepts (claims) a funded deal, releasing the escrowed tokens to the caller.
 	//
@@ -789,5 +797,13 @@ service : () -> {
 	// Updates the global configuration for the Escrow canister.
 	//
 	// This method is gated to canister controllers.
-	update_config : (Config) -> ()
+	update_config : (Config) -> ();
+	// Out-of-band settlement during the Evidence phase (RFC-001 step 9 /
+	// Q12). Caller must be `payer` or `recipient`. Records the caller's
+	// proposed outcome (or retracts on `proposal: None`); when both
+	// parties have proposed the same outcome, the dispute resolves with
+	// `DisputeOutcome::Withdrawn { agreed }`, the deal moves to
+	// `ArbitratedSettled` / `ArbitratedRefunded`, and arbitrators
+	// receive a reduced fee (`DisputeConfig::withdraw_fee_pct`).
+	withdraw_dispute : (WithdrawDisputeArgs) -> (CastVoteResult)
 }

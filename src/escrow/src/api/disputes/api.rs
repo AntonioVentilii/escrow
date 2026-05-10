@@ -4,10 +4,11 @@ use ic_cdk_macros::{query, update};
 use super::{
     params::{
         CastVoteArgs, FinalizeDisputeArgs, ListMyDisputesArgs, OpenDisputeArgs, SubmitEvidenceArgs,
+        WithdrawDisputeArgs,
     },
     results::{
         CastVoteResult, DisputeView, FinalizeDisputeResult, GetDisputeResult,
-        GetPublicDisputeResult, OpenDisputeResult, SubmitEvidenceResult,
+        GetPublicDisputeResult, OpenDisputeResult, SubmitEvidenceResult, WithdrawDisputeResult,
     },
 };
 use crate::{guards::caller_is_not_anonymous, services, types::dispute::DisputeId};
@@ -73,6 +74,25 @@ pub async fn finalize_dispute(
     FinalizeDisputeArgs { dispute_id }: FinalizeDisputeArgs,
 ) -> FinalizeDisputeResult {
     services::disputes::finalize(dispute_id, time())
+        .await
+        .into()
+}
+
+/// Out-of-band settlement during the Evidence phase (RFC-001 step 9 /
+/// Q12). Caller must be `payer` or `recipient`. Records the caller's
+/// proposed outcome (or retracts on `proposal: None`); when both
+/// parties have proposed the same outcome, the dispute resolves with
+/// `DisputeOutcome::Withdrawn { agreed }`, the deal moves to
+/// `ArbitratedSettled` / `ArbitratedRefunded`, and arbitrators
+/// receive a reduced fee (`DisputeConfig::withdraw_fee_pct`).
+#[update(guard = "caller_is_not_anonymous")]
+pub async fn withdraw_dispute(
+    WithdrawDisputeArgs {
+        dispute_id,
+        proposal,
+    }: WithdrawDisputeArgs,
+) -> WithdrawDisputeResult {
+    services::disputes::withdraw(msg_caller(), dispute_id, proposal, time())
         .await
         .into()
 }

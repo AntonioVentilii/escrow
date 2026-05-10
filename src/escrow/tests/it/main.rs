@@ -3,5 +3,6 @@ mod disputes_evidence;
 mod disputes_finalize;
 mod disputes_open;
 mod disputes_vote;
+mod disputes_withdraw;
 mod housekeeping;
 mod utils;

@@ -56,6 +56,19 @@ pub struct FinalizeDisputeArgs {
     pub dispute_id: DisputeId,
 }
 
+/// Arguments for `withdraw_dispute` (RFC-001 step 9 / Q12).
+///
+/// Caller must be `payer` or `recipient` of the parent deal. Allowed
+/// during the `Evidence` phase only. `proposal: Some(_)` records the
+/// caller's proposed outcome (latest-wins overwrite); `None` retracts.
+/// `Some(Abstain)` is rejected. Resolution fires when both party
+/// fields are `Some` and equal.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct WithdrawDisputeArgs {
+    pub dispute_id: DisputeId,
+    pub proposal: Option<Vote>,
+}
+
 /// Pagination + filter arguments for `list_my_disputes`.
 #[derive(CandidType, Deserialize, Clone, Debug, Default)]
 pub struct ListMyDisputesArgs {

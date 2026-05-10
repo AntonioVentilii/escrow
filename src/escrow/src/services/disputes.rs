@@ -656,6 +656,218 @@ fn apply_score_updates(panel: &[PanelMember], majority: Option<&Vote>) {
     let _ = MIN_VOTES_FOR_SCORE; // Touch to keep import in scope when unused above.
 }
 
+/// Submits or retracts a party's out-of-band withdrawal proposal
+/// (RFC-001 step 9 / Q12).
+///
+/// Caller must be `payer` or `recipient` of the parent deal. Allowed
+/// during the `Evidence` phase only — once voting opens, arbitrators
+/// have begun receiving signal and out-of-band withdrawal would waste
+/// that work.
+///
+/// `proposal: Some(ConcludedCorrectly | IncorrectlyConcluded)` records
+/// the caller's proposed outcome (latest-wins overwrite). `None`
+/// retracts. `Some(Abstain)` is rejected (Abstain is a vote concept,
+/// not an out-of-band agreement).
+///
+/// **Resolution fires** when both party fields are `Some` and equal.
+/// On match: dispute moves to `Resolved` with
+/// `DisputeOutcome::Withdrawn { agreed }`, deal moves to
+/// `ArbitratedSettled` / `ArbitratedRefunded` per the agreed outcome,
+/// and arbitrators receive a reduced fee
+/// (`DisputeConfig::withdraw_fee_pct` of `arbitration_fee`, default
+/// 25%). The reduced-fee fan-out is replay-safe — it reuses the
+/// per-`PanelMember.paid_at_ns` mechanism from finalize.
+///
+/// Disagreement is silent (both proposals stay recorded; no
+/// resolution fires). Either party can call again to change or retract.
+pub async fn withdraw(
+    caller: Principal,
+    dispute_id: DisputeId,
+    proposal: Option<Vote>,
+    now_ns: u64,
+) -> Result<DisputeView, EscrowError> {
+    if matches!(proposal, Some(Vote::Abstain)) {
+        return Err(EscrowError::ValidationError(
+            "Abstain is not a valid out-of-band proposal".to_owned(),
+        ));
+    }
+
+    let dispute = load_dispute(dispute_id).ok_or(EscrowError::DisputeNotFound)?;
+    let deal = get_deal(dispute.deal_id).ok_or(EscrowError::NotFound)?;
+
+    // Q12: caller must be payer or recipient (not panel member).
+    let caller_is_payer = deal.payer == Some(caller);
+    let caller_is_recipient = deal.recipient == Some(caller);
+    if !caller_is_payer && !caller_is_recipient {
+        return Err(EscrowError::NotAuthorised);
+    }
+
+    // Phase gate: Evidence only.
+    if !matches!(dispute.phase, DisputePhase::Evidence) {
+        return Err(EscrowError::InvalidDisputePhase {
+            expected: "Evidence".to_owned(),
+            actual: format!("{:?}", dispute.phase),
+        });
+    }
+
+    // Update the proposal record. Idempotent (same value twice = no-op).
+    let proposal_for_storage = proposal.clone();
+    let snapshot = with_dispute(dispute_id, move |d| {
+        if caller_is_payer {
+            d.payer_withdraw_proposal = proposal_for_storage;
+        } else {
+            d.recipient_withdraw_proposal = proposal_for_storage;
+        }
+        d.clone()
+    })
+    .ok_or(EscrowError::DisputeNotFound)?;
+
+    // Resolution check: do both proposals match?
+    let agreed = match (
+        snapshot.payer_withdraw_proposal.clone(),
+        snapshot.recipient_withdraw_proposal.clone(),
+    ) {
+        (Some(p), Some(r)) if p == r => Some(p),
+        _ => None,
+    };
+
+    if let Some(agreed_outcome) = agreed {
+        let deal_id = deal.id;
+        try_acquire_lock(deal_id)?;
+        let result = withdraw_finalize_locked(deal, snapshot, agreed_outcome, now_ns).await;
+        release_lock(deal_id);
+        return result;
+    }
+
+    Ok(DisputeView::from(&snapshot))
+}
+
+async fn withdraw_finalize_locked(
+    deal: Deal,
+    dispute: Dispute,
+    agreed: Vote,
+    now_ns: u64,
+) -> Result<DisputeView, EscrowError> {
+    let cfg = load_dispute_config();
+    // Reduced fee: arbitration_fee * withdraw_fee_pct / 100.
+    let pct = u128::from(cfg.withdraw_fee_pct.min(100));
+    let total_arbitrator_pool = dispute.arbitration_fee.saturating_mul(pct) / 100;
+
+    // All panel members receive an equal share of the reduced pool
+    // (regardless of vote — they were all assigned the work; the
+    // reduced fee compensates for their time before the parties made
+    // peace). NoQuorum-style score impact (only `disputes_assigned`
+    // updated, no `voted` / `with_majority` change) — `outcome_majority_vote`
+    // returns None for Withdrawn, so `apply_score_updates` is a no-op.
+    let panel_count = u128::try_from(dispute.panel.len()).unwrap_or(0);
+    let fee_per_arbitrator = total_arbitrator_pool.checked_div(panel_count).unwrap_or(0);
+    let ledger_fee = ledger::fee(deal.token_ledger).await?;
+
+    if fee_per_arbitrator > 0 {
+        let escrow_account = deal.escrow_subaccount.clone();
+        let token_ledger = deal.token_ledger;
+        let dispute_id = dispute.id;
+        let panel_snapshot: Vec<PanelMember> = dispute.panel.clone();
+        for member in panel_snapshot {
+            if member.paid_at_ns.is_some() {
+                continue;
+            }
+            let arb_account = Account {
+                owner: member.principal,
+                subaccount: None,
+            };
+            let block_index = ledger::transfer(
+                token_ledger,
+                Some(escrow_account.clone()),
+                arb_account,
+                fee_per_arbitrator,
+            )
+            .await?;
+            with_dispute(dispute_id, |d| {
+                if let Some(m) = d.panel.iter_mut().find(|m| m.principal == member.principal) {
+                    m.paid_at_ns = Some(now_ns);
+                    m.payout_tx = Some(block_index);
+                }
+            });
+        }
+    }
+
+    // Prevailing party payout: amount minus reduced-arbitrator outflow
+    // minus their ledger fees minus the prevailing transfer's own fee.
+    let total_arbitrator_outflow = panel_count.saturating_mul(fee_per_arbitrator);
+    let total_arbitrator_ledger_fees = if fee_per_arbitrator > 0 {
+        panel_count.saturating_mul(ledger_fee)
+    } else {
+        0
+    };
+    let prevailing_payout = deal
+        .amount
+        .saturating_sub(total_arbitrator_outflow)
+        .saturating_sub(total_arbitrator_ledger_fees)
+        .saturating_sub(ledger_fee);
+
+    if prevailing_payout == 0 {
+        return Err(EscrowError::AmountTooSmallForArbitration {
+            min: deal.amount.saturating_add(1),
+        });
+    }
+
+    let outcome = DisputeOutcome::Withdrawn {
+        agreed: agreed.clone(),
+    };
+    let new_deal_status = outcome_to_deal_status(&outcome);
+
+    let prevailing_principal = match new_deal_status {
+        DealStatus::ArbitratedSettled => deal.recipient.ok_or(EscrowError::ValidationError(
+            "Withdrawn::Settled but no recipient bound".to_owned(),
+        ))?,
+        DealStatus::ArbitratedRefunded => deal.payer.ok_or(EscrowError::PayerNotSet)?,
+        _ => {
+            return Err(EscrowError::ValidationError(
+                "withdraw outcome maps to unexpected deal status".to_owned(),
+            ));
+        }
+    };
+    let prevailing_account = Account {
+        owner: prevailing_principal,
+        subaccount: None,
+    };
+    let prevailing_block_index = ledger::transfer(
+        deal.token_ledger,
+        Some(deal.escrow_subaccount.clone()),
+        prevailing_account,
+        prevailing_payout,
+    )
+    .await?;
+
+    let canister = canister_self();
+    let new_status = new_deal_status.clone();
+    with_deal(deal.id, |d| {
+        d.status = new_status.clone();
+        d.updated_at_ns = Some(now_ns);
+        d.updated_by = Some(canister);
+        match new_status {
+            DealStatus::ArbitratedSettled => {
+                d.settled_at_ns = Some(now_ns);
+                d.payout_tx = Some(prevailing_block_index);
+            }
+            DealStatus::ArbitratedRefunded => {
+                d.refunded_at_ns = Some(now_ns);
+                d.refund_tx = Some(prevailing_block_index);
+            }
+            _ => {}
+        }
+    });
+    let resolved = with_dispute(dispute.id, |d| {
+        d.phase = DisputePhase::Resolved;
+        d.outcome = Some(DisputeOutcome::Withdrawn { agreed });
+        d.clone()
+    })
+    .ok_or(EscrowError::DisputeNotFound)?;
+
+    Ok(DisputeView::from(&resolved))
+}
+
 /// Scans all open disputes whose `voting_deadline_ns` has passed and
 /// returns up to `limit` of their IDs. Used by the auto-finalize
 /// sweep (RFC-001 step 8). Pure read — no mutation.
@@ -1785,6 +1997,13 @@ mod tests {
             other => panic!("wrong outcome: {other:?}"),
         }
     }
+
+    // Note: `withdraw` is async (calls `ledger::fee` + `ledger::transfer`
+    // when both proposals match). The error-only paths (Abstain rejected,
+    // DisputeNotFound, NotAuthorised, InvalidDisputePhase) are covered by
+    // the pocket-ic integration tests in `tests/it/disputes_withdraw.rs`.
+    // No unit tests here to avoid pulling in a futures executor as a
+    // dev-dependency just for two synchronous-equivalent error paths.
 
     #[test]
     fn tally_panel_5_three_two_settles() {
