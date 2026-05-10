@@ -8,16 +8,17 @@ use crate::types::{
 /// Arguments for `open_dispute`.
 ///
 /// Caller must be `payer` or `recipient` of a `Funded` deal with both
-/// parties bound (Q2/Q3). The deal transitions `Funded → Disputed`.
+/// parties bound (tip flows are not disputable). The deal transitions
+/// `Funded → Disputed`.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct OpenDisputeArgs {
     /// Identifier of the deal to dispute.
     pub deal_id: DealId,
 }
 
-/// Arguments for `submit_evidence` (RFC-001 step 5).
+/// Arguments for `submit_evidence`.
 ///
-/// Per Q8: at least one of `note` / `(artefact_url + artefact_sha256)`
+/// At least one of `note` / `(artefact_url + artefact_sha256)`
 /// must be present; URL and hash are paired (one without the other is
 /// rejected); `note` <= 4 KiB; `artefact_url` <= 2 KiB;
 /// `artefact_sha256` exactly 32 bytes when set.
@@ -34,7 +35,7 @@ pub struct SubmitEvidenceArgs {
     pub artefact_sha256: Option<Vec<u8>>,
 }
 
-/// Arguments for `cast_vote` (RFC-001 step 6).
+/// Arguments for `cast_vote`.
 ///
 /// Caller must be on the dispute's panel and currently `Active`.
 /// Allowed only during the open voting window
@@ -46,7 +47,7 @@ pub struct CastVoteArgs {
     pub vote: Vote,
 }
 
-/// Arguments for `finalize_dispute` (RFC-001 step 7).
+/// Arguments for `finalize_dispute`.
 ///
 /// Anyone (non-anonymous) can call. Idempotent — calling again after
 /// successful resolution returns the resolved view; calling when not
@@ -56,7 +57,8 @@ pub struct FinalizeDisputeArgs {
     pub dispute_id: DisputeId,
 }
 
-/// Arguments for `withdraw_dispute` (RFC-001 step 9 / Q12).
+/// Arguments for `withdraw_dispute` — out-of-band settlement during
+/// the Evidence phase.
 ///
 /// Caller must be `payer` or `recipient` of the parent deal. Allowed
 /// during the `Evidence` phase only. `proposal: Some(_)` records the

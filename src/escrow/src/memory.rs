@@ -20,7 +20,6 @@ thread_local! {
     static NEXT_DEAL_ID: RefCell<DealId> = const { RefCell::new(1) };
     /// Transient lock preventing concurrent async processing of the same deal.
     static PROCESSING: RefCell<BTreeSet<DealId>> = const { RefCell::new(BTreeSet::new()) };
-    // ---- RFC-001 storage (step 2) ----
     static DISPUTES: RefCell<BTreeMap<DisputeId, Dispute>> = const { RefCell::new(BTreeMap::new()) };
     static NEXT_DISPUTE_ID: RefCell<DisputeId> = const { RefCell::new(1) };
     static ARBITRATORS: RefCell<BTreeMap<Principal, ArbitratorProfile>> = const { RefCell::new(BTreeMap::new()) };
@@ -69,10 +68,9 @@ pub fn deal_count() -> u64 {
 
 /// Counts non-terminal deals created by `principal`.
 ///
-/// Terminal statuses (RFC-001 step 7 update) are now: `Settled`,
-/// `Refunded`, `Cancelled`, `Rejected`, `ArbitratedSettled`,
-/// `ArbitratedRefunded`. `Disputed` is **non-terminal** — funds are
-/// still in escrow pending resolution.
+/// Terminal statuses are: `Settled`, `Refunded`, `Cancelled`,
+/// `Rejected`, `ArbitratedSettled`, `ArbitratedRefunded`. `Disputed`
+/// is **non-terminal** — funds are still in escrow pending resolution.
 #[must_use]
 pub fn count_active_deals_for(principal: Principal) -> u32 {
     DEALS.with(|d| {
@@ -112,10 +110,10 @@ pub fn compute_reliability_for(principal: Principal) -> (u32, u32) {
                 continue;
             }
             match deal.status {
-                // RFC-001 step 7: arbitrated outcomes count as positive
-                // for reliability, just like their unilateral counterparts.
-                // Successful resolution via arbitration still represents
-                // a "deal that ended in a fund-release decision".
+                // Arbitrated outcomes count as positive just like their
+                // unilateral counterparts — successful resolution via
+                // arbitration is still a "deal that ended in a fund-
+                // release decision".
                 DealStatus::Settled
                 | DealStatus::Refunded
                 | DealStatus::ArbitratedSettled
@@ -142,7 +140,7 @@ fn allocate_deal_id() -> DealId {
     })
 }
 
-// --- Dispute storage (RFC-001 step 2) ---
+// --- Dispute storage ---
 
 /// Atomically allocates a unique `DisputeId`, builds the dispute via `build`,
 /// and inserts it into the store.
@@ -177,7 +175,7 @@ pub fn with_disputes<R>(f: impl FnOnce(&BTreeMap<DisputeId, Dispute>) -> R) -> R
 }
 
 /// Runs `f` with a mutable reference to the full dispute map. Used by the
-/// auto-finalize sweep (RFC-001 step 8) to iterate without per-call clone.
+/// auto-finalize sweep to iterate without per-call clone.
 pub fn with_disputes_mut<R>(f: impl FnOnce(&mut BTreeMap<DisputeId, Dispute>) -> R) -> R {
     DISPUTES.with(|d| f(&mut d.borrow_mut()))
 }
@@ -196,12 +194,12 @@ fn allocate_dispute_id() -> DisputeId {
     })
 }
 
-// --- Arbitrator storage (RFC-001 step 2) ---
+// --- Arbitrator storage ---
 
 /// Inserts or replaces an arbitrator profile keyed by principal.
 ///
-/// Used by `register_arbitrator` (idempotent — re-registration returns the
-/// existing profile rather than erroring; see RFC-001 Q4 decision) and by
+/// Used by `register_arbitrator` (idempotent — re-registration returns
+/// the existing profile rather than erroring) and by
 /// `services::arbitrators::update_score_after_finalize`.
 pub fn upsert_arbitrator(profile: ArbitratorProfile) {
     ARBITRATORS.with(|a| a.borrow_mut().insert(profile.principal, profile));
@@ -444,7 +442,7 @@ mod tests {
         release_lock(id);
     }
 
-    // --- Dispute storage (RFC-001 step 2) ---
+    // --- Dispute storage ---
 
     use super::{
         arbitrator_count, dispute_count, get_arbitrator, get_dispute, insert_new_dispute,
@@ -537,7 +535,7 @@ mod tests {
         assert!(count >= 2);
     }
 
-    // --- Arbitrator storage (RFC-001 step 2) ---
+    // --- Arbitrator storage ---
 
     fn make_arbitrator(p: u8) -> ArbitratorProfile {
         let profile = ArbitratorProfile {

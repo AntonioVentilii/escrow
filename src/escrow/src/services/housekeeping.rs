@@ -11,7 +11,7 @@ const SWEEP_INTERVAL: Duration = Duration::from_mins(5);
 /// Maximum number of expired deals to process per sweep cycle.
 const SWEEP_BATCH_LIMIT: u32 = 50;
 
-/// How often the dispute auto-finalize sweep runs (RFC-001 step 8).
+/// How often the dispute auto-finalize sweep runs.
 /// Same cadence as the expiry sweep — both operate on time-driven
 /// deadlines that don't need sub-minute granularity.
 const DISPUTE_SWEEP_INTERVAL: Duration = Duration::from_mins(5);
@@ -22,10 +22,10 @@ const DISPUTE_SWEEP_BATCH_LIMIT: u32 = 20;
 thread_local! {
     /// Prevents overlapping async sweeps — at most one in-flight at a time.
     static SWEEP_RUNNING: Cell<bool> = const { Cell::new(false) };
-    /// Same re-entrancy guard, but for the dispute auto-finalize sweep
-    /// (RFC-001 step 8). Independent from `SWEEP_RUNNING` so the two
-    /// sweeps can interleave (they touch disjoint state — expiry only
-    /// looks at `Funded` deals; dispute sweep only at `Disputed`).
+    /// Same re-entrancy guard, but for the dispute auto-finalize sweep.
+    /// Independent from `SWEEP_RUNNING` so the two sweeps can interleave
+    /// (they touch disjoint state — expiry only looks at `Funded` deals;
+    /// dispute sweep only at `Disputed`).
     static DISPUTE_SWEEP_RUNNING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -46,7 +46,7 @@ pub fn start_expiry_sweep() {
     });
 }
 
-/// Starts the dispute auto-finalize sweep (RFC-001 step 8).
+/// Starts the dispute auto-finalize sweep.
 ///
 /// Called once from `#[init]` and `#[post_upgrade]`. The timer fires
 /// every [`DISPUTE_SWEEP_INTERVAL`]; each cycle calls
@@ -161,7 +161,7 @@ mod tests {
         reset();
     }
 
-    // --- Dispute sweep guard (RFC-001 step 8) ---
+    // --- Dispute sweep guard ---
 
     #[test]
     fn dispute_sweep_blocks_concurrent() {

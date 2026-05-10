@@ -15,8 +15,8 @@ use super::{
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct Config {
     /// Admin-tunable dispute parameters. `None` on legacy snapshots; the
-    /// canister falls back to `DisputeConfig::default()` (Q6/Q9/Q10/Q12
-    /// defaults) for any missing values when disputes are queried.
+    /// canister falls back to `DisputeConfig::default()` for any missing
+    /// values when disputes are queried.
     pub dispute_config: Option<DisputeConfig>,
 }
 
@@ -29,9 +29,9 @@ pub struct StableState {
     pub config: Config,
     pub deals: Option<BTreeMap<DealId, Deal>>,
     pub next_deal_id: Option<DealId>,
-    /// RFC-001 step 2 — dispute storage. `None` on legacy snapshots.
+    /// Dispute storage. `None` on pre-dispute-feature snapshots.
     pub disputes: Option<BTreeMap<DisputeId, Dispute>>,
     pub next_dispute_id: Option<DisputeId>,
-    /// RFC-001 step 2 — arbitrator registry, keyed by principal.
+    /// Arbitrator registry, keyed by principal.
     pub arbitrators: Option<BTreeMap<Principal, ArbitratorProfile>>,
 }

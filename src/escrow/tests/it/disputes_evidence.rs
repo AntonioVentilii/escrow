@@ -1,4 +1,4 @@
-//! Integration tests for `submit_evidence` (RFC-001 step 5).
+//! Integration tests for `submit_evidence`.
 //!
 //! Like `disputes_open`, these only cover the paths reachable without
 //! a real ICRC-1/2 ledger installed in pocket-ic. The happy-path
@@ -61,7 +61,7 @@ fn submit_evidence_rejects_empty_payload_at_canister_boundary() {
     let (_pic, escrow) = setup();
     // Even before reaching the dispute-not-found check, the validator
     // rejects empty evidence with `ValidationError`. This exercises the
-    // canister-boundary length / shape validation (Q8) end-to-end.
+    // canister-boundary length / shape validation end-to-end.
     let result = try_submit(
         &escrow,
         user(1),

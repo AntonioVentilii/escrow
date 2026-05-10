@@ -9,7 +9,7 @@ use super::{
 use crate::{guards::caller_is_not_anonymous, services, types::arbitrator::ArbitratorProfile};
 
 // ---------------------------------------------------------------------------
-// Update methods (RFC-001 step 3)
+// Update methods
 // ---------------------------------------------------------------------------
 
 /// Self-registers the caller as an arbitrator. Idempotent — re-registration
@@ -23,7 +23,7 @@ pub fn register_arbitrator(args: RegisterArbitratorArgs) -> RegisterArbitratorRe
 
 /// Self-deregisters the caller's arbitrator profile. In-flight assignments
 /// are honoured — a non-vote from a deregistered arbitrator counts as
-/// `Vote::Abstain` at finalize time (RFC-001 Q5).
+/// `Vote::Abstain` at finalize time.
 #[update(guard = "caller_is_not_anonymous")]
 #[must_use]
 pub fn deregister_arbitrator() -> DeregisterArbitratorResult {
@@ -31,7 +31,7 @@ pub fn deregister_arbitrator() -> DeregisterArbitratorResult {
 }
 
 // ---------------------------------------------------------------------------
-// Query methods (RFC-001 step 3)
+// Query methods
 // ---------------------------------------------------------------------------
 
 /// Returns the arbitrator profile for `principal`, or `None` if the

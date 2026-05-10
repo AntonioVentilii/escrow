@@ -60,10 +60,10 @@ fn canister_healthy_after_sweep_timer_fires() {
 
 #[test]
 fn dispute_sweep_runs_without_panicking() {
-    // RFC-001 step 8 — the auto-finalize dispute sweep is wired from
-    // `init` and `post_upgrade`. With no disputes in storage (empty
-    // canister), the sweep should fire its 5-minute timer, find no
-    // due disputes, and exit cleanly without trapping.
+    // The auto-finalize dispute sweep is wired from `init` and
+    // `post_upgrade`. With no disputes in storage (empty canister), the
+    // sweep should fire its 5-minute timer, find no due disputes, and
+    // exit cleanly without trapping.
     let (pic, escrow) = setup();
 
     pic.advance_time(Duration::from_mins(6));

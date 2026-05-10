@@ -12,19 +12,19 @@ pub enum DealStatus {
     Refunded,
     Cancelled,
     Rejected,
-    /// A dispute is open on this deal (RFC-001 Q1/Q2). Funds remain in the
-    /// escrow subaccount until the dispute resolves to
-    /// `ArbitratedSettled` / `ArbitratedRefunded`. The expiry sweep
-    /// (`services::expiry`) skips deals in this state — see Q2 contract.
+    /// A dispute is open on this deal. Funds remain in the escrow
+    /// subaccount until the dispute resolves to `ArbitratedSettled` /
+    /// `ArbitratedRefunded`. The expiry sweep (`services::expiry`)
+    /// skips deals in this state.
     Disputed,
-    /// Dispute panel voted majority CC, OR both parties agreed out-of-band
-    /// (Q12) on a CC outcome — funds released to recipient. Distinct from
-    /// `Settled` so callers can tell arbitrated from unilateral
-    /// settlement (Q1). Terminal.
+    /// Dispute panel voted majority CC, OR both parties agreed
+    /// out-of-band on a CC outcome — funds released to recipient.
+    /// Distinct from `Settled` so callers can tell arbitrated from
+    /// unilateral settlement. Terminal.
     ArbitratedSettled,
-    /// Dispute panel voted majority IC, OR both parties agreed out-of-band
-    /// on an IC outcome, OR the panel reached no quorum (Q9 fallback).
-    /// Funds refunded to payer. Distinct from `Refunded` (Q1). Terminal.
+    /// Dispute panel voted majority IC, OR both parties agreed
+    /// out-of-band on an IC outcome, OR the panel reached no quorum.
+    /// Funds refunded to payer. Distinct from `Refunded`. Terminal.
     ArbitratedRefunded,
 }
 
@@ -69,7 +69,7 @@ pub struct Deal {
     /// `Some(dispute_id)` while a dispute is open on the deal or after
     /// it has resolved (so the audit trail back to the `Dispute` record
     /// survives terminal status). `None` for deals that never went into
-    /// dispute. New field for RFC-001 — `Option`-wrapped for backward-
-    /// compat with pre-RFC-001 stable snapshots.
+    /// dispute. `Option`-wrapped for backward-compat with pre-dispute
+    /// stable snapshots.
     pub dispute: Option<DisputeId>,
 }

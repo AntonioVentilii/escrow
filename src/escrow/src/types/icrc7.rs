@@ -76,7 +76,7 @@ pub const MAX_QUERY_BATCH_SIZE: u64 = 100;
 
 /// Computes the ICRC-7 owner of a deal token.
 ///
-/// `Settled` and `ArbitratedSettled` (RFC-001 Q1) deals are owned by the
+/// `Settled` and `ArbitratedSettled` deals are owned by the
 /// recipient; all other states — including `Disputed` (funds still
 /// escrowed pending resolution) and the other terminals — are owned by
 /// the payer. Falls back to `created_by` when the relevant principal is

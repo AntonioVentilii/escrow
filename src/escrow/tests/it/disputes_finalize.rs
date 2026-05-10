@@ -1,4 +1,4 @@
-//! Integration tests for `finalize_dispute` (RFC-001 step 7).
+//! Integration tests for `finalize_dispute`.
 //!
 //! Like the other dispute pocket-ic suites, these only cover the
 //! canister-boundary error paths reachable without a real ICRC-1/2
@@ -6,8 +6,8 @@
 //! `cast_vote` ×3 → `finalize_dispute` → `ArbitratedSettled` /
 //! `ArbitratedRefunded` with arbitrator fee fan-out) requires an
 //! actual ledger canister installed in pocket-ic plus approval flows.
-//! That infrastructure is out of scope for this RFC-001
-//! implementation PR and will land as a separate test PR.
+//! That infrastructure is out of scope for this PR and will land as
+//! a separate test PR.
 //!
 //! Coverage here:
 //! - `DisputeNotFound` on unknown id.

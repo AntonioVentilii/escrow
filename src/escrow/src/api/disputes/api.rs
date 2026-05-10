@@ -14,13 +14,13 @@ use super::{
 use crate::{guards::caller_is_not_anonymous, services, types::dispute::DisputeId};
 
 // ---------------------------------------------------------------------------
-// Update methods (RFC-001 step 4)
+// Update methods
 // ---------------------------------------------------------------------------
 
 /// Opens a new dispute on a `Funded` deal. Caller must be `payer` or
 /// `recipient`. Funds remain in the escrow subaccount; the deal
 /// transitions `Funded → Disputed`. The expiry sweep skips
-/// `Disputed` deals (per Q2 contract).
+/// `Disputed` deals.
 #[update(guard = "caller_is_not_anonymous")]
 pub async fn open_dispute(OpenDisputeArgs { deal_id }: OpenDisputeArgs) -> OpenDisputeResult {
     services::disputes::open(msg_caller(), deal_id, time())
@@ -30,7 +30,7 @@ pub async fn open_dispute(OpenDisputeArgs { deal_id }: OpenDisputeArgs) -> OpenD
 
 /// Submits a piece of evidence on a dispute. Caller must be a party
 /// of the parent deal or an arbitrator on the panel. Allowed during
-/// the `Evidence` phase only. RFC-001 step 5.
+/// the `Evidence` phase only.
 #[update(guard = "caller_is_not_anonymous")]
 #[must_use]
 pub fn submit_evidence(
@@ -56,7 +56,6 @@ pub fn submit_evidence(
 /// currently `Active`. Allowed only during the open voting window
 /// (`evidence_deadline_ns <= now < voting_deadline_ns`). Latest-wins
 /// semantics — calling repeatedly during the window updates the vote.
-/// RFC-001 step 6.
 #[update(guard = "caller_is_not_anonymous")]
 #[must_use]
 pub fn cast_vote(CastVoteArgs { dispute_id, vote }: CastVoteArgs) -> CastVoteResult {
@@ -68,7 +67,7 @@ pub fn cast_vote(CastVoteArgs { dispute_id, vote }: CastVoteArgs) -> CastVoteRes
 /// finalize return the resolved view; partial replays (some
 /// arbitrator transfers succeeded, others trapped) skip already-paid
 /// panel members. Triggers tally + outcome propagation + ledger
-/// transfers + arbitrator score updates. RFC-001 step 7.
+/// transfers + arbitrator score updates.
 #[update(guard = "caller_is_not_anonymous")]
 pub async fn finalize_dispute(
     FinalizeDisputeArgs { dispute_id }: FinalizeDisputeArgs,
@@ -78,13 +77,13 @@ pub async fn finalize_dispute(
         .into()
 }
 
-/// Out-of-band settlement during the Evidence phase (RFC-001 step 9 /
-/// Q12). Caller must be `payer` or `recipient`. Records the caller's
-/// proposed outcome (or retracts on `proposal: None`); when both
-/// parties have proposed the same outcome, the dispute resolves with
+/// Out-of-band settlement during the Evidence phase. Caller must be
+/// `payer` or `recipient`. Records the caller's proposed outcome (or
+/// retracts on `proposal: None`); when both parties have proposed the
+/// same outcome, the dispute resolves with
 /// `DisputeOutcome::Withdrawn { agreed }`, the deal moves to
-/// `ArbitratedSettled` / `ArbitratedRefunded`, and arbitrators
-/// receive a reduced fee (`DisputeConfig::withdraw_fee_pct`).
+/// `ArbitratedSettled` / `ArbitratedRefunded`, and arbitrators receive
+/// a reduced fee (`DisputeConfig::withdraw_fee_pct`).
 #[update(guard = "caller_is_not_anonymous")]
 pub async fn withdraw_dispute(
     WithdrawDisputeArgs {
@@ -98,7 +97,7 @@ pub async fn withdraw_dispute(
 }
 
 // ---------------------------------------------------------------------------
-// Query methods (RFC-001 step 4)
+// Query methods
 // ---------------------------------------------------------------------------
 
 /// Returns the full dispute view. Caller must be a party of the parent

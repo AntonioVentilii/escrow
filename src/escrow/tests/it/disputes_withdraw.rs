@@ -1,4 +1,4 @@
-//! Integration tests for `withdraw_dispute` (RFC-001 step 9 / Q12).
+//! Integration tests for `withdraw_dispute`.
 //!
 //! Like the rest of the dispute pocket-ic suite, these only cover the
 //! canister-boundary error paths reachable without a real ICRC-1/2
@@ -6,7 +6,7 @@
 //! outcomes → reduced-fee fan-out → deal moves to `ArbitratedSettled`
 //! / `ArbitratedRefunded`) requires an actual ledger canister installed
 //! in pocket-ic plus a `Funded` deal — that infrastructure is out of
-//! scope for this RFC-001 implementation PR.
+//! scope for this PR.
 
 use std::sync::Arc;
 

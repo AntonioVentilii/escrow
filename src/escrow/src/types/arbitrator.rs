@@ -1,7 +1,7 @@
 use candid::{CandidType, Deserialize, Principal};
 
 /// Minimum non-abstain votes an arbitrator must have cast before a
-/// reliability score is reported (Q11). Below this threshold, the
+/// reliability score is reported. Below this threshold, the
 /// `ArbitratorProfile::score` field is `None` to avoid noisy early
 /// signals.
 pub const MIN_VOTES_FOR_SCORE: u32 = 5;
@@ -16,7 +16,7 @@ pub const MIN_VOTES_FOR_SCORE: u32 = 5;
 ///
 /// `Suspended` and `Deregistered` arbitrators cannot be selected for new
 /// disputes, but in-flight assignments are honoured (a non-vote counts as
-/// `Vote::Abstain` at finalize time per Q5).
+/// `Vote::Abstain` at finalize time).
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum ArbitratorStatus {
     Active,
@@ -26,15 +26,20 @@ pub enum ArbitratorStatus {
 
 /// Public profile of a registered arbitrator.
 ///
-/// Score-related fields follow the Q11 rules:
+/// Score-related fields follow these rules:
 ///
-/// | Outcome              | Voter type              | `assigned` | `voted` | `with_majority` |
-/// | -------------------- | ----------------------- | ---------- | ------- | --------------- |
+/// | Outcome                | Voter type              | `assigned` | `voted` | `with_majority` |
+/// | ---------------------- | ----------------------- | ---------- | ------- | --------------- |
 /// | `Settled` / `Refunded` | non-abstain w/ majority | +1         | +1      | +1              |
 /// | `Settled` / `Refunded` | non-abstain vs majority | +1         | +1      | +0              |
 /// | `Settled` / `Refunded` | abstain                 | +1         | +0      | +0              |
-/// | `NoQuorum` (Q9)      | any (incl. non-abstain) | +1         | +0      | +0              |
-/// | `Withdrawn` (Q12)    | any                     | +1         | +0      | +0              |
+/// | `NoQuorum`             | any (incl. non-abstain) | +1         | +0      | +0              |
+/// | `Withdrawn`            | any                     | +1         | +0      | +0              |
+///
+/// `NoQuorum` and `Withdrawn` deliberately don't update `voted` or
+/// `with_majority` — there's no on-canister verdict against which to
+/// score votes, and counting them would create a perverse incentive
+/// to abstain on hard-to-quorum disputes.
 ///
 /// `score` is computed via [`ArbitratorProfile::compute_score`] and is
 /// `None` until `disputes_voted >= MIN_VOTES_FOR_SCORE`.
@@ -47,7 +52,7 @@ pub struct ArbitratorProfile {
     /// Total disputes the arbitrator was selected for.
     pub disputes_assigned: u32,
     /// Disputes the arbitrator submitted a non-abstain vote on, excluding
-    /// `NoQuorum` and `Withdrawn` outcomes (per Q11's refinement).
+    /// `NoQuorum` and `Withdrawn` outcomes.
     pub disputes_voted: u32,
     /// Disputes where the arbitrator's non-abstain vote matched the
     /// eventual majority. `NoQuorum` / `Withdrawn` outcomes never

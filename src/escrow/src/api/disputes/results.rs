@@ -75,7 +75,7 @@ impl From<&Dispute> for DisputeView {
     }
 }
 
-/// Reduced public view for status pages (RFC-001 — Candid surface).
+/// Reduced public view for status pages.
 ///
 /// No party principals, no panel principals, no evidence URLs — just
 /// the minimum any authenticated caller needs to render a dispute's
@@ -115,7 +115,7 @@ impl From<&Dispute> for PublicDisputeView {
     fn from(d: &Dispute) -> Self {
         let panel_size = u32::try_from(d.panel.len()).unwrap_or(u32::MAX);
         let evidence_count = u32::try_from(d.evidence.len()).unwrap_or(u32::MAX);
-        // Phase-gated disclosure: tally only visible after Resolved (per Q11/Q9).
+        // Phase-gated disclosure: tally only visible after Resolved.
         let tally = if matches!(d.phase, DisputePhase::Resolved) {
             d.outcome.as_ref().map(|o| match o {
                 DisputeOutcome::Settled { cc, ic, abstain }

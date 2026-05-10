@@ -1,8 +1,8 @@
-//! Dispute service (RFC-001 step 4).
+//! Dispute service.
 //!
-//! Owns the dispute lifecycle: opening, panel selection, queries.
-//! `submit_evidence` / `cast_vote` / `finalize_dispute` /
-//! `withdraw_dispute` land in subsequent steps.
+//! Owns the full dispute lifecycle: opening, evidence submission,
+//! voting, finalize, out-of-band withdrawal, queries, and the
+//! auto-finalize sweep that ticks past the voting deadline.
 
 use core::cmp::{Ordering, Reverse};
 
@@ -35,7 +35,7 @@ use crate::{
     validation,
 };
 
-/// Computes the arbitration fee from `amount` per the Q10 formula:
+/// Computes the arbitration fee from `amount`:
 /// `max(MIN_FEE, amount * FEE_BPS / 10_000)`.
 ///
 /// Saturating arithmetic — overflow on huge amounts is clamped to
@@ -47,12 +47,12 @@ pub fn compute_arbitration_fee(amount: u128, cfg: &DisputeConfig) -> u128 {
 }
 
 /// Returns the eligible arbitrator pool for a dispute on `deal`, with
-/// per-arbitrator selection weights (Q5):
+/// per-arbitrator selection weights:
 /// - Active status only.
 /// - Excludes `payer` and `recipient` of the disputed deal.
 /// - Excludes arbitrators below `min_arbitrator_score` when set.
-/// - Weight = `score.unwrap_or(0).max(1)` so unscored arbitrators get a non-zero base weight (= 1)
-///   per the Q5 decision.
+/// - Weight = `score.unwrap_or(0).max(1)` so unscored arbitrators get a non-zero base weight of 1
+///   (otherwise newcomers could never bootstrap their score).
 #[must_use]
 pub fn eligible_arbitrators(deal: &Deal, cfg: &DisputeConfig) -> Vec<(Principal, u32)> {
     with_arbitrators(|map| {
@@ -141,15 +141,15 @@ pub fn load_dispute_config() -> DisputeConfig {
     CONFIG.with(|c| c.borrow().dispute_config.clone().unwrap_or_default())
 }
 
-/// Opens a new dispute on `deal_id`. RFC-001 step 4.
+/// Opens a new dispute on `deal_id`.
 ///
 /// On success: creates a `Dispute` with phase `Evidence`, transitions
 /// the deal `Funded → Disputed`, sets `Deal.dispute = Some(dispute_id)`,
 /// and increments `disputes_assigned` for each panel arbitrator.
 ///
 /// Idempotent: calling `open` on a deal that's already `Disputed`
-/// returns the existing `DisputeView` (the Q9 deadlines are NOT reset
-/// — the original timeline is preserved).
+/// returns the existing `DisputeView` — the original deadlines are
+/// preserved, not reset.
 pub async fn open(
     caller: Principal,
     deal_id: DealId,
@@ -170,9 +170,9 @@ pub async fn open(
     // Fee math: validator already checks Funded + bound; here we ensure the
     // amount can cover at least the configured fee with at least 1 unit
     // remaining for the prevailing party. Per-arbitrator ledger fees are
-    // absorbed at finalize (Q10 refinement #1) — the validator can't know
-    // the exact ICRC-1 fee without an inter-canister call, so we keep the
-    // amount-too-small check conservative here.
+    // absorbed at finalize — the validator can't know the exact ICRC-1
+    // fee without an inter-canister call, so the amount-too-small check
+    // here stays conservative.
     let fee = compute_arbitration_fee(deal.amount, &cfg);
     if deal.amount <= fee {
         return Err(EscrowError::AmountTooSmallForArbitration {
@@ -253,8 +253,9 @@ async fn open_locked(
         d.updated_by = Some(caller);
     });
 
-    // Bump `disputes_assigned` for each panel member (Q11 — assigned counter
-    // tracks all panel selections, including future NoQuorum / Withdrawn).
+    // Bump `disputes_assigned` for each panel member. The assigned counter
+    // tracks all panel selections, including future NoQuorum / Withdrawn —
+    // it's the only score-related counter that fires before resolution.
     for member in &panel {
         with_arbitrator(member.principal, |a| {
             a.disputes_assigned = a.disputes_assigned.saturating_add(1);
@@ -264,7 +265,7 @@ async fn open_locked(
     Ok(DisputeView::from(&dispute))
 }
 
-/// Casts an arbitrator's vote on a dispute (RFC-001 step 6).
+/// Casts an arbitrator's vote on a dispute.
 ///
 /// Caller must be on the dispute's `panel` (else
 /// `NotAssignedArbitrator`) and currently `Active` in the arbitrator
@@ -282,10 +283,11 @@ async fn open_locked(
 ///   finalize takes over in step 7).
 /// - Phase `Resolved` → `InvalidDisputePhase`.
 ///
-/// **Idempotency / overwrite** — Q11's score rule (only the *eventual
-/// majority* counter increments) lets us treat votes as latest-wins:
-/// an arbitrator can change their vote any time during the open
-/// voting window. Recording the same vote twice is a no-op success.
+/// **Idempotency / overwrite** — only the *eventual majority* counter
+/// is incremented at finalize time, which lets us treat votes as
+/// latest-wins: an arbitrator can change their vote any time during
+/// the open voting window. Recording the same vote twice is a no-op
+/// success.
 pub fn cast_vote(
     caller: Principal,
     dispute_id: DisputeId,
@@ -300,7 +302,7 @@ pub fn cast_vote(
     }
 
     // Arbitrator must be Active. Suspended / Deregistered arbitrators
-    // can't vote — non-vote counts as Abstain at finalize per Q5.
+    // can't vote — their non-vote then counts as Abstain at finalize.
     let profile = get_arbitrator(caller).ok_or(EscrowError::ArbitratorNotActive)?;
     if !matches!(profile.status, ArbitratorStatus::Active) {
         return Err(EscrowError::ArbitratorNotActive);
@@ -344,16 +346,16 @@ pub fn cast_vote(
 }
 
 // ---------------------------------------------------------------------------
-// Finalization (RFC-001 step 7)
+// Finalization
 // ---------------------------------------------------------------------------
 
-/// Pure tally function — applies Q7 quorum + tie rules to a panel
+/// Pure tally function — applies the quorum + tie rules to a panel
 /// snapshot and returns the resulting `DisputeOutcome`.
 ///
-/// - Non-voted panel members are counted as `Abstain` at finalize time (Q5: deregistered /
-///   suspended / silent arbitrators contribute no non-abstain vote).
+/// - Non-voted panel members are counted as `Abstain` at finalize time (deregistered / suspended /
+///   silent arbitrators contribute no non-abstain vote).
 /// - Quorum = `floor(panel_size / 2) + 1` non-abstain votes.
-/// - If quorum is met: majority by greater of `cc` / `ic`. Ties resolve to `NoQuorum` (Q7).
+/// - If quorum is met: majority by greater of `cc` / `ic`. Ties resolve to `NoQuorum`.
 /// - Below quorum or on a tie: `NoQuorum`.
 #[must_use]
 pub fn tally_votes(panel: &[PanelMember], panel_size: u32) -> DisputeOutcome {
@@ -381,7 +383,9 @@ pub fn tally_votes(panel: &[PanelMember], panel_size: u32) -> DisputeOutcome {
     match cc.cmp(&ic) {
         Ordering::Greater => DisputeOutcome::Settled { cc, ic, abstain },
         Ordering::Less => DisputeOutcome::Refunded { cc, ic, abstain },
-        // Tie (Q7): no majority → NoQuorum fallthrough.
+        // Tie: no majority → NoQuorum fallthrough. NOT a tiebreaker —
+        // an asymmetric tiebreak rule (e.g. "disputer loses on tie")
+        // would chill legitimate disputes.
         Ordering::Equal => DisputeOutcome::NoQuorum { cc, ic, abstain },
     }
 }
@@ -389,7 +393,7 @@ pub fn tally_votes(panel: &[PanelMember], panel_size: u32) -> DisputeOutcome {
 /// Returns whether a `DisputeOutcome` corresponds to a panel that
 /// reached a binding majority (i.e. arbitrators who voted with the
 /// majority should have their `disputes_with_majority` counter
-/// incremented per Q11).
+/// incremented at finalize time).
 #[must_use]
 fn outcome_majority_vote(outcome: &DisputeOutcome) -> Option<Vote> {
     match outcome {
@@ -399,7 +403,12 @@ fn outcome_majority_vote(outcome: &DisputeOutcome) -> Option<Vote> {
     }
 }
 
-/// Maps a `DisputeOutcome` to the resulting `DealStatus` per Q1 + Q9 + Q12.
+/// Maps a `DisputeOutcome` to the resulting `DealStatus`.
+///
+/// Both arbitrated outcomes (`Settled` / `Refunded` / `NoQuorum`) and
+/// the out-of-band `Withdrawn` outcome funnel into the
+/// `ArbitratedSettled` / `ArbitratedRefunded` deal-status pair —
+/// callers can distinguish the resolution mechanism via `Dispute.outcome`.
 fn outcome_to_deal_status(outcome: &DisputeOutcome) -> DealStatus {
     match outcome {
         DisputeOutcome::Settled { .. } => DealStatus::ArbitratedSettled,
@@ -413,7 +422,7 @@ fn outcome_to_deal_status(outcome: &DisputeOutcome) -> DealStatus {
     }
 }
 
-/// Finalises a dispute past its `voting_deadline_ns` (RFC-001 step 7).
+/// Finalises a dispute past its `voting_deadline_ns`.
 ///
 /// Anyone (non-anonymous) can call. Idempotent — replays after a
 /// successful finalize return the resolved view; partial replays
@@ -428,8 +437,8 @@ fn outcome_to_deal_status(outcome: &DisputeOutcome) -> DealStatus {
 /// 3. Tally votes (`tally_votes`).
 /// 4. Per-arbitrator fan-out: for each non-abstain voter that hasn't been paid yet, transfer
 ///    `fee_per_arbitrator` from the escrow subaccount; record `paid_at_ns` + `payout_tx`.
-///    `NoQuorum` pays no arbitrator fees (per Q9).
-/// 5. Update arbitrator score counters (Q11): bump `disputes_voted` for non-abstain voters; bump
+///    `NoQuorum` pays no arbitrator fees.
+/// 5. Update arbitrator score counters: bump `disputes_voted` for non-abstain voters; bump
 ///    `disputes_with_majority` for those whose vote matched the outcome. `NoQuorum` / `Withdrawn`
 ///    outcomes only updated `disputes_assigned` (already bumped at `open_dispute` time); they don't
 ///    touch `voted` / `with_majority`.
@@ -474,9 +483,9 @@ async fn finalize_locked(
     let majority = outcome_majority_vote(&outcome);
 
     // Compute the per-arbitrator slice. NoQuorum and Withdrawn pay no
-    // arbitrator fee (Q9 / Q12 — Q12 has its own reduced-fee path that
-    // lands in step 9, but the tally-derived outcomes here never produce
-    // Withdrawn).
+    // arbitrator fee. (`Withdrawn` has its own reduced-fee path in
+    // `withdraw_finalize_locked`; the tally-derived outcomes here never
+    // produce `Withdrawn`.)
     let pays_arbitrators = !matches!(outcome, DisputeOutcome::NoQuorum { .. });
     let non_abstain_count = dispute
         .panel
@@ -496,7 +505,8 @@ async fn finalize_locked(
     };
 
     // Query the ledger fee once — used for both per-arbitrator transfers
-    // and for the prevailing-party-payout calculation (Q10 refinement #1).
+    // and for the prevailing-party-payout calculation (the prevailing
+    // party absorbs the per-transfer ledger fees).
     let ledger_fee = ledger::fee(deal.token_ledger).await?;
 
     // 4 + 5: per-arbitrator fan-out + score update.
@@ -541,7 +551,7 @@ async fn finalize_locked(
         }
     }
 
-    // Update arbitrator reliability counters (Q11).
+    // Update arbitrator reliability counters.
     apply_score_updates(&dispute.panel, majority.as_ref());
 
     // 6: prevailing party payout.
@@ -621,7 +631,7 @@ async fn finalize_locked(
     Ok(DisputeView::from(&resolved))
 }
 
-/// Applies Q11 score-counter updates after finalize. The rule table:
+/// Applies score-counter updates after finalize. The rule table:
 ///
 /// | Outcome class                | Voter type            | `voted` | `with_majority` |
 /// | ---------------------------- | --------------------- | ------- | --------------- |
@@ -656,8 +666,7 @@ fn apply_score_updates(panel: &[PanelMember], majority: Option<&Vote>) {
     let _ = MIN_VOTES_FOR_SCORE; // Touch to keep import in scope when unused above.
 }
 
-/// Submits or retracts a party's out-of-band withdrawal proposal
-/// (RFC-001 step 9 / Q12).
+/// Submits or retracts a party's out-of-band withdrawal proposal.
 ///
 /// Caller must be `payer` or `recipient` of the parent deal. Allowed
 /// during the `Evidence` phase only — once voting opens, arbitrators
@@ -695,7 +704,7 @@ pub async fn withdraw(
     let dispute = load_dispute(dispute_id).ok_or(EscrowError::DisputeNotFound)?;
     let deal = get_deal(dispute.deal_id).ok_or(EscrowError::NotFound)?;
 
-    // Q12: caller must be payer or recipient (not panel member).
+    // Caller must be payer or recipient (not a panel member).
     let caller_is_payer = deal.payer == Some(caller);
     let caller_is_recipient = deal.recipient == Some(caller);
     if !caller_is_payer && !caller_is_recipient {
@@ -870,7 +879,7 @@ async fn withdraw_finalize_locked(
 
 /// Scans all open disputes whose `voting_deadline_ns` has passed and
 /// returns up to `limit` of their IDs. Used by the auto-finalize
-/// sweep (RFC-001 step 8). Pure read — no mutation.
+/// sweep. Pure read — no mutation.
 #[must_use]
 pub fn due_for_finalization(limit: u32, now_ns: u64) -> Vec<DisputeId> {
     with_disputes(|map| {
@@ -885,7 +894,7 @@ pub fn due_for_finalization(limit: u32, now_ns: u64) -> Vec<DisputeId> {
 }
 
 /// Auto-finalizes up to `limit` disputes whose voting deadline has
-/// passed (RFC-001 step 8). Returns the IDs that resolved successfully.
+/// passed. Returns the IDs that resolved successfully.
 ///
 /// Mirrors `services::expiry::process_expired` shape: scan, then
 /// per-id `try_acquire_lock` + `finalize`. Errors per-dispute are
@@ -908,7 +917,7 @@ pub async fn auto_finalize_due(limit: u32, now_ns: u64) -> Vec<DisputeId> {
     processed
 }
 
-/// Submits a piece of evidence on a dispute (RFC-001 step 5).
+/// Submits a piece of evidence on a dispute.
 ///
 /// Allowed during the `Evidence` phase only. Caller must be a party of
 /// the parent deal or an arbitrator on the panel. Length / shape
@@ -1442,7 +1451,7 @@ mod tests {
         assert_eq!(cfg.panel_size, DisputeConfig::default().panel_size);
     }
 
-    // --- submit_evidence (RFC-001 step 5) ---
+    // --- submit_evidence ---
 
     use super::{cast_vote, submit_evidence};
     use crate::{
@@ -1715,7 +1724,7 @@ mod tests {
     // --- supporting types referenced by the helper ---
     fn _imports_used_by_helper(_e: Evidence) {}
 
-    // --- cast_vote (RFC-001 step 6) ---
+    // --- cast_vote ---
 
     fn make_dispute_with_panel(
         payer_id: u8,
@@ -1857,7 +1866,7 @@ mod tests {
         assert_eq!(err, EscrowError::DisputeNotFound);
     }
 
-    // --- tally_votes (RFC-001 step 7, Q7 quorum + tie semantics) ---
+    // --- tally_votes (quorum + tie semantics) ---
 
     use super::tally_votes;
     use crate::types::dispute::DisputeOutcome;
@@ -1963,7 +1972,7 @@ mod tests {
 
     #[test]
     fn tally_non_voted_treated_as_abstain() {
-        // Per Q5: a non-vote (vote = None) from a deregistered or
+        // A non-vote (vote = None) from a deregistered or
         // suspended arbitrator counts as Abstain at finalize time.
         let panel = vec![
             pm(Some(super::Vote::ConcludedCorrectly)),

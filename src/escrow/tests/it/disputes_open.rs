@@ -1,4 +1,4 @@
-//! Integration tests for `open_dispute` (RFC-001 step 4).
+//! Integration tests for `open_dispute`.
 //!
 //! Covers the error paths reachable without a real ICRC ledger:
 //! - `NotFound` on unknown `deal_id`.

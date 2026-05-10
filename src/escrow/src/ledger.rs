@@ -81,9 +81,10 @@ pub async fn transfer(
 /// (in token units) the ledger will charge on subsequent
 /// `icrc1_transfer` / `icrc2_transfer_from` calls.
 ///
-/// Used by `services::disputes::finalize` (RFC-001 step 7) to size
-/// the prevailing-party payout so the per-arbitrator transfers'
-/// ledger fees are absorbed by the prevailing party (Q10 refinement #1).
+/// Used by `services::disputes::finalize` to size the prevailing-party
+/// payout so the per-arbitrator transfers' ledger fees are absorbed by
+/// the prevailing party rather than coming out of each arbitrator's
+/// fee slice.
 pub async fn fee(ledger: Principal) -> Result<u128, EscrowError> {
     let response = Call::unbounded_wait(ledger, "icrc1_fee")
         .await

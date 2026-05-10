@@ -6,7 +6,7 @@ use crate::types::arbitrator::ArbitratorStatus;
 ///
 /// Idempotent — calling `register_arbitrator` for a principal that is
 /// already registered returns the existing profile rather than erroring
-/// (per RFC-001 Q4 decision). The `bio` is updated on re-registration.
+/// The `bio` is updated on re-registration.
 #[derive(CandidType, Deserialize, Clone, Debug, Default)]
 pub struct RegisterArbitratorArgs {
     /// Plain-text introduction (max 1 KiB at the canister boundary).

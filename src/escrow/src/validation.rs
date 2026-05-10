@@ -9,7 +9,7 @@ use crate::{
 const MAX_TITLE_LEN: u32 = 200;
 const MAX_NOTE_LEN: u32 = 1000;
 const MAX_ACTIVE_DEALS_PER_PRINCIPAL: u32 = 50;
-/// Max byte length of an arbitrator's self-declared bio (RFC-001 Q4).
+/// Max byte length of an arbitrator's self-declared bio.
 pub const MAX_ARBITRATOR_BIO_LEN: u32 = 1024;
 
 /// ~500 years in nanoseconds — the practical u64 ceiling.
@@ -37,14 +37,14 @@ pub fn validate_create(amount: u128, expires_at_ns: u64, now_ns: u64) -> Result<
     Ok(())
 }
 
-/// Max byte length of an evidence note (RFC-001 Q8).
+/// Max byte length of an evidence note.
 pub const MAX_EVIDENCE_NOTE_LEN: u32 = 4096;
-/// Max byte length of an evidence artefact URL (RFC-001 Q8).
+/// Max byte length of an evidence artefact URL.
 pub const MAX_EVIDENCE_URL_LEN: u32 = 2048;
 /// SHA-256 length in bytes — invariant for evidence artefact hashes.
 pub const SHA256_LEN: usize = 32;
 
-/// Enforces the arbitrator-bio length cap (RFC-001 Q4).
+/// Enforces the arbitrator-bio length cap.
 pub fn validate_arbitrator_bio(bio: Option<&str>) -> Result<(), EscrowError> {
     if let Some(b) = bio {
         if b.len() > MAX_ARBITRATOR_BIO_LEN as usize {
@@ -299,7 +299,7 @@ pub fn validate_can_reject(deal: &Deal, caller: Principal) -> Result<bool, Escro
     resolve_caller_role(deal, caller)
 }
 
-/// Validates a single evidence submission per Q8 boundary rules:
+/// Validates a single evidence submission at the canister boundary:
 /// at least one of `note` / `(artefact_url + artefact_sha256)` present;
 /// URL and hash paired; size + length caps.
 pub fn validate_evidence(
@@ -347,7 +347,7 @@ pub fn validate_evidence(
 }
 
 // ---------------------------------------------------------------------------
-// Dispute validators (RFC-001 step 4)
+// Dispute validators
 // ---------------------------------------------------------------------------
 
 /// Returns `true` if the deal already has an open dispute (idempotent
@@ -356,8 +356,9 @@ pub fn validate_evidence(
 ///
 /// `open_dispute` is allowed when:
 /// - The deal exists in `Funded` state.
-/// - Both `payer` and `recipient` are bound (Q3 — tip flows are not disputable).
-/// - The caller is `payer` or `recipient` (Q2 — symmetric).
+/// - Both `payer` and `recipient` are bound — tip flows (open recipient) are not disputable, since
+///   there's no bound counterparty in canister state.
+/// - The caller is `payer` or `recipient` — either bound party can open a dispute (symmetric).
 /// - The deal has not yet expired.
 /// - No dispute is already attached to the deal.
 pub fn validate_can_open_dispute(
@@ -391,9 +392,9 @@ pub fn validate_can_open_dispute(
         return Err(EscrowError::DisputeAlreadyExists);
     }
 
-    // Expiry-at-open check: the auto-refund sweep skips Disputed deals
-    // (Q2 contract), so we must not let a dispute open after the
-    // expiry-claim window has already closed in the recipient's favour.
+    // Expiry-at-open check: the auto-refund sweep skips Disputed deals,
+    // so we must not let a dispute open after the expiry-claim window
+    // has already closed in the recipient's favour.
     if deal.expires_at_ns <= now_ns {
         return Err(EscrowError::Expired);
     }

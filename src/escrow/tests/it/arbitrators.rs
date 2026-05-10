@@ -1,4 +1,4 @@
-//! Integration tests for the arbitrator endpoints (RFC-001 step 3).
+//! Integration tests for the arbitrator endpoints.
 //!
 //! Covers the happy path + idempotency + every error variant the
 //! register/deregister/get/list flows can emit, against a real installed

@@ -1,4 +1,4 @@
-//! Integration tests for `cast_vote` (RFC-001 step 6).
+//! Integration tests for `cast_vote`.
 //!
 //! Covers the canister-boundary error paths reachable without a real
 //! ICRC-1/2 ledger. The happy-path test (registered arbitrator on a

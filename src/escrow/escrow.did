@@ -11,15 +11,20 @@ type AcceptDealResult = variant { Ok : DealView; Err : EscrowError };
 type Account = record { owner : principal; subaccount : opt blob };
 // Public profile of a registered arbitrator.
 //
-// Score-related fields follow the Q11 rules:
+// Score-related fields follow these rules:
 //
-// | Outcome              | Voter type              | `assigned` | `voted` | `with_majority` |
-// | -------------------- | ----------------------- | ---------- | ------- | --------------- |
+// | Outcome                | Voter type              | `assigned` | `voted` | `with_majority` |
+// | ---------------------- | ----------------------- | ---------- | ------- | --------------- |
 // | `Settled` / `Refunded` | non-abstain w/ majority | +1         | +1      | +1              |
 // | `Settled` / `Refunded` | non-abstain vs majority | +1         | +1      | +0              |
 // | `Settled` / `Refunded` | abstain                 | +1         | +0      | +0              |
-// | `NoQuorum` (Q9)      | any (incl. non-abstain) | +1         | +0      | +0              |
-// | `Withdrawn` (Q12)    | any                     | +1         | +0      | +0              |
+// | `NoQuorum`             | any (incl. non-abstain) | +1         | +0      | +0              |
+// | `Withdrawn`            | any                     | +1         | +0      | +0              |
+//
+// `NoQuorum` and `Withdrawn` deliberately don't update `voted` or
+// `with_majority` — there's no on-canister verdict against which to
+// score votes, and counting them would create a perverse incentive
+// to abstain on hard-to-quorum disputes.
 //
 // `score` is computed via [`ArbitratorProfile::compute_score`] and is
 // `None` until `disputes_voted >= MIN_VOTES_FOR_SCORE`.
@@ -35,7 +40,7 @@ type ArbitratorProfile = record {
 	// accumulate (`disputes_voted >= MIN_VOTES_FOR_SCORE`).
 	score : opt nat32;
 	// Disputes the arbitrator submitted a non-abstain vote on, excluding
-	// `NoQuorum` and `Withdrawn` outcomes (per Q11's refinement).
+	// `NoQuorum` and `Withdrawn` outcomes.
 	disputes_voted : nat32;
 	// Disputes where the arbitrator's non-abstain vote matched the
 	// eventual majority. `NoQuorum` / `Withdrawn` outcomes never
@@ -52,14 +57,14 @@ type ArbitratorProfile = record {
 //
 // `Suspended` and `Deregistered` arbitrators cannot be selected for new
 // disputes, but in-flight assignments are honoured (a non-vote counts as
-// `Vote::Abstain` at finalize time per Q5).
+// `Vote::Abstain` at finalize time).
 type ArbitratorStatus = variant { Deregistered; Active; Suspended };
 // Arguments for cancelling an unfunded deal.
 type CancelDealArgs = record {
 	// Identifier of the deal to cancel.
 	deal_id : nat64
 };
-// Arguments for `cast_vote` (RFC-001 step 6).
+// Arguments for `cast_vote`.
 //
 // Caller must be on the dispute's panel and currently `Active`.
 // Allowed only during the open voting window
@@ -93,8 +98,8 @@ type ClaimableDealView = record {
 // older stable-memory snapshots that lack them.
 type Config = record {
 	// Admin-tunable dispute parameters. `None` on legacy snapshots; the
-	// canister falls back to `DisputeConfig::default()` (Q6/Q9/Q10/Q12
-	// defaults) for any missing values when disputes are queried.
+	// canister falls back to `DisputeConfig::default()` for any missing
+	// values when disputes are queried.
 	dispute_config : opt DisputeConfig
 };
 type Consent = variant { Rejected; Accepted; Pending };
@@ -124,20 +129,20 @@ type CreateDealArgs = record {
 	expires_at_ns : nat64
 };
 type DealStatus = variant {
-	// A dispute is open on this deal (RFC-001 Q1/Q2). Funds remain in the
-	// escrow subaccount until the dispute resolves to
-	// `ArbitratedSettled` / `ArbitratedRefunded`. The expiry sweep
-	// (`services::expiry`) skips deals in this state — see Q2 contract.
+	// A dispute is open on this deal. Funds remain in the escrow
+	// subaccount until the dispute resolves to `ArbitratedSettled` /
+	// `ArbitratedRefunded`. The expiry sweep (`services::expiry`)
+	// skips deals in this state.
 	Disputed;
 	Refunded;
-	// Dispute panel voted majority CC, OR both parties agreed out-of-band
-	// (Q12) on a CC outcome — funds released to recipient. Distinct from
-	// `Settled` so callers can tell arbitrated from unilateral
-	// settlement (Q1). Terminal.
+	// Dispute panel voted majority CC, OR both parties agreed
+	// out-of-band on a CC outcome — funds released to recipient.
+	// Distinct from `Settled` so callers can tell arbitrated from
+	// unilateral settlement. Terminal.
 	ArbitratedSettled;
-	// Dispute panel voted majority IC, OR both parties agreed out-of-band
-	// on an IC outcome, OR the panel reached no quorum (Q9 fallback).
-	// Funds refunded to payer. Distinct from `Refunded` (Q1). Terminal.
+	// Dispute panel voted majority IC, OR both parties agreed
+	// out-of-band on an IC outcome, OR the panel reached no quorum.
+	// Funds refunded to payer. Distinct from `Refunded`. Terminal.
 	ArbitratedRefunded;
 	Rejected;
 	Funded;
@@ -179,8 +184,9 @@ type DealView = record {
 	// participants; never exposed in the public claimable view.
 	claim_code : opt text;
 	// Identifier of the attached dispute, if any. `Some(_)` while a
-	// dispute is open or after it has resolved (RFC-001 Q1 audit-trail
-	// link); `None` for deals that never went into dispute.
+	// dispute is open or after it has resolved (audit-trail link to
+	// the `Dispute` record); `None` for deals that never went into
+	// dispute.
 	dispute : opt nat64;
 	// Timestamp when the deal was settled (funds released), if applicable.
 	settled_at_ns : opt nat64;
@@ -200,31 +206,31 @@ type DeregisterArbitratorResult = variant {
 // Admin-tunable dispute configuration. Lives nested in [`crate::types::state::Config`].
 //
 // All windows are nanoseconds (canister convention); fee bps follows the
-// standard ICRC bps convention (`10_000` = 100%). Defaults below match
-// the Q6/Q9/Q10/Q12 decisions.
+// standard ICRC bps convention (`10_000` = 100%).
 type DisputeConfig = record {
-	// Number of arbitrators selected per dispute. Must be odd and `>= 3`
-	// (Q6). The validator that ships in step 4 enforces both invariants
-	// at `update_dispute_config` time.
+	// Number of arbitrators selected per dispute. Must be odd and `>= 3`.
+	// The validator at `update_dispute_config` time enforces both
+	// invariants — odd-only is required by the tally rules (no tie
+	// possible without an abstention).
 	panel_size : nat32;
-	// Length of the Voting phase, in nanoseconds (Q9; default 2 days).
+	// Length of the Voting phase, in nanoseconds (default 2 days).
 	voting_window_ns : nat64;
-	// Length of the Evidence phase, in nanoseconds (Q9; default 3 days).
+	// Length of the Evidence phase, in nanoseconds (default 3 days).
 	evidence_window_ns : nat64;
 	// Optional minimum arbitrator score required to be eligible for
-	// selection (Q4 Sybil filter). `None` = bootstrap mode (every active
+	// selection (Sybil filter). `None` = bootstrap mode (every active
 	// arbitrator is eligible; default).
 	min_arbitrator_score : opt nat32;
-	// Minimum arbitration fee in the deal's token (Q10). The effective
-	// fee at `open_dispute` is `max(arbitration_min_fee, amount *
+	// Minimum arbitration fee in the deal's token. The effective fee
+	// at `open_dispute` is `max(arbitration_min_fee, amount *
 	// arbitration_fee_bps / 10_000)`.
 	arbitration_min_fee : nat;
-	// Arbitration fee in basis points of the disputed amount (Q10;
-	// default 500 = 5%). Combined with [`Self::arbitration_min_fee`].
+	// Arbitration fee in basis points of the disputed amount
+	// (default 500 = 5%). Combined with [`Self::arbitration_min_fee`].
 	arbitration_fee_bps : nat32;
 	// Percentage of the arbitration fee paid to the panel when both
-	// parties resolve out-of-band via `withdraw_dispute` (Q12; default
-	// 25, validator clamps to `0..=100`).
+	// parties resolve out-of-band via `withdraw_dispute` (default 25,
+	// validator clamps to `0..=100`).
 	withdraw_fee_pct : nat32
 };
 // Outcome of a resolved dispute. Set on the `Dispute` record at finalize
@@ -234,17 +240,17 @@ type DisputeConfig = record {
 // | ------------------------------------------------ | -------------------------- |
 // | `Settled { … }`                                  | `ArbitratedSettled`        |
 // | `Refunded { … }`                                 | `ArbitratedRefunded`       |
-// | `NoQuorum { … }`                                 | `ArbitratedRefunded` (Q9)  |
-// | `Withdrawn { agreed: ConcludedCorrectly }` (Q12) | `ArbitratedSettled`        |
+// | `NoQuorum { … }`                                 | `ArbitratedRefunded` (no-quorum fallback) |
+// | `Withdrawn { agreed: ConcludedCorrectly }`       | `ArbitratedSettled`        |
 // | `Withdrawn { agreed: IncorrectlyConcluded }`     | `ArbitratedRefunded`       |
 type DisputeOutcome = variant {
 	// Majority IC — funds refunded to payer.
 	Refunded : DisputeTally;
-	// Both parties agreed out-of-band on `agreed` (Q12 `withdraw_dispute`).
+	// Both parties agreed out-of-band on `agreed` via `withdraw_dispute`.
 	// Arbitrators receive the reduced `withdraw_fee_pct` slice of the fee.
 	Withdrawn : record { agreed : Vote };
-	// Voting deadline reached without enough non-abstain votes (Q9).
-	// Falls back to refunding the payer per the locked Q9 decision.
+	// Voting deadline reached without enough non-abstain votes.
+	// Falls back to refunding the payer (status quo ante).
 	NoQuorum : DisputeTally;
 	// Majority CC — funds released to recipient.
 	Settled : DisputeTally
@@ -318,7 +324,7 @@ type EscrowError = variant {
 	// A claim code is required for open (unbound-recipient) deals.
 	MissingClaimCode;
 	// An evidence submission exceeds the maximum allowed size for its
-	// field (Q8). The `max` is the byte limit that was breached.
+	// field. The `max` is the byte limit that was breached.
 	EvidenceTooLarge : record { max : nat32 };
 	// An error occurred while communicating with the ICRC ledger canister.
 	LedgerError : text;
@@ -331,8 +337,8 @@ type EscrowError = variant {
 	// A metadata field exceeds its maximum allowed length.
 	MetadataTooLong : record { max : nat32; field : text };
 	// `open_dispute` was called on a deal whose `recipient` is `None`
-	// (open-recipient / tip-flow deal). Per Q3, tip flows cannot be
-	// disputed because there is no bound counterparty in canister state.
+	// (open-recipient / tip-flow deal). Tip flows cannot be disputed
+	// because there is no bound counterparty in canister state.
 	DisputeRequiresBoundRecipient;
 	// `open_dispute` was called on a deal that already has an open or
 	// resolved dispute attached.
@@ -352,7 +358,7 @@ type EscrowError = variant {
 	// The caller has too many active (non-terminal) deals.
 	TooManyActiveDeals : record { max : nat32 };
 	// The eligible arbitrator pool is too small to fill the configured
-	// `panel_size`. Returned by `open_dispute` (Q5) — the deal stays
+	// `panel_size`. Returned by `open_dispute` — the deal stays
 	// `Funded` so the caller can retry later or settle out-of-band.
 	InsufficientArbitrators : record { have : nat32; need : nat32 };
 	// A reclaim was attempted before the deal's expiry deadline.
@@ -368,12 +374,12 @@ type EscrowError = variant {
 	Expired;
 	// `open_dispute` was called on a deal whose `amount` cannot cover
 	// the configured arbitration fee plus the per-arbitrator ICRC-1
-	// ledger fees (Q10). Tiny deals are not disputable.
+	// ledger fees. Tiny deals are not disputable.
 	AmountTooSmallForArbitration : record { min : nat }
 };
 // A piece of evidence attached to a dispute.
 //
-// Per Q8, artefacts are stored **off-canister**: the canister only
+// Artefacts are stored **off-canister**: the canister only
 // records a URL + SHA-256 commitment + an optional short note. Length
 // limits are enforced at the canister boundary; this struct itself is
 // purely a data carrier.
@@ -389,7 +395,7 @@ type Evidence = record {
 	// `Some` — the validator rejects other lengths.
 	artefact_sha256 : opt blob
 };
-// Arguments for `finalize_dispute` (RFC-001 step 7).
+// Arguments for `finalize_dispute`.
 //
 // Anyone (non-anonymous) can call. Idempotent — calling again after
 // successful resolution returns the resolved view; calling when not
@@ -468,7 +474,7 @@ type ListMyDisputesArgs = record {
 // Mirrors the `Deal.{funded_at_ns, funding_tx, settled_at_ns, payout_tx}`
 // pattern: `paid_at_ns` + `payout_tx` are populated when the per-arbitrator
 // fee transfer succeeds at finalize time, making the fan-out payout
-// replay-safe (the Q10 schema refinement).
+// replay-safe.
 type PanelMember = record {
 	"principal" : principal;
 	// `None` until the arbitrator calls `cast_vote` during the Voting phase.
@@ -480,7 +486,7 @@ type PanelMember = record {
 	paid_at_ns : opt nat64
 };
 type ProcessExpiredDealsResult = variant { Ok : vec nat64; Err : EscrowError };
-// Reduced public view for status pages (RFC-001 — Candid surface).
+// Reduced public view for status pages.
 //
 // No party principals, no panel principals, no evidence URLs — just
 // the minimum any authenticated caller needs to render a dispute's
@@ -508,7 +514,7 @@ type PublicDisputeView = record {
 //
 // Idempotent — calling `register_arbitrator` for a principal that is
 // already registered returns the existing profile rather than erroring
-// (per RFC-001 Q4 decision). The `bio` is updated on re-registration.
+// The `bio` is updated on re-registration.
 type RegisterArbitratorArgs = record {
 	// Plain-text introduction (max 1 KiB at the canister boundary).
 	bio : opt text
@@ -527,9 +533,9 @@ type ReliabilityView = record {
 	// Deals that ended positively (Settled or Refunded).
 	positive : nat32
 };
-// Arguments for `submit_evidence` (RFC-001 step 5).
+// Arguments for `submit_evidence`.
 //
-// Per Q8: at least one of `note` / `(artefact_url + artefact_sha256)`
+// At least one of `note` / `(artefact_url + artefact_sha256)`
 // must be present; URL and hash are paired (one without the other is
 // rejected); `note` <= 4 KiB; `artefact_url` <= 2 KiB;
 // `artefact_sha256` exactly 32 bytes when set.
@@ -570,19 +576,20 @@ type Vec = vec record {
 	}
 };
 // A single arbitrator's vote on a dispute, or — at the canister boundary —
-// the outcome a party proposes via `withdraw_dispute` (Q12). The validator
+// the outcome a party proposes via `withdraw_dispute`. The validator
 // at the boundary rejects `Abstain` for out-of-band proposals.
 type Vote = variant {
 	// "Incorrectly Concluded" — refund payer.
 	IncorrectlyConcluded;
 	// Arbitrator abstained. Counts toward `disputes_assigned` but never
 	// toward `disputes_voted` / `disputes_with_majority` for the
-	// reliability score (Q11).
+	// reliability score.
 	Abstain;
 	// "Concluded Correctly" — release funds to recipient.
 	ConcludedCorrectly
 };
-// Arguments for `withdraw_dispute` (RFC-001 step 9 / Q12).
+// Arguments for `withdraw_dispute` — out-of-band settlement during
+// the Evidence phase.
 //
 // Caller must be `payer` or `recipient` of the parent deal. Allowed
 // during the `Evidence` phase only. `proposal: Some(_)` records the
@@ -608,7 +615,6 @@ service : () -> {
 	// currently `Active`. Allowed only during the open voting window
 	// (`evidence_deadline_ns <= now < voting_deadline_ns`). Latest-wins
 	// semantics — calling repeatedly during the window updates the vote.
-	// RFC-001 step 6.
 	cast_vote : (CastVoteArgs) -> (CastVoteResult);
 	// Returns the current global configuration of the Escrow canister.
 	//
@@ -632,14 +638,14 @@ service : () -> {
 	create_deal : (CreateDealArgs) -> (AcceptDealResult);
 	// Self-deregisters the caller's arbitrator profile. In-flight assignments
 	// are honoured — a non-vote from a deregistered arbitrator counts as
-	// `Vote::Abstain` at finalize time (RFC-001 Q5).
+	// `Vote::Abstain` at finalize time.
 	deregister_arbitrator : () -> (DeregisterArbitratorResult);
 	// Force-finalises a dispute past its `voting_deadline_ns`. Anyone
 	// (non-anonymous) can call. Idempotent — replays after a successful
 	// finalize return the resolved view; partial replays (some
 	// arbitrator transfers succeeded, others trapped) skip already-paid
 	// panel members. Triggers tally + outcome propagation + ledger
-	// transfers + arbitrator score updates. RFC-001 step 7.
+	// transfers + arbitrator score updates.
 	finalize_dispute : (FinalizeDisputeArgs) -> (CastVoteResult);
 	// Funds a previously created deal by transferring tokens from the payer's
 	// account into the deal's escrow subaccount via ICRC-2 `transfer_from`.
@@ -768,7 +774,7 @@ service : () -> {
 	// Opens a new dispute on a `Funded` deal. Caller must be `payer` or
 	// `recipient`. Funds remain in the escrow subaccount; the deal
 	// transitions `Funded → Disputed`. The expiry sweep skips
-	// `Disputed` deals (per Q2 contract).
+	// `Disputed` deals.
 	open_dispute : (FundDealArgs) -> (CastVoteResult);
 	// Batch-processes expired deals by refunding escrowed tokens back to their
 	// payers.
@@ -792,18 +798,18 @@ service : () -> {
 	reject_deal : (FundDealArgs) -> (GetDealResult);
 	// Submits a piece of evidence on a dispute. Caller must be a party
 	// of the parent deal or an arbitrator on the panel. Allowed during
-	// the `Evidence` phase only. RFC-001 step 5.
+	// the `Evidence` phase only.
 	submit_evidence : (SubmitEvidenceArgs) -> (CastVoteResult);
 	// Updates the global configuration for the Escrow canister.
 	//
 	// This method is gated to canister controllers.
 	update_config : (Config) -> ();
-	// Out-of-band settlement during the Evidence phase (RFC-001 step 9 /
-	// Q12). Caller must be `payer` or `recipient`. Records the caller's
-	// proposed outcome (or retracts on `proposal: None`); when both
-	// parties have proposed the same outcome, the dispute resolves with
+	// Out-of-band settlement during the Evidence phase. Caller must be
+	// `payer` or `recipient`. Records the caller's proposed outcome (or
+	// retracts on `proposal: None`); when both parties have proposed the
+	// same outcome, the dispute resolves with
 	// `DisputeOutcome::Withdrawn { agreed }`, the deal moves to
-	// `ArbitratedSettled` / `ArbitratedRefunded`, and arbitrators
-	// receive a reduced fee (`DisputeConfig::withdraw_fee_pct`).
+	// `ArbitratedSettled` / `ArbitratedRefunded`, and arbitrators receive
+	// a reduced fee (`DisputeConfig::withdraw_fee_pct`).
 	withdraw_dispute : (WithdrawDisputeArgs) -> (CastVoteResult)
 }

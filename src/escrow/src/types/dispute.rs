@@ -2,8 +2,8 @@ use candid::{CandidType, Deserialize, Principal};
 
 use crate::types::deal::DealId;
 
-/// Identifier for a dispute. Allocated atomically by the storage layer in
-/// [`crate::memory`] (added in step 2 of RFC-001's implementation plan).
+/// Identifier for a dispute. Allocated atomically by the storage layer
+/// in [`crate::memory`].
 pub type DisputeId = u64;
 
 /// Lifecycle phase of a dispute. The phase advances on a strict timeline
@@ -21,7 +21,7 @@ pub enum DisputePhase {
 }
 
 /// A single arbitrator's vote on a dispute, or — at the canister boundary —
-/// the outcome a party proposes via `withdraw_dispute` (Q12). The validator
+/// the outcome a party proposes via `withdraw_dispute`. The validator
 /// at the boundary rejects `Abstain` for out-of-band proposals.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum Vote {
@@ -31,13 +31,13 @@ pub enum Vote {
     IncorrectlyConcluded,
     /// Arbitrator abstained. Counts toward `disputes_assigned` but never
     /// toward `disputes_voted` / `disputes_with_majority` for the
-    /// reliability score (Q11).
+    /// reliability score.
     Abstain,
 }
 
 /// A piece of evidence attached to a dispute.
 ///
-/// Per Q8, artefacts are stored **off-canister**: the canister only
+/// Artefacts are stored **off-canister**: the canister only
 /// records a URL + SHA-256 commitment + an optional short note. Length
 /// limits are enforced at the canister boundary; this struct itself is
 /// purely a data carrier.
@@ -60,7 +60,7 @@ pub struct Evidence {
 /// Mirrors the `Deal.{funded_at_ns, funding_tx, settled_at_ns, payout_tx}`
 /// pattern: `paid_at_ns` + `payout_tx` are populated when the per-arbitrator
 /// fee transfer succeeds at finalize time, making the fan-out payout
-/// replay-safe (the Q10 schema refinement).
+/// replay-safe.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct PanelMember {
     pub principal: Principal,
@@ -80,8 +80,8 @@ pub struct PanelMember {
 /// | ------------------------------------------------ | -------------------------- |
 /// | `Settled { … }`                                  | `ArbitratedSettled`        |
 /// | `Refunded { … }`                                 | `ArbitratedRefunded`       |
-/// | `NoQuorum { … }`                                 | `ArbitratedRefunded` (Q9)  |
-/// | `Withdrawn { agreed: ConcludedCorrectly }` (Q12) | `ArbitratedSettled`        |
+/// | `NoQuorum { … }`                                 | `ArbitratedRefunded` (no-quorum fallback) |
+/// | `Withdrawn { agreed: ConcludedCorrectly }`       | `ArbitratedSettled`        |
 /// | `Withdrawn { agreed: IncorrectlyConcluded }`     | `ArbitratedRefunded`       |
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum DisputeOutcome {
@@ -89,19 +89,19 @@ pub enum DisputeOutcome {
     Settled { cc: u32, ic: u32, abstain: u32 },
     /// Majority IC — funds refunded to payer.
     Refunded { cc: u32, ic: u32, abstain: u32 },
-    /// Voting deadline reached without enough non-abstain votes (Q9).
-    /// Falls back to refunding the payer per the locked Q9 decision.
+    /// Voting deadline reached without enough non-abstain votes.
+    /// Falls back to refunding the payer (status quo ante).
     NoQuorum { cc: u32, ic: u32, abstain: u32 },
-    /// Both parties agreed out-of-band on `agreed` (Q12 `withdraw_dispute`).
+    /// Both parties agreed out-of-band on `agreed` via `withdraw_dispute`.
     /// Arbitrators receive the reduced `withdraw_fee_pct` slice of the fee.
     Withdrawn { agreed: Vote },
 }
 
 /// A single dispute attached to a deal.
 ///
-/// Created by `open_dispute` (RFC-001 step 4), advanced through phases by
-/// `submit_evidence` / `cast_vote` (steps 5–6), resolved by
-/// `finalize_dispute` / `withdraw_dispute` (steps 7 + 9).
+/// Created by `open_dispute`, advanced through phases by
+/// `submit_evidence` / `cast_vote`, resolved by `finalize_dispute` /
+/// `withdraw_dispute`.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct Dispute {
     pub id: DisputeId,
@@ -114,51 +114,51 @@ pub struct Dispute {
     /// End of the Voting window. Set once at `open_dispute` time.
     pub voting_deadline_ns: u64,
     /// Panel selected for this dispute. Committed once at `open_dispute`
-    /// time — no re-selection on tally (Q5).
+    /// time — no re-selection on tally.
     pub panel: Vec<PanelMember>,
     /// Evidence submissions in submission order.
     pub evidence: Vec<Evidence>,
     /// Arbitration fee in the deal's token, computed at `open_dispute` and
     /// frozen for the dispute's lifetime. Sourced from the disputed amount
-    /// in the escrow subaccount (Q10).
+    /// in the escrow subaccount.
     pub arbitration_fee: u128,
     /// Tally + outcome. `None` until the dispute is `Resolved`.
     pub outcome: Option<DisputeOutcome>,
-    /// Q12 — payer's out-of-band proposed outcome. Resolution fires when
+    /// Payer's out-of-band withdrawal proposal. Resolution fires when
     /// both party fields are `Some` and equal.
     pub payer_withdraw_proposal: Option<Vote>,
-    /// Q12 — recipient's out-of-band proposed outcome.
+    /// Recipient's out-of-band withdrawal proposal.
     pub recipient_withdraw_proposal: Option<Vote>,
 }
 
 /// Admin-tunable dispute configuration. Lives nested in [`crate::types::state::Config`].
 ///
 /// All windows are nanoseconds (canister convention); fee bps follows the
-/// standard ICRC bps convention (`10_000` = 100%). Defaults below match
-/// the Q6/Q9/Q10/Q12 decisions.
+/// standard ICRC bps convention (`10_000` = 100%).
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct DisputeConfig {
-    /// Number of arbitrators selected per dispute. Must be odd and `>= 3`
-    /// (Q6). The validator that ships in step 4 enforces both invariants
-    /// at `update_dispute_config` time.
+    /// Number of arbitrators selected per dispute. Must be odd and `>= 3`.
+    /// The validator at `update_dispute_config` time enforces both
+    /// invariants — odd-only is required by the tally rules (no tie
+    /// possible without an abstention).
     pub panel_size: u32,
-    /// Length of the Evidence phase, in nanoseconds (Q9; default 3 days).
+    /// Length of the Evidence phase, in nanoseconds (default 3 days).
     pub evidence_window_ns: u64,
-    /// Length of the Voting phase, in nanoseconds (Q9; default 2 days).
+    /// Length of the Voting phase, in nanoseconds (default 2 days).
     pub voting_window_ns: u64,
-    /// Arbitration fee in basis points of the disputed amount (Q10;
-    /// default 500 = 5%). Combined with [`Self::arbitration_min_fee`].
+    /// Arbitration fee in basis points of the disputed amount
+    /// (default 500 = 5%). Combined with [`Self::arbitration_min_fee`].
     pub arbitration_fee_bps: u32,
-    /// Minimum arbitration fee in the deal's token (Q10). The effective
-    /// fee at `open_dispute` is `max(arbitration_min_fee, amount *
+    /// Minimum arbitration fee in the deal's token. The effective fee
+    /// at `open_dispute` is `max(arbitration_min_fee, amount *
     /// arbitration_fee_bps / 10_000)`.
     pub arbitration_min_fee: u128,
     /// Percentage of the arbitration fee paid to the panel when both
-    /// parties resolve out-of-band via `withdraw_dispute` (Q12; default
-    /// 25, validator clamps to `0..=100`).
+    /// parties resolve out-of-band via `withdraw_dispute` (default 25,
+    /// validator clamps to `0..=100`).
     pub withdraw_fee_pct: u32,
     /// Optional minimum arbitrator score required to be eligible for
-    /// selection (Q4 Sybil filter). `None` = bootstrap mode (every active
+    /// selection (Sybil filter). `None` = bootstrap mode (every active
     /// arbitrator is eligible; default).
     pub min_arbitrator_score: Option<u32>,
 }

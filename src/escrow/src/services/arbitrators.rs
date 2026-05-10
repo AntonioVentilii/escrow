@@ -1,4 +1,4 @@
-//! Arbitrator registry service (RFC-001 step 3).
+//! Arbitrator registry service.
 //!
 //! Owns the lifecycle of the per-principal `ArbitratorProfile` records.
 //! Endpoints in `api/arbitrators/api.rs` are thin wrappers over the
@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Registers `caller` as an arbitrator, or returns the existing profile
-/// if already registered (idempotent — RFC-001 Q4).
+/// if already registered (idempotent).
 ///
 /// Re-registration updates the bio if supplied. The on-chain record's
 /// `registered_at_ns` and score-related counters are preserved across
@@ -29,7 +29,7 @@ pub fn register(
 
     if let Some(existing) = memory::get_arbitrator(caller) {
         // Idempotent re-registration: refresh bio + reactivate if Suspended/Deregistered.
-        // (Q4: deregistration is reversible by re-registering — the canister doesn't
+        // (Deregistration is reversible by re-registering — the canister doesn't
         // permanently bar a principal; admin Suspend remains the bad-actor lever.)
         let updated = ArbitratorProfile {
             bio: bio.or(existing.bio),
@@ -60,7 +60,7 @@ pub fn register(
 /// `deregister` on an already-deregistered profile is a no-op success
 /// (idempotent — matches the canister-wide idempotency contract).
 ///
-/// In-flight assignments are honoured: per Q5, a non-vote from a
+/// In-flight assignments are honoured: a non-vote from a
 /// deregistered arbitrator counts as `Vote::Abstain` at finalize time.
 pub fn deregister(caller: Principal) -> Result<ArbitratorProfile, EscrowError> {
     let existing = memory::get_arbitrator(caller).ok_or(EscrowError::NotFound)?;

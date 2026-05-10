@@ -83,8 +83,9 @@ pub struct DealView {
     /// participants; never exposed in the public claimable view.
     pub claim_code: Option<String>,
     /// Identifier of the attached dispute, if any. `Some(_)` while a
-    /// dispute is open or after it has resolved (RFC-001 Q1 audit-trail
-    /// link); `None` for deals that never went into dispute.
+    /// dispute is open or after it has resolved (audit-trail link to
+    /// the `Dispute` record); `None` for deals that never went into
+    /// dispute.
     pub dispute: Option<DisputeId>,
 }
 
