@@ -46,9 +46,9 @@ pub const MAX_EVIDENCE_URL_LEN: u32 = 2048;
 /// SHA-256 length in bytes — invariant for evidence artefact hashes.
 pub const SHA256_LEN: usize = 32;
 
-/// Maximum allowed evidence/voting window — clamps to ~30 days so
-/// admin can't accidentally make a dispute uncloseable by setting a
-/// year-long window.
+/// Maximum allowed evidence/voting window. `validate_dispute_config`
+/// rejects values above this limit so admin can't accidentally make
+/// a dispute unclosable by setting a year-long window.
 const MAX_DISPUTE_WINDOW_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
 
 /// Validates a `DisputeConfig` against the invariants documented on
