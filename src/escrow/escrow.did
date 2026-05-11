@@ -145,9 +145,15 @@ type ClaimableDealView = record {
 // New fields use `Option` for backward-compatible deserialisation from
 // older stable-memory snapshots that lack them.
 type Config = record {
-	// Admin-tunable dispute parameters. `None` on legacy snapshots; the
-	// canister falls back to `DisputeConfig::default()` for any missing
-	// values when disputes are queried.
+	// Admin-tunable dispute parameters. The fallback is whole-struct,
+	// not per-field — when `dispute_config` is `None` (legacy
+	// snapshots; fresh deployments before `update_config` is first
+	// called), `services::disputes::load_dispute_config` returns
+	// `DisputeConfig::default()`. Once a controller calls
+	// `update_config` with a `Some(_)` value, every field comes from
+	// that struct (including any fields the controller wants set to
+	// the default value — there's no per-field "leave unchanged"
+	// merge mechanism).
 	dispute_config : opt DisputeConfig
 };
 type Consent = variant { Rejected; Accepted; Pending };
@@ -373,8 +379,13 @@ type EscrowError = variant {
 	ConsentRequired;
 	// A claim code is required for open (unbound-recipient) deals.
 	MissingClaimCode;
-	// An evidence submission exceeds the maximum allowed size for its
-	// field. The `max` is the byte limit that was breached.
+	// An evidence submission exceeds the maximum allowed size for
+	// its field. Returned for both `note` overflow (limit
+	// `MAX_EVIDENCE_NOTE_LEN`) and `artefact_url` overflow (limit
+	// `MAX_EVIDENCE_URL_LEN`); the `max` field tells the caller
+	// WHICH limit was breached. Hash-length violations on
+	// `artefact_sha256` use `ValidationError` instead — those are
+	// shape checks ("must be exactly 32 bytes"), not size checks.
 	EvidenceTooLarge : record { max : nat32 };
 	// An error occurred while communicating with the ICRC ledger canister.
 	LedgerError : text;

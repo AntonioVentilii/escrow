@@ -14,9 +14,15 @@ use super::{
 /// older stable-memory snapshots that lack them.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct Config {
-    /// Admin-tunable dispute parameters. `None` on legacy snapshots; the
-    /// canister falls back to `DisputeConfig::default()` for any missing
-    /// values when disputes are queried.
+    /// Admin-tunable dispute parameters. The fallback is whole-struct,
+    /// not per-field — when `dispute_config` is `None` (legacy
+    /// snapshots; fresh deployments before `update_config` is first
+    /// called), `services::disputes::load_dispute_config` returns
+    /// `DisputeConfig::default()`. Once a controller calls
+    /// `update_config` with a `Some(_)` value, every field comes from
+    /// that struct (including any fields the controller wants set to
+    /// the default value — there's no per-field "leave unchanged"
+    /// merge mechanism).
     pub dispute_config: Option<DisputeConfig>,
 }
 

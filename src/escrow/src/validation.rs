@@ -418,9 +418,14 @@ pub fn validate_evidence(
 
     if let Some(url) = artefact_url {
         if url.len() > MAX_EVIDENCE_URL_LEN as usize {
-            return Err(EscrowError::ValidationError(format!(
-                "artefact_url exceeds {MAX_EVIDENCE_URL_LEN} bytes",
-            )));
+            // Use the typed `EvidenceTooLarge` variant so callers can
+            // pattern-match all evidence size violations uniformly
+            // (note overflow uses the same variant). The `max` field
+            // tells the caller WHICH limit was breached without having
+            // to parse a free-form message.
+            return Err(EscrowError::EvidenceTooLarge {
+                max: MAX_EVIDENCE_URL_LEN,
+            });
         }
     }
 

@@ -82,8 +82,13 @@ pub enum EscrowError {
     InsufficientArbitrators { need: u32, have: u32 },
     /// The arbitrator is `Suspended` or `Deregistered`.
     ArbitratorNotActive,
-    /// An evidence submission exceeds the maximum allowed size for its
-    /// field. The `max` is the byte limit that was breached.
+    /// An evidence submission exceeds the maximum allowed size for
+    /// its field. Returned for both `note` overflow (limit
+    /// `MAX_EVIDENCE_NOTE_LEN`) and `artefact_url` overflow (limit
+    /// `MAX_EVIDENCE_URL_LEN`); the `max` field tells the caller
+    /// WHICH limit was breached. Hash-length violations on
+    /// `artefact_sha256` use `ValidationError` instead — those are
+    /// shape checks ("must be exactly 32 bytes"), not size checks.
     EvidenceTooLarge { max: u32 },
     /// `open_dispute` was called on a deal whose `amount` cannot cover
     /// the configured arbitration fee plus the per-arbitrator ICRC-1

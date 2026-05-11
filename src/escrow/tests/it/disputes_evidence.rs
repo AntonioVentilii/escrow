@@ -143,6 +143,33 @@ fn submit_evidence_rejects_oversized_note() {
 }
 
 #[test]
+fn submit_evidence_rejects_oversized_artefact_url() {
+    let (_pic, escrow) = setup();
+    // 3000-byte URL exceeds the 2 KiB cap. Use a typed
+    // `EvidenceTooLarge` variant matching the note-overflow shape
+    // so callers can pattern-match all evidence size violations
+    // uniformly; `max` indicates which limit was breached (2048 for
+    // URL vs 4096 for note).
+    let huge_url = format!("https://example.com/{}", "x".repeat(3000));
+    let result = try_submit(
+        &escrow,
+        user(1),
+        SubmitEvidenceArgs {
+            dispute_id: 1,
+            note: None,
+            artefact_url: Some(huge_url),
+            artefact_sha256: Some(vec![0_u8; 32]),
+        },
+    );
+    match result {
+        SubmitEvidenceResult::Err(EscrowError::EvidenceTooLarge { max }) => {
+            assert_eq!(max, 2048);
+        }
+        other => panic!("wrong response: {other:?}"),
+    }
+}
+
+#[test]
 fn submit_evidence_anonymous_caller_blocked() {
     let (_pic, escrow) = setup();
     let result: Result<SubmitEvidenceResult, String> = escrow.update(
