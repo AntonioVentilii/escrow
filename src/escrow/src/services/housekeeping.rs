@@ -181,6 +181,39 @@ mod tests {
     }
 
     #[test]
+    fn dispute_sweep_allows_sequential_sweeps() {
+        // Mirror of `allows_sequential_sweeps` for the expiry guard.
+        // After each guard is dropped the flag resets, so a subsequent
+        // start succeeds — production-equivalent loop.
+        reset();
+        for _ in 0..5 {
+            assert!(try_start_dispute_sweep());
+            drop(DisputeSweepGuard);
+        }
+        reset();
+    }
+
+    #[test]
+    fn dispute_sweep_guard_scoped_lifetime() {
+        // Mirror of `guard_scoped_lifetime` for the expiry guard. This
+        // is the production-equivalent test: hold the guard in a let-
+        // binding for the sweep's logical lifetime, assert the flag
+        // blocks while it's alive, assert the flag resets after the
+        // scope ends.
+        reset();
+        assert!(try_start_dispute_sweep());
+        {
+            let _guard = DisputeSweepGuard;
+            assert!(
+                !try_start_dispute_sweep(),
+                "should be blocked while guard is alive"
+            );
+        }
+        assert!(try_start_dispute_sweep(), "should succeed after scope ends");
+        reset();
+    }
+
+    #[test]
     fn dispute_sweep_independent_from_expiry_sweep() {
         // The two sweeps use disjoint flags — taking one should not block
         // the other.

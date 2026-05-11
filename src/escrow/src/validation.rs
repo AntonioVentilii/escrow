@@ -91,12 +91,14 @@ pub fn validate_dispute_config(cfg: &DisputeConfig) -> Result<(), EscrowError> {
     }
     if cfg.evidence_window_ns > MAX_DISPUTE_WINDOW_NS {
         return Err(EscrowError::ValidationError(format!(
-            "evidence_window_ns must be <= {MAX_DISPUTE_WINDOW_NS} (~30 days)",
+            "evidence_window_ns must be <= {MAX_DISPUTE_WINDOW_NS} (~30 days), got {}",
+            cfg.evidence_window_ns,
         )));
     }
     if cfg.voting_window_ns > MAX_DISPUTE_WINDOW_NS {
         return Err(EscrowError::ValidationError(format!(
-            "voting_window_ns must be <= {MAX_DISPUTE_WINDOW_NS} (~30 days)",
+            "voting_window_ns must be <= {MAX_DISPUTE_WINDOW_NS} (~30 days), got {}",
+            cfg.voting_window_ns,
         )));
     }
     if cfg.arbitration_fee_bps > 10_000 {
@@ -1120,12 +1122,30 @@ mod tests {
 
     #[test]
     fn dispute_config_rejects_oversized_windows() {
+        let bad = MAX_DISPUTE_WINDOW_NS + 1;
         let cfg = DisputeConfig {
-            evidence_window_ns: MAX_DISPUTE_WINDOW_NS + 1,
+            evidence_window_ns: bad,
             ..DisputeConfig::default()
         };
         let msg = validation_err_msg(&cfg);
         assert!(msg.contains("evidence_window_ns"), "msg={msg}");
+        // Error includes the offending value so controller-side
+        // debugging doesn't have to guess what was sent.
+        assert!(
+            msg.contains(&bad.to_string()),
+            "expected offending value in msg: {msg}",
+        );
+
+        let cfg = DisputeConfig {
+            voting_window_ns: bad,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("voting_window_ns"), "msg={msg}");
+        assert!(
+            msg.contains(&bad.to_string()),
+            "expected offending value in msg: {msg}",
+        );
     }
 
     #[test]
