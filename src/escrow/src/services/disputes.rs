@@ -992,10 +992,15 @@ pub fn due_for_finalization(limit: u32, now_ns: u64) -> Vec<DisputeId> {
 /// Auto-finalizes up to `limit` disputes whose voting deadline has
 /// passed. Returns the IDs that resolved successfully.
 ///
-/// Mirrors `services::expiry::process_expired` shape: scan, then
-/// per-id `try_acquire_lock` + `finalize`. Errors per-dispute are
-/// swallowed so a single failed dispute doesn't block the sweep —
-/// failed disputes will be retried on the next cycle.
+/// The sweep scans `due_for_finalization` for eligible disputes and
+/// then calls `finalize(dispute_id, now_ns)` per ID. `finalize`
+/// acquires the per-deal lock internally — the sweep itself does
+/// not take a lock; serialisation against concurrent
+/// `finalize_dispute` / `withdraw_dispute` calls is delegated to
+/// the lock acquired inside `finalize`. Errors per-dispute are
+/// swallowed so a single failed dispute (e.g. ledger temporarily
+/// unreachable) doesn't block the sweep — failed disputes are
+/// retried on the next cycle.
 pub async fn auto_finalize_due(limit: u32, now_ns: u64) -> Vec<DisputeId> {
     let due = due_for_finalization(limit, now_ns);
     let mut processed = Vec::new();

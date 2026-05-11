@@ -97,10 +97,14 @@ pub fn count_active_deals_for(principal: Principal) -> u32 {
 
 /// Returns `(positive, concluded)` deal counts for a principal's reliability.
 ///
-/// - **positive**: deals with status `Settled` or `Refunded`.
+/// - **positive**: deals with status `Settled`, `Refunded`, `ArbitratedSettled`, or
+///   `ArbitratedRefunded`. Arbitrated outcomes count alongside unilateral ones — a deal that ended
+///   in a fund-release decision is positive regardless of whether it took arbitration to get there.
 /// - **concluded**: positive + counterparty rejections (where `updated_by != created_by`).
 ///
-/// Deals that are `Created`, `Funded`, `Cancelled`, or self-rejected are excluded.
+/// Deals that are `Created`, `Funded`, `Disputed`, `Cancelled`, or
+/// self-rejected are excluded. `Disputed` is non-terminal — funds
+/// are still escrowed and the outcome isn't yet known.
 #[must_use]
 pub fn compute_reliability_for(principal: Principal) -> (u32, u32) {
     DEALS.with(|d| {

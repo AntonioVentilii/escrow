@@ -45,7 +45,7 @@ pub const SHA256_LEN: usize = 32;
 /// Validates that `principal` is a legal target for arbitrator
 /// registration. Rejects:
 /// - The anonymous principal — degenerate; cannot vote anyway.
-/// - The canister's own principal — would create circular self- arbitration risks if the canister
+/// - The canister's own principal — would create circular self-arbitration risks if the canister
 ///   ever became its own caller via timer-driven flows.
 pub fn validate_arbitrator_principal(
     principal: Principal,
