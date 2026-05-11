@@ -1118,10 +1118,13 @@ pub fn get_public(dispute_id: DisputeId) -> Result<PublicDisputeView, EscrowErro
 /// or arbitrator on the panel), reverse-chronological by `opened_at_ns`.
 #[must_use]
 pub fn list_for_caller(caller: Principal, args: &ListMyDisputesArgs) -> Vec<DisputeView> {
+    // On wasm32 (32-bit usize), `offset > u32::MAX` overflows the
+    // try_from. Saturate to `usize::MAX` so an oversized offset
+    // yields an empty page; previous `unwrap_or(0)` silently reset
+    // to page 0 — wrong-shaped result.
     let offset = args
         .offset
-        .and_then(|o| usize::try_from(o).ok())
-        .unwrap_or(0);
+        .map_or(0_usize, |o| usize::try_from(o).unwrap_or(usize::MAX));
     let limit = args
         .limit
         .map_or(50_usize, |l| usize::try_from(l.min(100)).unwrap_or(100));

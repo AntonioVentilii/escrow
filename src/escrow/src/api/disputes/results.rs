@@ -115,8 +115,20 @@ impl From<&Dispute> for PublicDisputeView {
     fn from(d: &Dispute) -> Self {
         let panel_size = u32::try_from(d.panel.len()).unwrap_or(u32::MAX);
         let evidence_count = u32::try_from(d.evidence.len()).unwrap_or(u32::MAX);
-        // Phase-gated disclosure: tally only visible after Resolved.
-        let tally = if matches!(d.phase, DisputePhase::Resolved) {
+        // Phase-gated disclosure: tally + outcome only visible after
+        // the dispute reaches `Resolved`. `withdraw_dispute` early-
+        // sets `dispute.outcome = Some(Withdrawn { … })` BEFORE
+        // flipping `phase` to `Resolved` (the early-set is what
+        // serialises against concurrent `submit_evidence` /
+        // `cast_vote` — see `services::disputes::withdraw`); during
+        // that async window the public view must NOT leak the
+        // outcome, otherwise external observers learn the resolution
+        // before the canister has finished applying it. Gating both
+        // fields on `phase == Resolved` keeps the public view
+        // monotonic with the dispute's externally-visible state.
+        let resolved = matches!(d.phase, DisputePhase::Resolved);
+        let outcome = if resolved { d.outcome.clone() } else { None };
+        let tally = if resolved {
             d.outcome.as_ref().map(|o| match o {
                 DisputeOutcome::Settled { cc, ic, abstain }
                 | DisputeOutcome::Refunded { cc, ic, abstain }
@@ -143,7 +155,83 @@ impl From<&Dispute> for PublicDisputeView {
             panel_size,
             evidence_count,
             tally,
-            outcome: d.outcome.clone(),
+            outcome,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use candid::Principal;
+
+    use super::PublicDisputeView;
+    use crate::types::dispute::{Dispute, DisputeOutcome, DisputePhase, Vote};
+
+    fn make_dispute(phase: DisputePhase, outcome: Option<DisputeOutcome>) -> Dispute {
+        Dispute {
+            id: 1,
+            deal_id: 42,
+            opened_by: Principal::from_slice(&[1]),
+            opened_at_ns: 100,
+            phase,
+            evidence_deadline_ns: 200,
+            voting_deadline_ns: 300,
+            panel: vec![],
+            evidence: vec![],
+            arbitration_fee: 0,
+            outcome,
+            payer_withdraw_proposal: None,
+            recipient_withdraw_proposal: None,
+        }
+    }
+
+    #[test]
+    fn public_view_hides_outcome_during_evidence_phase() {
+        // Reproduces the scenario flagged in PR #29 review: `withdraw`
+        // early-sets `outcome = Some(Withdrawn { ... })` before
+        // flipping `phase` to `Resolved`. During the async payout
+        // window, the public view must not leak the outcome.
+        let dispute = make_dispute(
+            DisputePhase::Evidence,
+            Some(DisputeOutcome::Withdrawn {
+                agreed: Vote::ConcludedCorrectly,
+            }),
+        );
+        let view = PublicDisputeView::from(&dispute);
+        assert!(
+            view.outcome.is_none(),
+            "outcome must be hidden pre-Resolved"
+        );
+        assert!(view.tally.is_none(), "tally must be hidden pre-Resolved");
+    }
+
+    #[test]
+    fn public_view_hides_outcome_during_voting_phase() {
+        let dispute = make_dispute(
+            DisputePhase::Voting,
+            Some(DisputeOutcome::Settled {
+                cc: 2,
+                ic: 1,
+                abstain: 0,
+            }),
+        );
+        let view = PublicDisputeView::from(&dispute);
+        assert!(view.outcome.is_none());
+        assert!(view.tally.is_none());
+    }
+
+    #[test]
+    fn public_view_reveals_outcome_when_resolved() {
+        let dispute = make_dispute(
+            DisputePhase::Resolved,
+            Some(DisputeOutcome::Settled {
+                cc: 2,
+                ic: 1,
+                abstain: 0,
+            }),
+        );
+        let view = PublicDisputeView::from(&dispute);
+        assert!(matches!(view.outcome, Some(DisputeOutcome::Settled { .. })));
+        assert!(view.tally.is_some());
     }
 }

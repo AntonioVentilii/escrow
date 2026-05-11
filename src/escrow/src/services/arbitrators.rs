@@ -118,10 +118,14 @@ pub fn get(principal: Principal) -> Option<ArbitratorProfile> {
 /// (`BTreeMap` iteration order).
 #[must_use]
 pub fn list(args: &ListArbitratorsArgs) -> Vec<ArbitratorProfile> {
+    // On wasm32 (32-bit usize), `offset > u32::MAX` overflows the
+    // try_from. Saturate to `usize::MAX` so an oversized offset
+    // yields an empty page (paginated past the end), matching the
+    // shape of `api/deals/api.rs::list_my_deals`. The previous
+    // `unwrap_or(0)` silently reset to page 0 — wrong-shaped result.
     let offset = args
         .offset
-        .and_then(|o| usize::try_from(o).ok())
-        .unwrap_or(0);
+        .map_or(0_usize, |o| usize::try_from(o).unwrap_or(usize::MAX));
     let limit = args
         .limit
         .map_or(50_usize, |l| usize::try_from(l.min(100)).unwrap_or(100));
@@ -363,5 +367,27 @@ mod tests {
             ..Default::default()
         });
         assert!(huge.len() <= 100);
+    }
+
+    #[test]
+    fn list_oversized_offset_returns_empty_page() {
+        // wasm32 has 32-bit usize, so any `offset > u32::MAX` overflows
+        // the `usize::try_from(u64)` conversion. The previous shape
+        // (`unwrap_or(0)`) silently reset to page 0 — wrong: the caller
+        // asked for "skip 18 quintillion entries" and should get an
+        // empty page. We saturate to `usize::MAX` so `Iterator::skip`
+        // exhausts the (much shorter) backing iterator and yields zero
+        // results.
+        admin_register(admin(), principal(170), canister(), 100).unwrap();
+        let beyond = list(&ListArbitratorsArgs {
+            offset: Some(u64::MAX),
+            limit: Some(50),
+            ..Default::default()
+        });
+        assert!(
+            beyond.is_empty(),
+            "oversized offset must yield empty page, got {} entries",
+            beyond.len(),
+        );
     }
 }
