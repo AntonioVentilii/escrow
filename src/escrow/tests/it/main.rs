@@ -1,3 +1,4 @@
+mod admin_config;
 mod arbitrators;
 mod disputes_evidence;
 mod disputes_finalize;

@@ -137,10 +137,11 @@ pub struct Dispute {
 /// standard ICRC bps convention (`10_000` = 100%).
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct DisputeConfig {
-    /// Number of arbitrators selected per dispute. Must be odd and `>= 3`.
-    /// The validator at `update_dispute_config` time enforces both
-    /// invariants — odd-only is required by the tally rules (no tie
-    /// possible without an abstention).
+    /// Number of arbitrators selected per dispute. Must be odd and
+    /// `>= 3` — `validation::validate_dispute_config` enforces both
+    /// invariants when `update_config` is called. Odd-only is
+    /// required by the tally rules (no tie possible without an
+    /// abstention).
     pub panel_size: u32,
     /// Length of the Evidence phase, in nanoseconds (default 3 days).
     pub evidence_window_ns: u64,
@@ -154,8 +155,13 @@ pub struct DisputeConfig {
     /// arbitration_fee_bps / 10_000)`.
     pub arbitration_min_fee: u128,
     /// Percentage of the arbitration fee paid to the panel when both
-    /// parties resolve out-of-band via `withdraw_dispute` (default 25,
-    /// validator clamps to `0..=100`).
+    /// parties resolve out-of-band via `withdraw_dispute` (default
+    /// 25). `validation::validate_dispute_config` rejects values
+    /// `> 100` at `update_config` time;
+    /// `services::disputes::withdraw_finalize_locked` also clamps
+    /// defensively at the use site so a hypothetical bad config that
+    /// somehow slipped through (e.g. a future migration) can't
+    /// over-pay arbitrators.
     pub withdraw_fee_pct: u32,
     /// Optional minimum arbitrator score required to be eligible for
     /// selection (Sybil filter). `None` = bootstrap mode (every active

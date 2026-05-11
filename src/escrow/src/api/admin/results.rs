@@ -23,3 +23,20 @@ macro_rules! candid_result {
 
 candid_result!(AdminRegisterArbitratorResult, ArbitratorProfile);
 candid_result!(AdminSetArbitratorStatusResult, ArbitratorProfile);
+
+/// Outcome of `update_config`. `Ok` on successful validation +
+/// persistence; `Err` carries the validation failure.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub enum UpdateConfigResult {
+    Ok,
+    Err(EscrowError),
+}
+
+impl From<Result<(), EscrowError>> for UpdateConfigResult {
+    fn from(result: Result<(), EscrowError>) -> Self {
+        match result {
+            Ok(()) => Self::Ok,
+            Err(e) => Self::Err(e),
+        }
+    }
+}

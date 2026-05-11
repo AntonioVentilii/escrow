@@ -15,10 +15,10 @@ type Account = record { owner : principal; subaccount : opt blob };
 // the existing profile, with two side effects on every successful
 // call (regardless of prior status):
 //
-// - Status is set to `Active` (reactivating `Suspended` /
-// `Deregistered` profiles, no-op for already-`Active`).
-// - `registered_by` is refreshed to the calling controller, so the
-// audit trail reflects the most recent curation event.
+// - Status is set to `Active` (reactivating `Suspended` / `Deregistered` profiles, no-op for
+// already-`Active`).
+// - `registered_by` is refreshed to the calling controller, so the audit trail reflects the most
+// recent curation event.
 //
 // Score-related counters and `registered_at_ns` are preserved across
 // re-registration.
@@ -252,10 +252,11 @@ type DealView = record {
 // All windows are nanoseconds (canister convention); fee bps follows the
 // standard ICRC bps convention (`10_000` = 100%).
 type DisputeConfig = record {
-	// Number of arbitrators selected per dispute. Must be odd and `>= 3`.
-	// The validator at `update_dispute_config` time enforces both
-	// invariants — odd-only is required by the tally rules (no tie
-	// possible without an abstention).
+	// Number of arbitrators selected per dispute. Must be odd and
+	// `>= 3` — `validation::validate_dispute_config` enforces both
+	// invariants when `update_config` is called. Odd-only is
+	// required by the tally rules (no tie possible without an
+	// abstention).
 	panel_size : nat32;
 	// Length of the Voting phase, in nanoseconds (default 2 days).
 	voting_window_ns : nat64;
@@ -273,8 +274,13 @@ type DisputeConfig = record {
 	// (default 500 = 5%). Combined with [`Self::arbitration_min_fee`].
 	arbitration_fee_bps : nat32;
 	// Percentage of the arbitration fee paid to the panel when both
-	// parties resolve out-of-band via `withdraw_dispute` (default 25,
-	// validator clamps to `0..=100`).
+	// parties resolve out-of-band via `withdraw_dispute` (default
+	// 25). `validation::validate_dispute_config` rejects values
+	// `> 100` at `update_config` time;
+	// `services::disputes::withdraw_finalize_locked` also clamps
+	// defensively at the use site so a hypothetical bad config that
+	// somehow slipped through (e.g. a future migration) can't
+	// over-pay arbitrators.
 	withdraw_fee_pct : nat32
 };
 // Outcome of a resolved dispute. Set on the `Dispute` record at finalize
@@ -583,6 +589,9 @@ type SubmitEvidenceArgs = record {
 };
 // ICRC-10 supported standard descriptor.
 type SupportedStandard = record { url : text; name : text };
+// Outcome of `update_config`. `Ok` on successful validation +
+// persistence; `Err` carries the validation failure.
+type UpdateConfigResult = variant { Ok; Err : EscrowError };
 // Generic metadata value following the ICRC-16 specification.
 //
 // Used for both collection-level and token-level metadata in the ICRC-7 NFT
@@ -849,8 +858,14 @@ service : () -> {
 	submit_evidence : (SubmitEvidenceArgs) -> (CastVoteResult);
 	// Updates the global configuration for the Escrow canister.
 	//
+	// Validates `config.dispute_config` (when set) against the
+	// invariants documented on `DisputeConfig` before persisting.
+	// Rejects with `EscrowError::ValidationError` on invalid input
+	// rather than letting bad config poison the dispute machinery at
+	// runtime (e.g. even `panel_size`, zero windows, fee bps > 100%).
+	//
 	// This method is gated to canister controllers.
-	update_config : (Config) -> ();
+	update_config : (Config) -> (UpdateConfigResult);
 	// Out-of-band settlement during the Evidence phase. Caller must be
 	// `payer` or `recipient`. Records the caller's proposed outcome (or
 	// retracts on `proposal: None`); when both parties have proposed the

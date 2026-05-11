@@ -5,7 +5,9 @@ use crate::{
     api::{
         admin::{
             params::{AdminRegisterArbitratorArgs, AdminSetArbitratorStatusArgs},
-            results::{AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult},
+            results::{
+                AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult, UpdateConfigResult,
+            },
         },
         arbitrators::{params::ListArbitratorsArgs, results::DeregisterArbitratorResult},
         deals::{

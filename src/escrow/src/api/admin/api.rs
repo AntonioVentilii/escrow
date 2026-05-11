@@ -3,9 +3,9 @@ use ic_cdk_macros::{query, update};
 
 use super::{
     params::{AdminRegisterArbitratorArgs, AdminSetArbitratorStatusArgs},
-    results::{AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult},
+    results::{AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult, UpdateConfigResult},
 };
-use crate::{guards::caller_is_controller, memory::CONFIG, services, Config};
+use crate::{guards::caller_is_controller, memory::CONFIG, services, validation, Config};
 
 /// Returns the current global configuration of the Escrow canister.
 ///
@@ -18,12 +18,23 @@ pub fn config() -> Config {
 
 /// Updates the global configuration for the Escrow canister.
 ///
+/// Validates `config.dispute_config` (when set) against the
+/// invariants documented on `DisputeConfig` before persisting.
+/// Rejects with `EscrowError::ValidationError` on invalid input
+/// rather than letting bad config poison the dispute machinery at
+/// runtime (e.g. even `panel_size`, zero windows, fee bps > 100%).
+///
 /// This method is gated to canister controllers.
 #[update(guard = "caller_is_controller")]
-pub fn update_config(config: Config) {
+#[must_use]
+pub fn update_config(config: Config) -> UpdateConfigResult {
+    if let Err(e) = validation::validate_config(&config) {
+        return UpdateConfigResult::Err(e);
+    }
     CONFIG.with(|c| {
         *c.borrow_mut() = config;
     });
+    UpdateConfigResult::Ok
 }
 
 /// Registers `args.principal` as an arbitrator. Curated registration —

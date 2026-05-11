@@ -3,7 +3,11 @@ use candid::Principal;
 use crate::{
     api::deals::errors::EscrowError,
     memory,
-    types::deal::{Consent, Deal, DealStatus},
+    types::{
+        deal::{Consent, Deal, DealStatus},
+        dispute::DisputeConfig,
+        state::Config,
+    },
 };
 
 const MAX_TITLE_LEN: u32 = 200;
@@ -41,6 +45,83 @@ pub const MAX_EVIDENCE_NOTE_LEN: u32 = 4096;
 pub const MAX_EVIDENCE_URL_LEN: u32 = 2048;
 /// SHA-256 length in bytes — invariant for evidence artefact hashes.
 pub const SHA256_LEN: usize = 32;
+
+/// Maximum allowed evidence/voting window — clamps to ~30 days so
+/// admin can't accidentally make a dispute uncloseable by setting a
+/// year-long window.
+const MAX_DISPUTE_WINDOW_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
+
+/// Validates a `DisputeConfig` against the invariants documented on
+/// the type's fields. Called from `update_config` before persisting
+/// a controller-supplied config so the dispute machinery can rely on
+/// the invariants at runtime.
+///
+/// Invariants enforced:
+/// - `panel_size >= 3` and `panel_size % 2 == 1` (odd-only — the tally rules assume no tie is
+///   possible without an abstention).
+/// - `evidence_window_ns > 0` and `voting_window_ns > 0` (zero windows make deadlines pass
+///   instantly, leaving no time for submissions / votes).
+/// - Both windows `<= MAX_DISPUTE_WINDOW_NS` (~30 days; protects against admin foot-guns).
+/// - `arbitration_fee_bps <= 10_000` (100% — anything higher would take more than the disputed
+///   amount in fees).
+/// - `withdraw_fee_pct <= 100` (percentage; values above 100 would pay arbitrators more than the
+///   full arbitration fee).
+pub fn validate_dispute_config(cfg: &DisputeConfig) -> Result<(), EscrowError> {
+    if cfg.panel_size < 3 {
+        return Err(EscrowError::ValidationError(format!(
+            "panel_size must be >= 3, got {}",
+            cfg.panel_size,
+        )));
+    }
+    if cfg.panel_size.is_multiple_of(2) {
+        return Err(EscrowError::ValidationError(format!(
+            "panel_size must be odd (no tie possible without abstention), got {}",
+            cfg.panel_size,
+        )));
+    }
+    if cfg.evidence_window_ns == 0 {
+        return Err(EscrowError::ValidationError(
+            "evidence_window_ns must be > 0".to_owned(),
+        ));
+    }
+    if cfg.voting_window_ns == 0 {
+        return Err(EscrowError::ValidationError(
+            "voting_window_ns must be > 0".to_owned(),
+        ));
+    }
+    if cfg.evidence_window_ns > MAX_DISPUTE_WINDOW_NS {
+        return Err(EscrowError::ValidationError(format!(
+            "evidence_window_ns must be <= {MAX_DISPUTE_WINDOW_NS} (~30 days)",
+        )));
+    }
+    if cfg.voting_window_ns > MAX_DISPUTE_WINDOW_NS {
+        return Err(EscrowError::ValidationError(format!(
+            "voting_window_ns must be <= {MAX_DISPUTE_WINDOW_NS} (~30 days)",
+        )));
+    }
+    if cfg.arbitration_fee_bps > 10_000 {
+        return Err(EscrowError::ValidationError(format!(
+            "arbitration_fee_bps must be <= 10_000 (100%), got {}",
+            cfg.arbitration_fee_bps,
+        )));
+    }
+    if cfg.withdraw_fee_pct > 100 {
+        return Err(EscrowError::ValidationError(format!(
+            "withdraw_fee_pct must be <= 100, got {}",
+            cfg.withdraw_fee_pct,
+        )));
+    }
+    Ok(())
+}
+
+/// Validates a top-level [`Config`]. Currently delegates to
+/// [`validate_dispute_config`] when `dispute_config` is set.
+pub fn validate_config(cfg: &Config) -> Result<(), EscrowError> {
+    if let Some(dc) = &cfg.dispute_config {
+        validate_dispute_config(dc)?;
+    }
+    Ok(())
+}
 
 /// Validates that `principal` is a legal target for arbitrator
 /// registration. Rejects:
@@ -964,5 +1045,117 @@ mod tests {
         });
         with_deal(first_id, |d| d.status = DealStatus::Cancelled);
         assert!(validate_caller_deal_limit(creator).is_ok());
+    }
+
+    // --- validate_dispute_config ---
+
+    use super::{validate_dispute_config, MAX_DISPUTE_WINDOW_NS};
+    use crate::types::dispute::DisputeConfig;
+
+    fn validation_err_msg(cfg: &DisputeConfig) -> String {
+        match validate_dispute_config(cfg).unwrap_err() {
+            EscrowError::ValidationError(msg) => msg,
+            other => panic!("expected ValidationError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispute_config_default_is_valid() {
+        assert!(validate_dispute_config(&DisputeConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn dispute_config_rejects_panel_size_below_3() {
+        for size in [0_u32, 1, 2] {
+            let cfg = DisputeConfig {
+                panel_size: size,
+                ..DisputeConfig::default()
+            };
+            let msg = validation_err_msg(&cfg);
+            assert!(
+                msg.contains("panel_size") && msg.contains(">= 3"),
+                "size={size}, msg={msg}",
+            );
+        }
+    }
+
+    #[test]
+    fn dispute_config_rejects_even_panel_size() {
+        // panel_size = 4 passes the >= 3 check but fails the odd check.
+        let cfg = DisputeConfig {
+            panel_size: 4,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("odd"), "msg={msg}");
+    }
+
+    #[test]
+    fn dispute_config_accepts_odd_panel_sizes() {
+        for size in [3_u32, 5, 7, 9, 99] {
+            let cfg = DisputeConfig {
+                panel_size: size,
+                ..DisputeConfig::default()
+            };
+            assert!(validate_dispute_config(&cfg).is_ok(), "size={size}");
+        }
+    }
+
+    #[test]
+    fn dispute_config_rejects_zero_windows() {
+        let cfg = DisputeConfig {
+            evidence_window_ns: 0,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("evidence_window_ns"), "msg={msg}");
+
+        let cfg = DisputeConfig {
+            voting_window_ns: 0,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("voting_window_ns"), "msg={msg}");
+    }
+
+    #[test]
+    fn dispute_config_rejects_oversized_windows() {
+        let cfg = DisputeConfig {
+            evidence_window_ns: MAX_DISPUTE_WINDOW_NS + 1,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("evidence_window_ns"), "msg={msg}");
+    }
+
+    #[test]
+    fn dispute_config_rejects_fee_bps_above_100_pct() {
+        let cfg = DisputeConfig {
+            arbitration_fee_bps: 10_001,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("arbitration_fee_bps"), "msg={msg}");
+    }
+
+    #[test]
+    fn dispute_config_rejects_withdraw_fee_pct_above_100() {
+        let cfg = DisputeConfig {
+            withdraw_fee_pct: 101,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("withdraw_fee_pct"), "msg={msg}");
+    }
+
+    #[test]
+    fn dispute_config_accepts_withdraw_fee_pct_at_boundaries() {
+        for pct in [0_u32, 50, 100] {
+            let cfg = DisputeConfig {
+                withdraw_fee_pct: pct,
+                ..DisputeConfig::default()
+            };
+            assert!(validate_dispute_config(&cfg).is_ok(), "pct={pct}");
+        }
     }
 }
