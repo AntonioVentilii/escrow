@@ -350,6 +350,7 @@ mod tests {
                 title: Some("Tip".to_owned()),
                 note: None,
             }),
+            dispute: None,
         })
     }
 

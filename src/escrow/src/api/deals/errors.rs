@@ -55,4 +55,43 @@ pub enum EscrowError {
     TooManyActiveDeals { max: u32 },
     /// The caller's reliability score is below the minimum threshold.
     ReliabilityTooLow { score: u32, threshold: u32 },
+    // ---- Dispute resolution + arbitrators ----
+    /// `open_dispute` was called on a deal whose `recipient` is `None`
+    /// (open-recipient / tip-flow deal). Tip flows cannot be disputed
+    /// because there is no bound counterparty in canister state.
+    DisputeRequiresBoundRecipient,
+    /// `open_dispute` was called on a deal that already has an open or
+    /// resolved dispute attached.
+    DisputeAlreadyExists,
+    /// The requested dispute does not exist.
+    DisputeNotFound,
+    /// The action requires the dispute to be in a different phase
+    /// (`Evidence`, `Voting`, or `Resolved`).
+    InvalidDisputePhase {
+        /// The phase(s) that would have been valid.
+        expected: String,
+        /// The phase the dispute is actually in.
+        actual: String,
+    },
+    /// `cast_vote` was called by a principal that is not on the
+    /// dispute's selected panel.
+    NotAssignedArbitrator,
+    /// The eligible arbitrator pool is too small to fill the configured
+    /// `panel_size`. Returned by `open_dispute` — the deal stays
+    /// `Funded` so the caller can retry later or settle out-of-band.
+    InsufficientArbitrators { need: u32, have: u32 },
+    /// The arbitrator is `Suspended` or `Deregistered`.
+    ArbitratorNotActive,
+    /// An evidence submission exceeds the maximum allowed size for
+    /// its field. Returned for both `note` overflow (limit
+    /// `MAX_EVIDENCE_NOTE_LEN`) and `artefact_url` overflow (limit
+    /// `MAX_EVIDENCE_URL_LEN`); the `max` field tells the caller
+    /// WHICH limit was breached. Hash-length violations on
+    /// `artefact_sha256` use `ValidationError` instead — those are
+    /// shape checks ("must be exactly 32 bytes"), not size checks.
+    EvidenceTooLarge { max: u32 },
+    /// `open_dispute` was called on a deal whose `amount` cannot cover
+    /// the configured arbitration fee plus the per-arbitrator ICRC-1
+    /// ledger fees. Tiny deals are not disputable.
+    AmountTooSmallForArbitration { min: u128 },
 }

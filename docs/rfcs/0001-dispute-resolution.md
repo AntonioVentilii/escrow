@@ -1,12 +1,12 @@
 # RFC-001 — Dispute resolution + arbitrators
 
-| Field   | Value                                                                                                                                         |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Status  | **Draft** — open for comment                                                                                                                  |
-| Author  | @antonioventilii                                                                                                                              |
-| Created | 2026-05-09                                                                                                                                    |
-| Targets | escrow `v0.1.x` (next minor — adds Candid types but no on-canister data migration; existing `Deal` records deserialise with `dispute = None`) |
-| Related | `Pluggable resolvers` sketch in `src/escrow/README.md`                                                                                        |
+| Field    | Value                                                                                                                                         |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Author   | @antonioventilii                                                                                                                              |
+| Created  | 2026-05-09                                                                                                                                    |
+| Accepted | 2026-05-10                                                                                                                                    |
+| Targets  | escrow `v0.1.x` (next minor — adds Candid types but no on-canister data migration; existing `Deal` records deserialise with `dispute = None`) |
+| Related  | `Pluggable resolvers` sketch in `src/escrow/README.md`                                                                                        |
 
 > **What is this RFC?** A design proposal that has to be agreed before
 > any implementation lands. Each "Open question" in the document is a
@@ -454,7 +454,7 @@ suspend bad actors.
 pool; users apply, controller approves. Lower abuse surface but
 adds a centralised gatekeeper to a "trustless escrow" claim.
 
-**Decision:** Permissionless self-registration via
+**Decision (original).** Permissionless self-registration via
 `register_arbitrator` (idempotent — re-registering returns the
 existing profile, no error). Admin retains emergency suspension
 via `admin_set_arbitrator_status`. Future
@@ -462,6 +462,37 @@ via `admin_set_arbitrator_status`. Future
 `None` for bootstrap) provides a tunable Sybil filter without
 touching code. Permissioned alt rejected because it puts a
 centralised gatekeeper at the most consequential layer.
+
+**Decision (revised, 2026-05-10).** Flipped to **admin-curated**
+registration during PR #29 review. The original "score-weighted
+selection + admin suspension + min-score gate" defences are all
+_reactive_ — a fresh attacker can flood the pool with Sybils on
+day 1 before any quality signal exists. With base weight = 1
+across an unscored bootstrap pool, selection degrades to
+uniform-random across the flooded pool and the defenses don't
+kick in. New shape:
+
+- Public `register_arbitrator` removed.
+- New controller-only `admin_register_arbitrator(principal)` adds
+  arbitrators (idempotent; reactivates Suspended/Deregistered).
+- New controller-only `admin_set_arbitrator_status(principal,
+status)` for moderation; all transitions allowed including
+  `Deregistered → Active`.
+- Self-`deregister_arbitrator` retained (opt-out is a
+  fundamental right; doesn't require admin).
+- `ArbitratorProfile` gains `registered_by: Principal` for the
+  curation audit trail; the `bio: Option<String>` field is
+  dropped entirely (it served no on-canister purpose; human-
+  readable arbitrator descriptions live in the consuming app's
+  off-chain directory keyed by principal).
+- Validator on the registered principal rejects
+  `Principal::anonymous()` (degenerate) and the canister's own
+  principal (would create circular self-arbitration risks).
+
+Centralisation cost acknowledged: the trust ceiling is now the
+controller list. A future RFC may introduce a registrar allowlist
+(`Config::arbitrator_registrars: Vec<Principal>`) so trusted apps
+can register without being controllers.
 
 ### Q5. Arbitrator selection algorithm
 
@@ -960,19 +991,19 @@ proposed schema (stake field can be added later as `Option<u128>`).
 > Filled in as questions are resolved. Each entry should reference
 > the comment thread / message that resolved it.
 
-| Q   | Resolved   | Resolution                                                                                                                                                                                                                                               | Source                             |
-| --- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| Q1  | 2026-05-10 | Distinct statuses (`Disputed`, `ArbitratedSettled`, `ArbitratedRefunded`) on `DealStatus`; `Deal.dispute: Option<DisputeId>` carries the audit-trail link.                                                                                               | RFC-001 design review (2026-05-10) |
-| Q2  | 2026-05-10 | Either bound party (payer or recipient), `Funded` state, before expiry; expiry sweep skips `Disputed`. Drop `NotAParty` variant (reuse `NotAuthorised`).                                                                                                 | RFC-001 design review (2026-05-10) |
-| Q3  | 2026-05-10 | Open-recipient (tip-flow) deals cannot be disputed; gate via new `DisputeRequiresBoundRecipient` variant.                                                                                                                                                | RFC-001 design review (2026-05-10) |
-| Q4  | 2026-05-10 | Permissionless self-registration (idempotent); admin keeps emergency suspension; future `min_arbitrator_score` knob in `DisputeConfig`.                                                                                                                  | RFC-001 design review (2026-05-10) |
-| Q5  | 2026-05-10 | Score-weighted random selection at `open_dispute` time, base weight = 1 for unscored arbitrators, hard-exclude payer + recipient, randomness via `ledger::raw_rand`.                                                                                     | RFC-001 design review (2026-05-10) |
-| Q6  | 2026-05-10 | `panel_size = 3` default, admin-tunable via `DisputeConfig::panel_size: u32`; validator enforces odd and `>= 3`.                                                                                                                                         | RFC-001 design review (2026-05-10) |
-| Q7  | 2026-05-10 | Quorum = `floor(P/2) + 1` non-abstain; majority = greater of `cc`/`ic`; ties resolve as `NoQuorum`.                                                                                                                                                      | RFC-001 design review (2026-05-10) |
-| Q8  | 2026-05-10 | Off-canister artefacts (URL + SHA-256), on-canister metadata only; URL/hash paired; `note` ≤ 4 KiB; `artefact_url` ≤ 2 KiB; `artefact_sha256` exactly 32 bytes.                                                                                          | RFC-001 design review (2026-05-10) |
-| Q9  | 2026-05-10 | Evidence window 3 days, voting window 2 days, both admin-tunable; no-quorum fallback refunds payer (`ArbitratedRefunded`).                                                                                                                               | RFC-001 design review (2026-05-10) |
-| Q10 | 2026-05-10 | Per-deal fee from disputed amount; `bps + min` admin-tunable; equally split among non-abstain voters; NoQuorum pays no fee. Schema refinement: `Dispute.panel: Vec<PanelMember>` replaces `arbitrators` + `votes` for per-arbitrator payout idempotency. | RFC-001 design review (2026-05-10) |
-| Q11 | 2026-05-10 | Schema as proposed; refinement: NoQuorum disputes only update `disputes_assigned` (not `voted` / `with_majority`).                                                                                                                                       | RFC-001 design review (2026-05-10) |
-| Q12 | 2026-05-10 | Accept `withdraw_dispute` for v1 (unconditional). Evidence-phase only; latest-wins overwrite; `None`-to-retract; resolution fires on matching `Some` proposals; reduced-fee tunable via `withdraw_fee_pct` (default 25).                                 | RFC-001 design review (2026-05-10) |
-| Q13 | 2026-05-10 | Simple majority in v1; weighted voting deferred to a future RFC (Q11 schema is already in place, so v2 is service-level only).                                                                                                                           | RFC-001 design review (2026-05-10) |
-| Q14 | 2026-05-10 | Skip entirely for v1 — no `tags` on `ArbitratorProfile`, no `category` on `Deal`. Diverges from RFC draft's "schema-only in v1"; competency lands as one RFC + impl PR when a real verification mechanic exists.                                         | RFC-001 design review (2026-05-10) |
+| Q   | Resolved   | Resolution                                                                                                                                                                                                                                                                                                                                                                                                | Source                                                        |
+| --- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Q1  | 2026-05-10 | Distinct statuses (`Disputed`, `ArbitratedSettled`, `ArbitratedRefunded`) on `DealStatus`; `Deal.dispute: Option<DisputeId>` carries the audit-trail link.                                                                                                                                                                                                                                                | RFC-001 design review (2026-05-10)                            |
+| Q2  | 2026-05-10 | Either bound party (payer or recipient), `Funded` state, before expiry; expiry sweep skips `Disputed`. Drop `NotAParty` variant (reuse `NotAuthorised`).                                                                                                                                                                                                                                                  | RFC-001 design review (2026-05-10)                            |
+| Q3  | 2026-05-10 | Open-recipient (tip-flow) deals cannot be disputed; gate via new `DisputeRequiresBoundRecipient` variant.                                                                                                                                                                                                                                                                                                 | RFC-001 design review (2026-05-10)                            |
+| Q4  | 2026-05-10 | **Original:** permissionless self-registration. **Revised same day during PR #29 review:** admin-curated. New `admin_register_arbitrator` + `admin_set_arbitrator_status` (controller-only); self-`deregister_arbitrator` retained for opt-out; `ArbitratorProfile.bio` dropped (no on-canister consumer); `registered_by` added for audit trail; validator rejects anonymous + canister-self as targets. | RFC-001 design review (2026-05-10) + Q4-revisit during PR #29 |
+| Q5  | 2026-05-10 | Score-weighted random selection at `open_dispute` time, base weight = 1 for unscored arbitrators, hard-exclude payer + recipient, randomness via `ledger::raw_rand`.                                                                                                                                                                                                                                      | RFC-001 design review (2026-05-10)                            |
+| Q6  | 2026-05-10 | `panel_size = 3` default, admin-tunable via `DisputeConfig::panel_size: u32`; validator enforces odd and `>= 3`.                                                                                                                                                                                                                                                                                          | RFC-001 design review (2026-05-10)                            |
+| Q7  | 2026-05-10 | Quorum = `floor(P/2) + 1` non-abstain; majority = greater of `cc`/`ic`; ties resolve as `NoQuorum`.                                                                                                                                                                                                                                                                                                       | RFC-001 design review (2026-05-10)                            |
+| Q8  | 2026-05-10 | Off-canister artefacts (URL + SHA-256), on-canister metadata only; URL/hash paired; `note` ≤ 4 KiB; `artefact_url` ≤ 2 KiB; `artefact_sha256` exactly 32 bytes.                                                                                                                                                                                                                                           | RFC-001 design review (2026-05-10)                            |
+| Q9  | 2026-05-10 | Evidence window 3 days, voting window 2 days, both admin-tunable; no-quorum fallback refunds payer (`ArbitratedRefunded`).                                                                                                                                                                                                                                                                                | RFC-001 design review (2026-05-10)                            |
+| Q10 | 2026-05-10 | Per-deal fee from disputed amount; `bps + min` admin-tunable; equally split among non-abstain voters; NoQuorum pays no fee. Schema refinement: `Dispute.panel: Vec<PanelMember>` replaces `arbitrators` + `votes` for per-arbitrator payout idempotency.                                                                                                                                                  | RFC-001 design review (2026-05-10)                            |
+| Q11 | 2026-05-10 | Schema as proposed; refinement: NoQuorum disputes only update `disputes_assigned` (not `voted` / `with_majority`).                                                                                                                                                                                                                                                                                        | RFC-001 design review (2026-05-10)                            |
+| Q12 | 2026-05-10 | Accept `withdraw_dispute` for v1 (unconditional). Evidence-phase only; latest-wins overwrite; `None`-to-retract; resolution fires on matching `Some` proposals; reduced-fee tunable via `withdraw_fee_pct` (default 25).                                                                                                                                                                                  | RFC-001 design review (2026-05-10)                            |
+| Q13 | 2026-05-10 | Simple majority in v1; weighted voting deferred to a future RFC (Q11 schema is already in place, so v2 is service-level only).                                                                                                                                                                                                                                                                            | RFC-001 design review (2026-05-10)                            |
+| Q14 | 2026-05-10 | Skip entirely for v1 — no `tags` on `ArbitratorProfile`, no `category` on `Deal`. Diverges from RFC draft's "schema-only in v1"; competency lands as one RFC + impl PR when a real verification mechanic exists.                                                                                                                                                                                          | RFC-001 design review (2026-05-10)                            |

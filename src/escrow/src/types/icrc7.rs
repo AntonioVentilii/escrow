@@ -76,18 +76,24 @@ pub const MAX_QUERY_BATCH_SIZE: u64 = 100;
 
 /// Computes the ICRC-7 owner of a deal token.
 ///
-/// Settled deals are owned by the recipient; all other states (including
-/// terminal ones like `Refunded` and `Cancelled`) are owned by the payer.
-/// Falls back to `created_by` when the relevant principal is not set.
+/// `Settled` and `ArbitratedSettled` deals are owned by the
+/// recipient; all other states — including `Disputed` (funds still
+/// escrowed pending resolution) and the other terminals — are owned by
+/// the payer. Falls back to `created_by` when the relevant principal is
+/// not set.
 #[must_use]
 pub fn token_owner(deal: &Deal) -> Account {
     let owner = match deal.status {
-        DealStatus::Settled => deal.recipient.or(deal.payer).unwrap_or(deal.created_by),
+        DealStatus::Settled | DealStatus::ArbitratedSettled => {
+            deal.recipient.or(deal.payer).unwrap_or(deal.created_by)
+        }
         DealStatus::Created
         | DealStatus::Funded
         | DealStatus::Refunded
         | DealStatus::Cancelled
-        | DealStatus::Rejected => deal.payer.unwrap_or(deal.created_by),
+        | DealStatus::Rejected
+        | DealStatus::Disputed
+        | DealStatus::ArbitratedRefunded => deal.payer.unwrap_or(deal.created_by),
     };
     Account {
         owner,
@@ -282,6 +288,7 @@ mod tests {
             payer_consent: Consent::Accepted,
             recipient_consent: Consent::Pending,
             metadata: None,
+            dispute: None,
         }
     }
 
@@ -334,6 +341,32 @@ mod tests {
     fn owner_of_rejected_is_payer() {
         let payer = test_principal(1);
         let deal = make_deal(DealStatus::Rejected, Some(payer), Some(test_principal(2)));
+        assert_eq!(token_owner(&deal).owner, payer);
+    }
+
+    #[test]
+    fn owner_of_disputed_is_payer() {
+        let payer = test_principal(1);
+        let deal = make_deal(DealStatus::Disputed, Some(payer), Some(test_principal(2)));
+        assert_eq!(token_owner(&deal).owner, payer);
+    }
+
+    #[test]
+    fn owner_of_arbitrated_settled_is_recipient() {
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::ArbitratedSettled, Some(payer), Some(recip));
+        assert_eq!(token_owner(&deal).owner, recip);
+    }
+
+    #[test]
+    fn owner_of_arbitrated_refunded_is_payer() {
+        let payer = test_principal(1);
+        let deal = make_deal(
+            DealStatus::ArbitratedRefunded,
+            Some(payer),
+            Some(test_principal(2)),
+        );
         assert_eq!(token_owner(&deal).owner, payer);
     }
 

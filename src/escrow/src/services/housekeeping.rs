@@ -1,9 +1,9 @@
 use core::{cell::Cell, time::Duration};
 
-use ic_cdk::futures::spawn;
+use ic_cdk::{api::time, futures::spawn};
 use ic_cdk_timers::set_timer_interval;
 
-use crate::services::expiry;
+use crate::services::{disputes, expiry};
 
 /// How often the automatic expiry sweep runs (5 minutes).
 const SWEEP_INTERVAL: Duration = Duration::from_mins(5);
@@ -11,9 +11,22 @@ const SWEEP_INTERVAL: Duration = Duration::from_mins(5);
 /// Maximum number of expired deals to process per sweep cycle.
 const SWEEP_BATCH_LIMIT: u32 = 50;
 
+/// How often the dispute auto-finalize sweep runs.
+/// Same cadence as the expiry sweep — both operate on time-driven
+/// deadlines that don't need sub-minute granularity.
+const DISPUTE_SWEEP_INTERVAL: Duration = Duration::from_mins(5);
+
+/// Maximum number of disputes to auto-finalize per sweep cycle.
+const DISPUTE_SWEEP_BATCH_LIMIT: u32 = 20;
+
 thread_local! {
     /// Prevents overlapping async sweeps — at most one in-flight at a time.
     static SWEEP_RUNNING: Cell<bool> = const { Cell::new(false) };
+    /// Same re-entrancy guard, but for the dispute auto-finalize sweep.
+    /// Independent from `SWEEP_RUNNING` so the two sweeps can interleave
+    /// (they touch disjoint state — expiry only looks at `Funded` deals;
+    /// dispute sweep only at `Disputed`).
+    static DISPUTE_SWEEP_RUNNING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Starts a repeating timer that automatically refunds expired funded deals.
@@ -29,6 +42,27 @@ pub fn start_expiry_sweep() {
         spawn(async {
             let _guard = SweepGuard;
             let _ = expiry::process_expired(SWEEP_BATCH_LIMIT).await;
+        });
+    });
+}
+
+/// Starts the dispute auto-finalize sweep.
+///
+/// Called once from `#[init]` and `#[post_upgrade]`. The timer fires
+/// every [`DISPUTE_SWEEP_INTERVAL`]; each cycle calls
+/// [`disputes::auto_finalize_due`] with a per-cycle cap of
+/// [`DISPUTE_SWEEP_BATCH_LIMIT`]. The re-entrancy guard
+/// [`DISPUTE_SWEEP_RUNNING`] ensures at most one dispute sweep is
+/// in-flight at a time. Per-dispute errors inside `auto_finalize_due`
+/// are swallowed — they get retried on the next cycle.
+pub fn start_dispute_sweep() {
+    set_timer_interval(DISPUTE_SWEEP_INTERVAL, || async {
+        if !try_start_dispute_sweep() {
+            return;
+        }
+        spawn(async {
+            let _guard = DisputeSweepGuard;
+            let _ = disputes::auto_finalize_due(DISPUTE_SWEEP_BATCH_LIMIT, time()).await;
         });
     });
 }
@@ -57,12 +91,35 @@ impl Drop for SweepGuard {
     }
 }
 
+fn try_start_dispute_sweep() -> bool {
+    DISPUTE_SWEEP_RUNNING.with(|r| {
+        if r.get() {
+            false
+        } else {
+            r.set(true);
+            true
+        }
+    })
+}
+
+struct DisputeSweepGuard;
+
+impl Drop for DisputeSweepGuard {
+    fn drop(&mut self) {
+        DISPUTE_SWEEP_RUNNING.with(|r| r.set(false));
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{try_start_sweep, SweepGuard, SWEEP_RUNNING};
+    use super::{
+        try_start_dispute_sweep, try_start_sweep, DisputeSweepGuard, SweepGuard,
+        DISPUTE_SWEEP_RUNNING, SWEEP_RUNNING,
+    };
 
     fn reset() {
         SWEEP_RUNNING.with(|r| r.set(false));
+        DISPUTE_SWEEP_RUNNING.with(|r| r.set(false));
     }
 
     #[test]
@@ -101,6 +158,68 @@ mod tests {
             assert!(!try_start_sweep(), "should be blocked while guard is alive");
         }
         assert!(try_start_sweep(), "should succeed after scope ends");
+        reset();
+    }
+
+    // --- Dispute sweep guard ---
+
+    #[test]
+    fn dispute_sweep_blocks_concurrent() {
+        reset();
+        assert!(try_start_dispute_sweep());
+        assert!(!try_start_dispute_sweep());
+        reset();
+    }
+
+    #[test]
+    fn dispute_sweep_resets_on_guard_drop() {
+        reset();
+        assert!(try_start_dispute_sweep());
+        drop(DisputeSweepGuard);
+        assert!(try_start_dispute_sweep());
+        reset();
+    }
+
+    #[test]
+    fn dispute_sweep_allows_sequential_sweeps() {
+        // Mirror of `allows_sequential_sweeps` for the expiry guard.
+        // After each guard is dropped the flag resets, so a subsequent
+        // start succeeds — production-equivalent loop.
+        reset();
+        for _ in 0..5 {
+            assert!(try_start_dispute_sweep());
+            drop(DisputeSweepGuard);
+        }
+        reset();
+    }
+
+    #[test]
+    fn dispute_sweep_guard_scoped_lifetime() {
+        // Mirror of `guard_scoped_lifetime` for the expiry guard. This
+        // is the production-equivalent test: hold the guard in a let-
+        // binding for the sweep's logical lifetime, assert the flag
+        // blocks while it's alive, assert the flag resets after the
+        // scope ends.
+        reset();
+        assert!(try_start_dispute_sweep());
+        {
+            let _guard = DisputeSweepGuard;
+            assert!(
+                !try_start_dispute_sweep(),
+                "should be blocked while guard is alive"
+            );
+        }
+        assert!(try_start_dispute_sweep(), "should succeed after scope ends");
+        reset();
+    }
+
+    #[test]
+    fn dispute_sweep_independent_from_expiry_sweep() {
+        // The two sweeps use disjoint flags — taking one should not block
+        // the other.
+        reset();
+        assert!(try_start_sweep());
+        assert!(try_start_dispute_sweep());
         reset();
     }
 }

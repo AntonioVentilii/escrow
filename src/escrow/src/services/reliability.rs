@@ -98,6 +98,7 @@ mod tests {
             payer_consent: Consent::Accepted,
             recipient_consent: Consent::Accepted,
             metadata: None,
+            dispute: None,
         });
     }
 

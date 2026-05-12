@@ -75,6 +75,7 @@ pub async fn create(
         payer_consent,
         recipient_consent,
         metadata,
+        dispute: None,
     });
 
     Ok(DealView::from(&deal))
@@ -445,6 +446,7 @@ mod tests {
                 title: Some("Test".to_owned()),
                 note: None,
             }),
+            dispute: None,
         })
     }
 

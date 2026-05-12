@@ -12,7 +12,6 @@ use candid::{
 use pocket_ic::PocketIc;
 
 /// Common methods for interacting with a canister using `PocketIc`.
-#[expect(dead_code)]
 pub trait PicCanisterTrait {
     /// A shared `PocketIc` instance.
     ///

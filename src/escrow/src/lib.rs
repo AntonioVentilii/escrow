@@ -3,6 +3,13 @@ use ic_cdk::{export_candid, init, post_upgrade, pre_upgrade};
 
 use crate::{
     api::{
+        admin::{
+            params::{AdminRegisterArbitratorArgs, AdminSetArbitratorStatusArgs},
+            results::{
+                AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult, UpdateConfigResult,
+            },
+        },
+        arbitrators::{params::ListArbitratorsArgs, results::DeregisterArbitratorResult},
         deals::{
             params::{
                 AcceptDealArgs, CancelDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs,
@@ -14,10 +21,23 @@ use crate::{
                 ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
             },
         },
+        disputes::{
+            params::{
+                CastVoteArgs, FinalizeDisputeArgs, ListMyDisputesArgs, OpenDisputeArgs,
+                SubmitEvidenceArgs, WithdrawDisputeArgs,
+            },
+            results::{
+                CastVoteResult, DisputeView, FinalizeDisputeResult, GetDisputeResult,
+                GetPublicDisputeResult, OpenDisputeResult, SubmitEvidenceResult,
+                WithdrawDisputeResult,
+            },
+        },
         reliability::results::ReliabilityView,
     },
     types::{
+        arbitrator::ArbitratorProfile,
         deal::DealId,
+        dispute::DisputeId,
         icrc7::{Icrc7TransferArg, Icrc7TransferResponse, SupportedStandard, Value},
         ledger_types::Account,
         state::Config,
@@ -36,6 +56,7 @@ pub mod validation;
 #[init]
 fn init() {
     services::housekeeping::start_expiry_sweep();
+    services::housekeeping::start_dispute_sweep();
 }
 
 #[pre_upgrade]
@@ -48,6 +69,7 @@ fn post_upgrade() {
     memory::restore_state();
 
     services::housekeeping::start_expiry_sweep();
+    services::housekeeping::start_dispute_sweep();
 }
 
 export_candid!();

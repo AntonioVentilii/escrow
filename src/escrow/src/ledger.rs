@@ -77,6 +77,26 @@ pub async fn transfer(
     }
 }
 
+/// Queries `icrc1_fee` on `ledger`. Returns the per-transfer fee
+/// (in token units) the ledger will charge on subsequent
+/// `icrc1_transfer` / `icrc2_transfer_from` calls.
+///
+/// Used by `services::disputes::finalize` to size the prevailing-party
+/// payout so the per-arbitrator transfers' ledger fees are absorbed by
+/// the prevailing party rather than coming out of each arbitrator's
+/// fee slice.
+pub async fn fee(ledger: Principal) -> Result<u128, EscrowError> {
+    let response = Call::unbounded_wait(ledger, "icrc1_fee")
+        .await
+        .map_err(|e| EscrowError::LedgerError(format!("{e:?}")))?;
+
+    let (fee_nat,): (Nat,) = response
+        .candid_tuple()
+        .map_err(|e| EscrowError::LedgerError(format!("icrc1_fee decode failed: {e:?}")))?;
+
+    nat_to_u128(&fee_nat)
+}
+
 /// Calls the IC management canister to obtain 32 bytes of cryptographic randomness.
 pub async fn raw_rand() -> Result<(Vec<u8>,), EscrowError> {
     let response = Call::unbounded_wait(Principal::management_canister(), "raw_rand")

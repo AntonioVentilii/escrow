@@ -125,17 +125,27 @@ See [`patterns.md#errors`](./patterns.md#errors) for the full taxonomy.
 ## State machine
 
 `DealStatus` transitions are gated by the `validate_can_*` family in
-`validation.rs`. The current valid edges:
+`validation.rs`. The current valid edges (RFC-001 added the `Disputed`,
+`ArbitratedSettled`, `ArbitratedRefunded` triple):
 
 ```
 Created ──[both consent]──▶ Created ──fund──▶ Funded ──accept──▶ Settled
-  │                           │                 │
-  │ reject                    │ cancel          │ reclaim (after expiry)
-  ▼                           ▼                 ▼
-Rejected                  Cancelled          Refunded
+  │                           │                 │  │
+  │ reject                    │ cancel          │  │ open_dispute
+  ▼                           ▼                 │  ▼
+Rejected                  Cancelled             │  Disputed
+                                                │    ├─[majority CC]──▶ ArbitratedSettled
+                                                │    ├─[majority IC]──▶ ArbitratedRefunded
+                                                │    ├─[no quorum]────▶ ArbitratedRefunded (Q9)
+                                                │    └─[Q12 withdrawn]▶ ArbitratedSettled / ArbitratedRefunded
+                                                │ reclaim (after expiry, if not Disputed)
+                                                ▼
+                                            Refunded
 ```
 
-`Settled`, `Refunded`, `Cancelled`, `Rejected` are terminal.
+`Settled`, `Refunded`, `Cancelled`, `Rejected`, `ArbitratedSettled`,
+`ArbitratedRefunded` are terminal. `Disputed` is non-terminal — funds
+remain in the escrow subaccount until the dispute resolves.
 
 **Adding a new state or edge requires an [RFC](../governance.md#rfc-workflow).**
 The accepted RFC dictates the new transition table; the implementation

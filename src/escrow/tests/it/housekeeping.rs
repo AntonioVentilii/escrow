@@ -2,7 +2,10 @@ use core::time::Duration;
 use std::{fs, sync::Arc};
 
 use candid::{encode_one, Principal};
-use escrow::api::deals::results::ProcessExpiredDealsResult;
+use escrow::api::{
+    deals::results::ProcessExpiredDealsResult,
+    disputes::{params::ListMyDisputesArgs, results::DisputeView},
+};
 use pocket_ic::PocketIc;
 
 use crate::utils::pic_canister::{PicCanister, PicCanisterBuilder, PicCanisterTrait};
@@ -53,6 +56,28 @@ fn canister_healthy_after_sweep_timer_fires() {
         ProcessExpiredDealsResult::Ok(ids) => assert!(ids.is_empty()),
         ProcessExpiredDealsResult::Err(e) => panic!("unexpected error: {e:?}"),
     }
+}
+
+#[test]
+fn dispute_sweep_runs_without_panicking() {
+    // The auto-finalize dispute sweep is wired from `init` and
+    // `post_upgrade`. With no disputes in storage (empty canister), the
+    // sweep should fire its 5-minute timer, find no due disputes, and
+    // exit cleanly without trapping.
+    let (pic, escrow) = setup();
+
+    pic.advance_time(Duration::from_mins(6));
+    for _ in 0..10 {
+        pic.tick();
+    }
+
+    // The canister is still operational — `list_my_disputes` returns
+    // empty rather than trapping, which would happen if the sweep
+    // timer trapped during its first cycle.
+    let result: Vec<DisputeView> = escrow
+        .query(user(), "list_my_disputes", (ListMyDisputesArgs::default(),))
+        .expect("canister should still be operational after dispute sweep");
+    assert!(result.is_empty());
 }
 
 #[test]

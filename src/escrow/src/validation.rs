@@ -3,7 +3,11 @@ use candid::Principal;
 use crate::{
     api::deals::errors::EscrowError,
     memory,
-    types::deal::{Consent, Deal, DealStatus},
+    types::{
+        deal::{Consent, Deal, DealStatus},
+        dispute::DisputeConfig,
+        state::Config,
+    },
 };
 
 const MAX_TITLE_LEN: u32 = 200;
@@ -31,6 +35,112 @@ pub fn validate_create(amount: u128, expires_at_ns: u64, now_ns: u64) -> Result<
     }
     if expires_at_ns.saturating_sub(now_ns) > MAX_EXPIRY_WINDOW_NS {
         return Err(EscrowError::ExpiryTooFar);
+    }
+    Ok(())
+}
+
+/// Max byte length of an evidence note.
+pub const MAX_EVIDENCE_NOTE_LEN: u32 = 4096;
+/// Max byte length of an evidence artefact URL.
+pub const MAX_EVIDENCE_URL_LEN: u32 = 2048;
+/// SHA-256 length in bytes — invariant for evidence artefact hashes.
+pub const SHA256_LEN: usize = 32;
+
+/// Maximum allowed evidence/voting window. `validate_dispute_config`
+/// rejects values above this limit so admin can't accidentally make
+/// a dispute unclosable by setting a year-long window.
+const MAX_DISPUTE_WINDOW_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
+
+/// Validates a `DisputeConfig` against the invariants documented on
+/// the type's fields. Called from `update_config` before persisting
+/// a controller-supplied config so the dispute machinery can rely on
+/// the invariants at runtime.
+///
+/// Invariants enforced:
+/// - `panel_size >= 3` and `panel_size % 2 == 1` (odd-only — the tally rules assume no tie is
+///   possible without an abstention).
+/// - `evidence_window_ns > 0` and `voting_window_ns > 0` (zero windows make deadlines pass
+///   instantly, leaving no time for submissions / votes).
+/// - Both windows `<= MAX_DISPUTE_WINDOW_NS` (~30 days; protects against admin foot-guns).
+/// - `arbitration_fee_bps <= 10_000` (100% — anything higher would take more than the disputed
+///   amount in fees).
+/// - `withdraw_fee_pct <= 100` (percentage; values above 100 would pay arbitrators more than the
+///   full arbitration fee).
+pub fn validate_dispute_config(cfg: &DisputeConfig) -> Result<(), EscrowError> {
+    if cfg.panel_size < 3 {
+        return Err(EscrowError::ValidationError(format!(
+            "panel_size must be >= 3, got {}",
+            cfg.panel_size,
+        )));
+    }
+    if cfg.panel_size.is_multiple_of(2) {
+        return Err(EscrowError::ValidationError(format!(
+            "panel_size must be odd (no tie possible without abstention), got {}",
+            cfg.panel_size,
+        )));
+    }
+    if cfg.evidence_window_ns == 0 {
+        return Err(EscrowError::ValidationError(
+            "evidence_window_ns must be > 0".to_owned(),
+        ));
+    }
+    if cfg.voting_window_ns == 0 {
+        return Err(EscrowError::ValidationError(
+            "voting_window_ns must be > 0".to_owned(),
+        ));
+    }
+    if cfg.evidence_window_ns > MAX_DISPUTE_WINDOW_NS {
+        return Err(EscrowError::ValidationError(format!(
+            "evidence_window_ns must be <= {MAX_DISPUTE_WINDOW_NS} (~30 days), got {}",
+            cfg.evidence_window_ns,
+        )));
+    }
+    if cfg.voting_window_ns > MAX_DISPUTE_WINDOW_NS {
+        return Err(EscrowError::ValidationError(format!(
+            "voting_window_ns must be <= {MAX_DISPUTE_WINDOW_NS} (~30 days), got {}",
+            cfg.voting_window_ns,
+        )));
+    }
+    if cfg.arbitration_fee_bps > 10_000 {
+        return Err(EscrowError::ValidationError(format!(
+            "arbitration_fee_bps must be <= 10_000 (100%), got {}",
+            cfg.arbitration_fee_bps,
+        )));
+    }
+    if cfg.withdraw_fee_pct > 100 {
+        return Err(EscrowError::ValidationError(format!(
+            "withdraw_fee_pct must be <= 100, got {}",
+            cfg.withdraw_fee_pct,
+        )));
+    }
+    Ok(())
+}
+
+/// Validates a top-level [`Config`]. Currently delegates to
+/// [`validate_dispute_config`] when `dispute_config` is set.
+pub fn validate_config(cfg: &Config) -> Result<(), EscrowError> {
+    if let Some(dc) = &cfg.dispute_config {
+        validate_dispute_config(dc)?;
+    }
+    Ok(())
+}
+
+/// Validates that `principal` is a legal target for arbitrator
+/// registration. Rejects:
+/// - The anonymous principal — degenerate; cannot vote anyway.
+/// - The canister's own principal — would create circular self-arbitration risks if the canister
+///   ever became its own caller via timer-driven flows.
+pub fn validate_arbitrator_principal(
+    principal: Principal,
+    canister_id: Principal,
+) -> Result<(), EscrowError> {
+    if principal == Principal::anonymous() {
+        return Err(EscrowError::AnonymousParty);
+    }
+    if principal == canister_id {
+        return Err(EscrowError::ValidationError(
+            "cannot register the canister's own principal as an arbitrator".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -278,6 +388,114 @@ pub fn validate_can_reject(deal: &Deal, caller: Principal) -> Result<bool, Escro
     resolve_caller_role(deal, caller)
 }
 
+/// Validates a single evidence submission at the canister boundary:
+/// at least one of `note` / `(artefact_url + artefact_sha256)` present;
+/// URL and hash paired; size + length caps.
+pub fn validate_evidence(
+    note: Option<&str>,
+    artefact_url: Option<&str>,
+    artefact_sha256: Option<&[u8]>,
+) -> Result<(), EscrowError> {
+    if note.is_none() && artefact_url.is_none() && artefact_sha256.is_none() {
+        return Err(EscrowError::ValidationError(
+            "evidence must contain at least a note or an artefact".to_owned(),
+        ));
+    }
+
+    if artefact_url.is_some() != artefact_sha256.is_some() {
+        return Err(EscrowError::ValidationError(
+            "artefact_url and artefact_sha256 must be supplied together".to_owned(),
+        ));
+    }
+
+    if let Some(n) = note {
+        if n.len() > MAX_EVIDENCE_NOTE_LEN as usize {
+            return Err(EscrowError::EvidenceTooLarge {
+                max: MAX_EVIDENCE_NOTE_LEN,
+            });
+        }
+    }
+
+    if let Some(url) = artefact_url {
+        if url.len() > MAX_EVIDENCE_URL_LEN as usize {
+            // Use the typed `EvidenceTooLarge` variant so callers can
+            // pattern-match all evidence size violations uniformly
+            // (note overflow uses the same variant). The `max` field
+            // tells the caller WHICH limit was breached without having
+            // to parse a free-form message.
+            return Err(EscrowError::EvidenceTooLarge {
+                max: MAX_EVIDENCE_URL_LEN,
+            });
+        }
+    }
+
+    if let Some(hash) = artefact_sha256 {
+        if hash.len() != SHA256_LEN {
+            return Err(EscrowError::ValidationError(format!(
+                "artefact_sha256 must be exactly {SHA256_LEN} bytes",
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Dispute validators
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if the deal already has an open dispute (idempotent
+/// success — the caller short-circuits and returns the existing dispute
+/// view). Returns `Err` if opening a dispute is not allowed.
+///
+/// `open_dispute` is allowed when:
+/// - The deal exists in `Funded` state.
+/// - Both `payer` and `recipient` are bound — tip flows (open recipient) are not disputable, since
+///   there's no bound counterparty in canister state.
+/// - The caller is `payer` or `recipient` — either bound party can open a dispute (symmetric).
+/// - The deal has not yet expired.
+/// - No dispute is already attached to the deal.
+pub fn validate_can_open_dispute(
+    deal: &Deal,
+    caller: Principal,
+    now_ns: u64,
+) -> Result<bool, EscrowError> {
+    if deal.recipient.is_none() || deal.payer.is_none() {
+        return Err(EscrowError::DisputeRequiresBoundRecipient);
+    }
+
+    // Caller authorization — payer or recipient only.
+    let caller_is_party = deal.payer == Some(caller) || deal.recipient == Some(caller);
+    if !caller_is_party {
+        return Err(EscrowError::NotAuthorised);
+    }
+
+    match deal.status {
+        // Idempotent success — short-circuit at the service layer.
+        DealStatus::Disputed => return Ok(true),
+        DealStatus::Funded => {}
+        _ => {
+            return Err(EscrowError::InvalidState {
+                expected: "Funded".to_owned(),
+                actual: format!("{:?}", deal.status),
+            })
+        }
+    }
+
+    if deal.dispute.is_some() {
+        return Err(EscrowError::DisputeAlreadyExists);
+    }
+
+    // Expiry-at-open check: the auto-refund sweep skips Disputed deals,
+    // so we must not let a dispute open after the expiry-claim window
+    // has already closed in the recipient's favour.
+    if deal.expires_at_ns <= now_ns {
+        return Err(EscrowError::Expired);
+    }
+
+    Ok(false)
+}
+
 fn resolve_caller_role(deal: &Deal, caller: Principal) -> Result<bool, EscrowError> {
     if deal.payer == Some(caller) {
         Ok(true)
@@ -348,6 +566,7 @@ mod tests {
                 title: None,
                 note: None,
             }),
+            dispute: None,
         }
     }
 
@@ -793,6 +1012,7 @@ mod tests {
             payer_consent: Consent::Accepted,
             recipient_consent: Consent::Pending,
             metadata: None,
+            dispute: None,
         });
     }
 
@@ -832,5 +1052,135 @@ mod tests {
         });
         with_deal(first_id, |d| d.status = DealStatus::Cancelled);
         assert!(validate_caller_deal_limit(creator).is_ok());
+    }
+
+    // --- validate_dispute_config ---
+
+    use super::{validate_dispute_config, MAX_DISPUTE_WINDOW_NS};
+    use crate::types::dispute::DisputeConfig;
+
+    fn validation_err_msg(cfg: &DisputeConfig) -> String {
+        match validate_dispute_config(cfg).unwrap_err() {
+            EscrowError::ValidationError(msg) => msg,
+            other => panic!("expected ValidationError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispute_config_default_is_valid() {
+        assert!(validate_dispute_config(&DisputeConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn dispute_config_rejects_panel_size_below_3() {
+        for size in [0_u32, 1, 2] {
+            let cfg = DisputeConfig {
+                panel_size: size,
+                ..DisputeConfig::default()
+            };
+            let msg = validation_err_msg(&cfg);
+            assert!(
+                msg.contains("panel_size") && msg.contains(">= 3"),
+                "size={size}, msg={msg}",
+            );
+        }
+    }
+
+    #[test]
+    fn dispute_config_rejects_even_panel_size() {
+        // panel_size = 4 passes the >= 3 check but fails the odd check.
+        let cfg = DisputeConfig {
+            panel_size: 4,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("odd"), "msg={msg}");
+    }
+
+    #[test]
+    fn dispute_config_accepts_odd_panel_sizes() {
+        for size in [3_u32, 5, 7, 9, 99] {
+            let cfg = DisputeConfig {
+                panel_size: size,
+                ..DisputeConfig::default()
+            };
+            assert!(validate_dispute_config(&cfg).is_ok(), "size={size}");
+        }
+    }
+
+    #[test]
+    fn dispute_config_rejects_zero_windows() {
+        let cfg = DisputeConfig {
+            evidence_window_ns: 0,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("evidence_window_ns"), "msg={msg}");
+
+        let cfg = DisputeConfig {
+            voting_window_ns: 0,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("voting_window_ns"), "msg={msg}");
+    }
+
+    #[test]
+    fn dispute_config_rejects_oversized_windows() {
+        let bad = MAX_DISPUTE_WINDOW_NS + 1;
+        let cfg = DisputeConfig {
+            evidence_window_ns: bad,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("evidence_window_ns"), "msg={msg}");
+        // Error includes the offending value so controller-side
+        // debugging doesn't have to guess what was sent.
+        assert!(
+            msg.contains(&bad.to_string()),
+            "expected offending value in msg: {msg}",
+        );
+
+        let cfg = DisputeConfig {
+            voting_window_ns: bad,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("voting_window_ns"), "msg={msg}");
+        assert!(
+            msg.contains(&bad.to_string()),
+            "expected offending value in msg: {msg}",
+        );
+    }
+
+    #[test]
+    fn dispute_config_rejects_fee_bps_above_100_pct() {
+        let cfg = DisputeConfig {
+            arbitration_fee_bps: 10_001,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("arbitration_fee_bps"), "msg={msg}");
+    }
+
+    #[test]
+    fn dispute_config_rejects_withdraw_fee_pct_above_100() {
+        let cfg = DisputeConfig {
+            withdraw_fee_pct: 101,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("withdraw_fee_pct"), "msg={msg}");
+    }
+
+    #[test]
+    fn dispute_config_accepts_withdraw_fee_pct_at_boundaries() {
+        for pct in [0_u32, 50, 100] {
+            let cfg = DisputeConfig {
+                withdraw_fee_pct: pct,
+                ..DisputeConfig::default()
+            };
+            assert!(validate_dispute_config(&cfg).is_ok(), "pct={pct}");
+        }
     }
 }

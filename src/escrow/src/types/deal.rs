@@ -1,5 +1,7 @@
 use candid::{CandidType, Deserialize, Principal};
 
+use crate::types::dispute::DisputeId;
+
 pub type DealId = u64;
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -10,6 +12,20 @@ pub enum DealStatus {
     Refunded,
     Cancelled,
     Rejected,
+    /// A dispute is open on this deal. Funds remain in the escrow
+    /// subaccount until the dispute resolves to `ArbitratedSettled` /
+    /// `ArbitratedRefunded`. The expiry sweep (`services::expiry`)
+    /// skips deals in this state.
+    Disputed,
+    /// Dispute panel voted majority CC, OR both parties agreed
+    /// out-of-band on a CC outcome — funds released to recipient.
+    /// Distinct from `Settled` so callers can tell arbitrated from
+    /// unilateral settlement. Terminal.
+    ArbitratedSettled,
+    /// Dispute panel voted majority IC, OR both parties agreed
+    /// out-of-band on an IC outcome, OR the panel reached no quorum.
+    /// Funds refunded to payer. Distinct from `Refunded`. Terminal.
+    ArbitratedRefunded,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -50,4 +66,10 @@ pub struct Deal {
     pub payer_consent: Consent,
     pub recipient_consent: Consent,
     pub metadata: Option<DealMetadata>,
+    /// `Some(dispute_id)` while a dispute is open on the deal or after
+    /// it has resolved (so the audit trail back to the `Dispute` record
+    /// survives terminal status). `None` for deals that never went into
+    /// dispute. `Option`-wrapped for backward-compat with pre-dispute
+    /// stable snapshots.
+    pub dispute: Option<DisputeId>,
 }
