@@ -99,6 +99,7 @@ mod tests {
             recipient_consent: Consent::Accepted,
             metadata: None,
             dispute: None,
+            panel_size: None,
         });
     }
 

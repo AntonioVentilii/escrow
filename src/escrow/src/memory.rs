@@ -344,6 +344,7 @@ mod tests {
             recipient_consent: Consent::Pending,
             metadata: None,
             dispute: None,
+            panel_size: None,
         })
     }
 
@@ -403,6 +404,7 @@ mod tests {
             recipient_consent: Consent::Pending,
             metadata: None,
             dispute: None,
+            panel_size: None,
         });
         assert_ne!(deal.id, 999_999_999);
         assert!(get_deal(deal.id).is_some());

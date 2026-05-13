@@ -137,12 +137,22 @@ pub struct Dispute {
 /// standard ICRC bps convention (`10_000` = 100%).
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct DisputeConfig {
-    /// Number of arbitrators selected per dispute. Must be odd and
-    /// `>= 3` — `validation::validate_dispute_config` enforces both
-    /// invariants when `update_config` is called. Odd-only is
-    /// required by the tally rules (no tie possible without an
-    /// abstention).
+    /// Default number of arbitrators selected per dispute when the
+    /// deal creator did not pick a per-deal `panel_size`. Must be odd
+    /// and within `[min_panel_size, max_panel_size]`.
+    /// `validation::validate_dispute_config` enforces all invariants
+    /// when `update_config` is called.
     pub panel_size: u32,
+    /// Lower bound on the panel sizes a deal creator may request via
+    /// `CreateDealArgs.panel_size`. Must be odd and `>= 3` (odd-only
+    /// is required by the tally rules — no tie possible without an
+    /// abstention; the `>= 3` floor is the smallest meaningful jury).
+    pub min_panel_size: u32,
+    /// Upper bound on the panel sizes a deal creator may request.
+    /// Must be odd and `>= min_panel_size`. Bounds the cost (each
+    /// extra arbitrator adds an ICRC-1 ledger fee at finalize) and
+    /// the latency to fill the panel from the eligible pool.
+    pub max_panel_size: u32,
     /// Length of the Evidence phase, in nanoseconds (default 3 days).
     pub evidence_window_ns: u64,
     /// Length of the Voting phase, in nanoseconds (default 2 days).
@@ -174,6 +184,8 @@ impl Default for DisputeConfig {
         const NANOS_PER_DAY: u64 = 24 * 60 * 60 * 1_000_000_000;
         Self {
             panel_size: 3,
+            min_panel_size: 3,
+            max_panel_size: 9,
             evidence_window_ns: 3 * NANOS_PER_DAY,
             voting_window_ns: 2 * NANOS_PER_DAY,
             arbitration_fee_bps: 500,
@@ -196,6 +208,8 @@ mod tests {
     fn dispute_config_defaults_match_locked_decisions() {
         let cfg = DisputeConfig::default();
         assert_eq!(cfg.panel_size, 3);
+        assert_eq!(cfg.min_panel_size, 3);
+        assert_eq!(cfg.max_panel_size, 9);
         assert_eq!(cfg.evidence_window_ns, 3 * 24 * 60 * 60 * 1_000_000_000);
         assert_eq!(cfg.voting_window_ns, 2 * 24 * 60 * 60 * 1_000_000_000);
         assert_eq!(cfg.arbitration_fee_bps, 500);

@@ -79,6 +79,36 @@ pub fn validate_dispute_config(cfg: &DisputeConfig) -> Result<(), EscrowError> {
             cfg.panel_size,
         )));
     }
+    if cfg.min_panel_size < 3 {
+        return Err(EscrowError::ValidationError(format!(
+            "min_panel_size must be >= 3, got {}",
+            cfg.min_panel_size,
+        )));
+    }
+    if cfg.min_panel_size.is_multiple_of(2) {
+        return Err(EscrowError::ValidationError(format!(
+            "min_panel_size must be odd, got {}",
+            cfg.min_panel_size,
+        )));
+    }
+    if cfg.max_panel_size < cfg.min_panel_size {
+        return Err(EscrowError::ValidationError(format!(
+            "max_panel_size ({}) must be >= min_panel_size ({})",
+            cfg.max_panel_size, cfg.min_panel_size,
+        )));
+    }
+    if cfg.max_panel_size.is_multiple_of(2) {
+        return Err(EscrowError::ValidationError(format!(
+            "max_panel_size must be odd, got {}",
+            cfg.max_panel_size,
+        )));
+    }
+    if cfg.panel_size < cfg.min_panel_size || cfg.panel_size > cfg.max_panel_size {
+        return Err(EscrowError::ValidationError(format!(
+            "panel_size ({}) must be within [min_panel_size ({}), max_panel_size ({})]",
+            cfg.panel_size, cfg.min_panel_size, cfg.max_panel_size,
+        )));
+    }
     if cfg.evidence_window_ns == 0 {
         return Err(EscrowError::ValidationError(
             "evidence_window_ns must be > 0".to_owned(),
@@ -121,6 +151,39 @@ pub fn validate_dispute_config(cfg: &DisputeConfig) -> Result<(), EscrowError> {
 pub fn validate_config(cfg: &Config) -> Result<(), EscrowError> {
     if let Some(dc) = &cfg.dispute_config {
         validate_dispute_config(dc)?;
+    }
+    Ok(())
+}
+
+/// Validates a deal creator's per-deal `panel_size` choice against
+/// the active `DisputeConfig` bounds.
+///
+/// `None` is always valid — it means "use whatever
+/// `DisputeConfig.panel_size` is current at `open_dispute` time".
+///
+/// `Some(n)` requires `n` to be:
+/// - Odd (no tie possible without an abstention; tally rules require this).
+/// - Within `[cfg.min_panel_size, cfg.max_panel_size]`.
+///
+/// Out-of-range / even values return
+/// `EscrowError::PanelSizeOutOfRange { min, max }` carrying the
+/// active range so the caller can render the allowed window without
+/// parsing a free-form message. Both kinds of violation use the same
+/// variant — clients should additionally check `n % 2 == 1` against
+/// the value they sent.
+pub fn validate_panel_size_choice(
+    panel_size: Option<u32>,
+    cfg: &DisputeConfig,
+) -> Result<(), EscrowError> {
+    let Some(n) = panel_size else {
+        return Ok(());
+    };
+    let in_range = n >= cfg.min_panel_size && n <= cfg.max_panel_size;
+    if !in_range || n.is_multiple_of(2) {
+        return Err(EscrowError::PanelSizeOutOfRange {
+            min: cfg.min_panel_size,
+            max: cfg.max_panel_size,
+        });
     }
     Ok(())
 }
@@ -567,6 +630,7 @@ mod tests {
                 note: None,
             }),
             dispute: None,
+            panel_size: None,
         }
     }
 
@@ -1013,6 +1077,7 @@ mod tests {
             recipient_consent: Consent::Pending,
             metadata: None,
             dispute: None,
+            panel_size: None,
         });
     }
 
@@ -1099,9 +1164,14 @@ mod tests {
 
     #[test]
     fn dispute_config_accepts_odd_panel_sizes() {
+        // For each test value, bump max_panel_size so the
+        // panel_size <= max_panel_size invariant doesn't reject the
+        // higher cases. The Q6 revisit added the bounds-check.
         for size in [3_u32, 5, 7, 9, 99] {
             let cfg = DisputeConfig {
                 panel_size: size,
+                min_panel_size: 3,
+                max_panel_size: size,
                 ..DisputeConfig::default()
             };
             assert!(validate_dispute_config(&cfg).is_ok(), "size={size}");
@@ -1181,6 +1251,132 @@ mod tests {
                 ..DisputeConfig::default()
             };
             assert!(validate_dispute_config(&cfg).is_ok(), "pct={pct}");
+        }
+    }
+
+    // --- min/max panel_size bounds ---
+
+    #[test]
+    fn dispute_config_rejects_min_panel_size_below_3() {
+        let cfg = DisputeConfig {
+            min_panel_size: 1,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("min_panel_size"), "msg={msg}");
+    }
+
+    #[test]
+    fn dispute_config_rejects_even_min_panel_size() {
+        let cfg = DisputeConfig {
+            min_panel_size: 4,
+            // Bump max + default panel_size so the only failing
+            // invariant is even-min, not the relative-order one.
+            max_panel_size: 11,
+            panel_size: 5,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(
+            msg.contains("min_panel_size") && msg.contains("odd"),
+            "msg={msg}"
+        );
+    }
+
+    #[test]
+    fn dispute_config_rejects_max_below_min() {
+        let cfg = DisputeConfig {
+            min_panel_size: 7,
+            max_panel_size: 5,
+            panel_size: 7,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(
+            msg.contains("max_panel_size") && msg.contains("min_panel_size"),
+            "msg={msg}",
+        );
+    }
+
+    #[test]
+    fn dispute_config_rejects_even_max_panel_size() {
+        let cfg = DisputeConfig {
+            max_panel_size: 10,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(
+            msg.contains("max_panel_size") && msg.contains("odd"),
+            "msg={msg}"
+        );
+    }
+
+    #[test]
+    fn dispute_config_rejects_default_panel_size_outside_bounds() {
+        // panel_size = 11, but max_panel_size = 9 (default).
+        let cfg = DisputeConfig {
+            panel_size: 11,
+            ..DisputeConfig::default()
+        };
+        let msg = validation_err_msg(&cfg);
+        assert!(msg.contains("must be within"), "msg={msg}");
+    }
+
+    // --- validate_panel_size_choice ---
+
+    use super::validate_panel_size_choice;
+
+    #[test]
+    fn panel_size_choice_none_is_always_valid() {
+        let cfg = DisputeConfig::default();
+        assert!(validate_panel_size_choice(None, &cfg).is_ok());
+    }
+
+    #[test]
+    fn panel_size_choice_accepts_within_bounds_and_odd() {
+        let cfg = DisputeConfig::default();
+        for n in [3_u32, 5, 7, 9] {
+            assert!(validate_panel_size_choice(Some(n), &cfg).is_ok(), "n={n}");
+        }
+    }
+
+    #[test]
+    fn panel_size_choice_rejects_below_min() {
+        let cfg = DisputeConfig {
+            min_panel_size: 5,
+            ..DisputeConfig::default()
+        };
+        match validate_panel_size_choice(Some(3), &cfg).unwrap_err() {
+            EscrowError::PanelSizeOutOfRange { min, max } => {
+                assert_eq!(min, 5);
+                assert_eq!(max, 9);
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn panel_size_choice_rejects_above_max() {
+        let cfg = DisputeConfig::default();
+        match validate_panel_size_choice(Some(11), &cfg).unwrap_err() {
+            EscrowError::PanelSizeOutOfRange { min, max } => {
+                assert_eq!(min, 3);
+                assert_eq!(max, 9);
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn panel_size_choice_rejects_even_in_range() {
+        // 4 is within [3, 9] but even — must be rejected.
+        let cfg = DisputeConfig::default();
+        match validate_panel_size_choice(Some(4), &cfg).unwrap_err() {
+            EscrowError::PanelSizeOutOfRange { min, max } => {
+                assert_eq!(min, 3);
+                assert_eq!(max, 9);
+            }
+            other => panic!("wrong error: {other:?}"),
         }
     }
 }

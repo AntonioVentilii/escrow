@@ -530,11 +530,45 @@ v2 based on disputed amount.
 **Alternative.** Scale immediately: `min(3 + log2(amount_in_usd),
 9)`. Adds complexity (and a USD oracle) for marginal benefit at MVP.
 
-**Decision:** Default `panel_size = 3`, admin-tunable via
-`DisputeConfig::panel_size: u32` on the existing `Config` struct.
-Validator: `panel_size >= 3 && panel_size % 2 == 1` (odd-only is
-mathematically required by Q7's tie semantics). Bigger panels and
-amount-scaling deferred until a price oracle exists on the canister.
+**Decision (original).** Default `panel_size = 3`, admin-tunable
+via `DisputeConfig::panel_size: u32` on the existing `Config`
+struct. Validator: `panel_size >= 3 && panel_size % 2 == 1`
+(odd-only is mathematically required by Q7's tie semantics).
+Bigger panels and amount-scaling deferred until a price oracle
+exists on the canister.
+
+**Decision (revised, 2026-05-13).** Added per-deal panel-size
+override after the spec owner noticed the canister-wide
+restriction. The original "single canister-wide value" is
+inadequate for products with mixed deal sizes — a $10 tip and a
+$1M deal should not be forced to share the same arbitration
+weight. New shape:
+
+- `DisputeConfig` gains `min_panel_size: u32` (default 3) and
+  `max_panel_size: u32` (default 9) — admin-tunable bounds.
+- `Deal` gains `panel_size: Option<u32>` — locked at create time
+  via `CreateDealArgs.panel_size: Option<u32>`.
+- `validate_panel_size_choice(panel_size, &cfg)` enforces odd +
+  in-range at create time; out-of-range / even values return
+  `EscrowError::PanelSizeOutOfRange { min, max }` carrying the
+  active range so the FE can render the allowed window.
+- `services::disputes::open` uses
+  `deal.panel_size.unwrap_or(cfg.panel_size)` — the deal's
+  locked-in value takes precedence over the canister-wide default,
+  so admin can't retroactively grow / shrink panels for existing
+  deals via `update_config`.
+- `DisputeConfig.panel_size` (the canister-wide default) is also
+  validated against the new bounds so all three values stay
+  internally consistent.
+- `DealView.panel_size` exposed so a counterparty sees the
+  committed dispute terms before consenting.
+
+The amount-scaling alt from Q6's original framing
+(`min(3 + log2(amount_in_usd), 9)`) is still deferred — it would
+require a price oracle and would override the creator's choice.
+The per-deal-override design preserves creator sovereignty: the
+party who knows the deal's value picks the panel size, bounded by
+admin-set limits.
 
 ### Q7. Quorum + tie-breaking
 
@@ -998,7 +1032,7 @@ proposed schema (stake field can be added later as `Option<u128>`).
 | Q3  | 2026-05-10 | Open-recipient (tip-flow) deals cannot be disputed; gate via new `DisputeRequiresBoundRecipient` variant.                                                                                                                                                                                                                                                                                                 | RFC-001 design review (2026-05-10)                            |
 | Q4  | 2026-05-10 | **Original:** permissionless self-registration. **Revised same day during PR #29 review:** admin-curated. New `admin_register_arbitrator` + `admin_set_arbitrator_status` (controller-only); self-`deregister_arbitrator` retained for opt-out; `ArbitratorProfile.bio` dropped (no on-canister consumer); `registered_by` added for audit trail; validator rejects anonymous + canister-self as targets. | RFC-001 design review (2026-05-10) + Q4-revisit during PR #29 |
 | Q5  | 2026-05-10 | Score-weighted random selection at `open_dispute` time, base weight = 1 for unscored arbitrators, hard-exclude payer + recipient, randomness via `ledger::raw_rand`.                                                                                                                                                                                                                                      | RFC-001 design review (2026-05-10)                            |
-| Q6  | 2026-05-10 | `panel_size = 3` default, admin-tunable via `DisputeConfig::panel_size: u32`; validator enforces odd and `>= 3`.                                                                                                                                                                                                                                                                                          | RFC-001 design review (2026-05-10)                            |
+| Q6  | 2026-05-10 | **Original:** `panel_size = 3` default, admin-tunable canister-wide. **Revised 2026-05-13:** added per-deal override via `CreateDealArgs.panel_size: Option<u32>`, bounded by new `DisputeConfig.min_panel_size` / `max_panel_size`; deal's locked-in value persists across subsequent `update_config` changes. New `EscrowError::PanelSizeOutOfRange { min, max }` for out-of-range / even values.       | RFC-001 design review (2026-05-10) + Q6-revisit (2026-05-13)  |
 | Q7  | 2026-05-10 | Quorum = `floor(P/2) + 1` non-abstain; majority = greater of `cc`/`ic`; ties resolve as `NoQuorum`.                                                                                                                                                                                                                                                                                                       | RFC-001 design review (2026-05-10)                            |
 | Q8  | 2026-05-10 | Off-canister artefacts (URL + SHA-256), on-canister metadata only; URL/hash paired; `note` ≤ 4 KiB; `artefact_url` ≤ 2 KiB; `artefact_sha256` exactly 32 bytes.                                                                                                                                                                                                                                           | RFC-001 design review (2026-05-10)                            |
 | Q9  | 2026-05-10 | Evidence window 3 days, voting window 2 days, both admin-tunable; no-quorum fallback refunds payer (`ArbitratedRefunded`).                                                                                                                                                                                                                                                                                | RFC-001 design review (2026-05-10)                            |

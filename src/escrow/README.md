@@ -314,9 +314,10 @@ Until ICRC-3 is implemented, the existing `updated_at_ns` / `updated_by` fields 
 - A second housekeeping timer auto-finalises disputes whose voting deadline has passed.
 - The expiry sweep skips `Disputed` deals so a deal mid-arbitration cannot be auto-refunded out from under the panel.
 - `compute_reliability_for` and `count_active_deals_for` treat the new arbitrated terminals symmetrically with their unilateral counterparts.
-- All knobs (`panel_size`, `evidence_window_ns`, `voting_window_ns`, `arbitration_fee_bps`, `arbitration_min_fee`, `withdraw_fee_pct`, `min_arbitrator_score`) live on `Config::dispute_config: Option<DisputeConfig>` and are admin-tunable via `update_config`.
+- All knobs (`panel_size`, `min_panel_size`, `max_panel_size`, `evidence_window_ns`, `voting_window_ns`, `arbitration_fee_bps`, `arbitration_min_fee`, `withdraw_fee_pct`, `min_arbitrator_score`) live on `Config::dispute_config: Option<DisputeConfig>` and are admin-tunable via `update_config`.
+- **Per-deal panel-size override** (post-RFC-001 Q6 revisit): the deal creator can pin `CreateDealArgs.panel_size: Option<u32>` to lock a specific panel size into the deal terms, bounded by `[DisputeConfig.min_panel_size, DisputeConfig.max_panel_size]`. `None` falls back to the canister default at `open_dispute` time. The locked value persists across subsequent `update_config` changes — admin can't retroactively grow or shrink panels for existing deals. Out-of-range values return `EscrowError::PanelSizeOutOfRange { min, max }`.
 
-The full Q1–Q14 decision rationale is captured in the RFC's Decision Log.
+The full Q1–Q14 decision rationale (and the Q6 revisit) is captured in the RFC's Decision Log.
 
 ### Multi-asset / multi-ledger
 

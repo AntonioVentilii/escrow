@@ -3,7 +3,7 @@ use core::{cmp::Reverse, fmt::Write};
 use candid::Principal;
 use ic_cdk::api::{canister_self, time};
 
-use super::reliability;
+use super::{disputes, reliability};
 use crate::{
     api::deals::{
         errors::EscrowError,
@@ -36,6 +36,16 @@ pub async fn create(
     validation::validate_metadata(args.title.as_deref(), args.note.as_deref())?;
     validation::validate_caller_deal_limit(caller)?;
     reliability::validate(caller)?;
+
+    // Per-deal panel_size override — validate against the active
+    // DisputeConfig bounds. None is always valid (= "use whatever
+    // canister default applies at open_dispute time"); Some(n) must be
+    // odd and within [min_panel_size, max_panel_size]. The validated
+    // value is locked into the deal record so subsequent
+    // DisputeConfig changes can't retroactively alter the agreed
+    // dispute terms.
+    let dispute_cfg = disputes::load_dispute_config();
+    validation::validate_panel_size_choice(args.panel_size, &dispute_cfg)?;
 
     let (payer, recipient, payer_consent, recipient_consent) =
         validation::resolve_parties(caller, args.payer, args.recipient)?;
@@ -76,6 +86,7 @@ pub async fn create(
         recipient_consent,
         metadata,
         dispute: None,
+        panel_size: args.panel_size,
     });
 
     Ok(DealView::from(&deal))
@@ -447,6 +458,7 @@ mod tests {
                 note: None,
             }),
             dispute: None,
+            panel_size: None,
         })
     }
 

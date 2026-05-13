@@ -177,6 +177,46 @@ fn update_config_does_not_persist_invalid_config() {
 }
 
 #[test]
+fn update_config_rejects_max_panel_below_min() {
+    let (_pic, escrow) = setup();
+    let cfg = Config {
+        dispute_config: Some(DisputeConfig {
+            min_panel_size: 7,
+            max_panel_size: 5,
+            panel_size: 7,
+            ..DisputeConfig::default()
+        }),
+    };
+    match try_update_config(&escrow, cfg) {
+        UpdateConfigResult::Err(EscrowError::ValidationError(msg)) => {
+            assert!(
+                msg.contains("max_panel_size") && msg.contains("min_panel_size"),
+                "msg: {msg}",
+            );
+        }
+        other => panic!("wrong response: {other:?}"),
+    }
+}
+
+#[test]
+fn update_config_rejects_default_panel_size_outside_bounds() {
+    let (_pic, escrow) = setup();
+    // panel_size = 11 but max_panel_size still defaults to 9.
+    let cfg = Config {
+        dispute_config: Some(DisputeConfig {
+            panel_size: 11,
+            ..DisputeConfig::default()
+        }),
+    };
+    match try_update_config(&escrow, cfg) {
+        UpdateConfigResult::Err(EscrowError::ValidationError(msg)) => {
+            assert!(msg.contains("must be within"), "msg: {msg}");
+        }
+        other => panic!("wrong response: {other:?}"),
+    }
+}
+
+#[test]
 fn update_config_rejects_non_controller_caller() {
     let (_pic, escrow) = setup();
     let stranger = Principal::from_slice(&[99]);

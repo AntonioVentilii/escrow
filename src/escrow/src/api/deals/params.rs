@@ -27,6 +27,16 @@ pub struct CreateDealArgs {
     pub title: Option<String>,
     /// Optional note or message attached to the deal.
     pub note: Option<String>,
+    /// Optional per-deal arbitrator panel size. If `Some(n)`, any
+    /// dispute opened on this deal will use `n` arbitrators regardless
+    /// of subsequent `DisputeConfig.panel_size` changes — the deal
+    /// terms are a contract at create time. `None` falls back to
+    /// `DisputeConfig.panel_size` at `open_dispute` time.
+    ///
+    /// Validation at create time: must be odd, must be within
+    /// `[DisputeConfig.min_panel_size, DisputeConfig.max_panel_size]`.
+    /// Out-of-range values return `EscrowError::PanelSizeOutOfRange`.
+    pub panel_size: Option<u32>,
 }
 
 /// Arguments for funding a created deal via ICRC-2 `transfer_from`.

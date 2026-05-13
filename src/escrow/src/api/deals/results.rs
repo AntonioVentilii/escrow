@@ -87,6 +87,13 @@ pub struct DealView {
     /// the `Dispute` record); `None` for deals that never went into
     /// dispute.
     pub dispute: Option<DisputeId>,
+    /// Per-deal arbitrator panel size override chosen by the creator
+    /// at `create_deal` time. `Some(n)` locks `n` arbitrators for
+    /// any dispute on this deal; `None` means "use whatever
+    /// `DisputeConfig.panel_size` is current when the dispute opens".
+    /// Surfaced in the public view so a counterparty can see the
+    /// committed dispute terms before consenting.
+    pub panel_size: Option<u32>,
 }
 
 impl From<&Deal> for DealView {
@@ -113,6 +120,7 @@ impl From<&Deal> for DealView {
             recipient_consent: deal.recipient_consent.clone(),
             claim_code: deal.claim_code.clone(),
             dispute: deal.dispute,
+            panel_size: deal.panel_size,
         }
     }
 }
@@ -195,6 +203,7 @@ mod tests {
                 note: None,
             }),
             dispute: None,
+            panel_size: None,
         };
         let view = DealView::from(&deal);
         assert_eq!(view.title.as_deref(), Some("Test tip"));
@@ -236,6 +245,7 @@ mod tests {
             recipient_consent: Consent::Accepted,
             metadata: None,
             dispute: None,
+            panel_size: None,
         };
         let view = ClaimableDealView::from(&deal);
         assert!(view.is_recipient_bound);
