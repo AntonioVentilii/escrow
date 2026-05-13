@@ -156,9 +156,10 @@ fn create_deal_rejects_panel_size_below_min() {
     let (_pic, escrow) = setup();
     // Default min = 3; n=1 is below.
     match try_create_with_panel_size(&escrow, user(20), Some(1)) {
-        CreateDealResult::Err(EscrowError::PanelSizeOutOfRange { min, max }) => {
+        CreateDealResult::Err(EscrowError::PanelSizeOutOfRange { min, max, got }) => {
             assert_eq!(min, 3);
             assert_eq!(max, 9);
+            assert_eq!(got, 1);
         }
         other => panic!("wrong response: {other:?}"),
     }
@@ -169,9 +170,10 @@ fn create_deal_rejects_panel_size_above_max() {
     let (_pic, escrow) = setup();
     // Default max = 9; n=11 is above.
     match try_create_with_panel_size(&escrow, user(21), Some(11)) {
-        CreateDealResult::Err(EscrowError::PanelSizeOutOfRange { min, max }) => {
+        CreateDealResult::Err(EscrowError::PanelSizeOutOfRange { min, max, got }) => {
             assert_eq!(min, 3);
             assert_eq!(max, 9);
+            assert_eq!(got, 11);
         }
         other => panic!("wrong response: {other:?}"),
     }
@@ -182,9 +184,10 @@ fn create_deal_rejects_even_panel_size_in_range() {
     let (_pic, escrow) = setup();
     // n=4 is within [3, 9] but even.
     match try_create_with_panel_size(&escrow, user(22), Some(4)) {
-        CreateDealResult::Err(EscrowError::PanelSizeOutOfRange { min, max }) => {
+        CreateDealResult::Err(EscrowError::PanelSizeOutOfRange { min, max, got }) => {
             assert_eq!(min, 3);
             assert_eq!(max, 9);
+            assert_eq!(got, 4);
         }
         other => panic!("wrong response: {other:?}"),
     }
