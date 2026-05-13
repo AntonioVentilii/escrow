@@ -72,4 +72,15 @@ pub struct Deal {
     /// dispute. `Option`-wrapped for backward-compat with pre-dispute
     /// stable snapshots.
     pub dispute: Option<DisputeId>,
+    /// Per-deal panel size override, chosen by the deal creator at
+    /// `create_deal` time. `Some(n)` locks `n` arbitrators for any
+    /// dispute opened on this deal regardless of subsequent
+    /// `DisputeConfig.panel_size` changes — the deal terms are a
+    /// contract at create time. `None` means "use whatever
+    /// `DisputeConfig.panel_size` is current at `open_dispute` time"
+    /// (the default behaviour for deals created before this field
+    /// existed). Validated against `DisputeConfig::min_panel_size` /
+    /// `max_panel_size` at create time via
+    /// `validation::validate_panel_size_choice`.
+    pub panel_size: Option<u32>,
 }

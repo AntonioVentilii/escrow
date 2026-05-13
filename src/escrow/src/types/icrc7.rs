@@ -289,6 +289,7 @@ mod tests {
             recipient_consent: Consent::Pending,
             metadata: None,
             dispute: None,
+            panel_size: None,
         }
     }
 

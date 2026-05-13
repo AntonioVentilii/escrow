@@ -94,4 +94,12 @@ pub enum EscrowError {
     /// the configured arbitration fee plus the per-arbitrator ICRC-1
     /// ledger fees. Tiny deals are not disputable.
     AmountTooSmallForArbitration { min: u128 },
+    /// `create_deal` was called with a `panel_size` outside the range
+    /// `[DisputeConfig.min_panel_size, DisputeConfig.max_panel_size]`,
+    /// or a value that is not odd. Surfaces the active range so the
+    /// caller (and the FE / consenting counterparty) can render the
+    /// allowed window without parsing a free-form message. Even
+    /// values fail with `min == max` set to the same allowed range
+    /// — clients should additionally check `n % 2 == 1`.
+    PanelSizeOutOfRange { min: u32, max: u32 },
 }

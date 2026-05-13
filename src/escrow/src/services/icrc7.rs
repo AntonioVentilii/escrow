@@ -351,6 +351,7 @@ mod tests {
                 note: None,
             }),
             dispute: None,
+            panel_size: None,
         })
     }
 

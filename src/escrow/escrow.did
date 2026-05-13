@@ -167,6 +167,16 @@ type Consent = variant { Rejected; Accepted; Pending };
 type CreateDealArgs = record {
 	// Optional short title displayed on claim pages.
 	title : opt text;
+	// Optional per-deal arbitrator panel size. If `Some(n)`, any
+	// dispute opened on this deal will use `n` arbitrators regardless
+	// of subsequent `DisputeConfig.panel_size` changes — the deal
+	// terms are a contract at create time. `None` falls back to
+	// `DisputeConfig.panel_size` at `open_dispute` time.
+	//
+	// Validation at create time: must be odd, must be within
+	// `[DisputeConfig.min_panel_size, DisputeConfig.max_panel_size]`.
+	// Out-of-range values return `EscrowError::PanelSizeOutOfRange`.
+	panel_size : opt nat32;
 	// Optional note or message attached to the deal.
 	note : opt text;
 	// Optional recipient principal. If `None`, the recipient is bound on first
@@ -216,6 +226,13 @@ type DealView = record {
 	funded_at_ns : opt nat64;
 	// Principal who last updated the deal.
 	updated_by : opt principal;
+	// Per-deal arbitrator panel size override chosen by the creator
+	// at `create_deal` time. `Some(n)` locks `n` arbitrators for
+	// any dispute on this deal; `None` means "use whatever
+	// `DisputeConfig.panel_size` is current when the dispute opens".
+	// Surfaced in the public view so a counterparty can see the
+	// committed dispute terms before consenting.
+	panel_size : opt nat32;
 	// Recipient's consent to the deal terms.
 	recipient_consent : Consent;
 	// Timestamp when the deal was refunded, if applicable.
@@ -258,11 +275,16 @@ type DealView = record {
 // All windows are nanoseconds (canister convention); fee bps follows the
 // standard ICRC bps convention (`10_000` = 100%).
 type DisputeConfig = record {
-	// Number of arbitrators selected per dispute. Must be odd and
-	// `>= 3` — `validation::validate_dispute_config` enforces both
-	// invariants when `update_config` is called. Odd-only is
-	// required by the tally rules (no tie possible without an
-	// abstention).
+	// Upper bound on the panel sizes a deal creator may request.
+	// Must be odd and `>= min_panel_size`. Bounds the cost (each
+	// extra arbitrator adds an ICRC-1 ledger fee at finalize) and
+	// the latency to fill the panel from the eligible pool.
+	max_panel_size : nat32;
+	// Default number of arbitrators selected per dispute when the
+	// deal creator did not pick a per-deal `panel_size`. Must be odd
+	// and within `[min_panel_size, max_panel_size]`.
+	// `validation::validate_dispute_config` enforces all invariants
+	// when `update_config` is called.
 	panel_size : nat32;
 	// Length of the Voting phase, in nanoseconds (default 2 days).
 	voting_window_ns : nat64;
@@ -276,6 +298,11 @@ type DisputeConfig = record {
 	// at `open_dispute` is `max(arbitration_min_fee, amount *
 	// arbitration_fee_bps / 10_000)`.
 	arbitration_min_fee : nat;
+	// Lower bound on the panel sizes a deal creator may request via
+	// `CreateDealArgs.panel_size`. Must be odd and `>= 3` (odd-only
+	// is required by the tally rules — no tie possible without an
+	// abstention; the `>= 3` floor is the smallest meaningful jury).
+	min_panel_size : nat32;
 	// Arbitration fee in basis points of the disputed amount
 	// (default 500 = 5%). Combined with [`Self::arbitration_min_fee`].
 	arbitration_fee_bps : nat32;
@@ -418,6 +445,14 @@ type EscrowError = variant {
 	TransferFailed : text;
 	// The caller has too many active (non-terminal) deals.
 	TooManyActiveDeals : record { max : nat32 };
+	// `create_deal` was called with a `panel_size` outside the range
+	// `[DisputeConfig.min_panel_size, DisputeConfig.max_panel_size]`,
+	// or a value that is not odd. Surfaces the active range so the
+	// caller (and the FE / consenting counterparty) can render the
+	// allowed window without parsing a free-form message. Even
+	// values fail with `min == max` set to the same allowed range
+	// — clients should additionally check `n % 2 == 1`.
+	PanelSizeOutOfRange : record { max : nat32; min : nat32 };
 	// The eligible arbitrator pool is too small to fill the configured
 	// `panel_size`. Returned by `open_dispute` — the deal stays
 	// `Funded` so the caller can retry later or settle out-of-band.

@@ -142,7 +142,7 @@ through an **RFC** before any code lands.
 
 Existing RFCs:
 
-- [`docs/rfcs/0001-dispute-resolution.md`](../rfcs/0001-dispute-resolution.md) — dispute resolution + arbitrator pool + voting. **Accepted** 2026-05-10; full implementation landed in PR #29. Q4 was revised post-implementation in the same PR (permissionless self-registration → admin-curated), captured as a "revised same day" entry in the RFC's Decision Log.
+- [`docs/rfcs/0001-dispute-resolution.md`](../rfcs/0001-dispute-resolution.md) — dispute resolution + arbitrator pool + voting. **Accepted** 2026-05-10; full implementation landed in PR #29. Two post-implementation revisits captured in the Decision Log: Q4 (permissionless self-registration → admin-curated, same PR #29) and Q6 (canister-wide-only `panel_size` → per-deal override bounded by `min_panel_size` / `max_panel_size`, follow-up PR 2026-05-13).
 
 ## Meta-update rule
 

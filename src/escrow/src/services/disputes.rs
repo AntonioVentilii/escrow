@@ -172,9 +172,15 @@ pub async fn open(
     // `InsufficientArbitrators` rejection; the actual selection runs
     // inside the lock against a re-read snapshot in case the pool
     // changes between this check and lock acquisition.
+    //
+    // Panel size: the deal's locked-in `panel_size` (set at create
+    // time via `CreateDealArgs.panel_size`) takes precedence over
+    // the canister-wide default. This keeps the dispute terms a
+    // contract from create time — admin can't retroactively grow
+    // or shrink panels for existing deals via `update_config`.
     let fee = compute_arbitration_fee(deal.amount, &cfg);
     let eligible_preview = eligible_arbitrators(&deal, &cfg);
-    let needed = cfg.panel_size;
+    let needed = deal.panel_size.unwrap_or(cfg.panel_size);
     let have = u32::try_from(eligible_preview.len()).unwrap_or(u32::MAX);
     if have < needed {
         return Err(EscrowError::InsufficientArbitrators { need: needed, have });
@@ -226,10 +232,13 @@ async fn open_with_lock(
     // takes their slice), and one ICRC-1 fee for the prevailing-party
     // transfer. If the amount can't cover all of that with at least
     // 1 unit left for the prevailing party, finalize would later
-    // subtract it down to zero. Reject up front.
+    // subtract it down to zero. Reject up front. `needed` here is
+    // the deal's locked-in panel_size (or canister default fallback)
+    // — using `cfg.panel_size` would over-/under-shoot the headroom
+    // for deals with a per-deal override.
     let ledger_fee = ledger::fee(deal.token_ledger).await?;
     let total_required = fee
-        .checked_add(u128::from(cfg.panel_size).saturating_mul(ledger_fee))
+        .checked_add(u128::from(needed).saturating_mul(ledger_fee))
         .and_then(|v| v.checked_add(ledger_fee))
         .unwrap_or(u128::MAX);
     if deal.amount <= total_required {
@@ -1231,6 +1240,7 @@ mod tests {
             recipient_consent: Consent::Accepted,
             metadata: None,
             dispute: None,
+            panel_size: None,
         })
     }
 
