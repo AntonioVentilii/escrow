@@ -449,14 +449,12 @@ type EscrowError = variant {
 	// `[DisputeConfig.min_panel_size, DisputeConfig.max_panel_size]`,
 	// or a value that is not odd.
 	//
-	// - `min` / `max` surface the active range so the caller can
-	// render the allowed window without parsing a free-form message.
-	// - `got` carries the value the caller sent so error logs are
-	// self-contained — clients don't need to correlate the
-	// rejection with the request payload to know which value was
-	// wrong, and a downstream `got` value of `4` (even, in-range)
-	// is distinguishable from `got = 11` (out-of-range) without
-	// re-checking the inputs.
+	// - `min` / `max` surface the active range so the caller can render the allowed window
+	// without parsing a free-form message.
+	// - `got` carries the value the caller sent so error logs are self-contained — clients don't
+	// need to correlate the rejection with the request payload to know which value was wrong,
+	// and a downstream `got` value of `4` (even, in-range) is distinguishable from `got = 11`
+	// (out-of-range) without re-checking the inputs.
 	PanelSizeOutOfRange : record { got : nat32; max : nat32; min : nat32 };
 	// The eligible arbitrator pool is too small to fill the configured
 	// `panel_size`. Returned by `open_dispute` — the deal stays

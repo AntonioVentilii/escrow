@@ -185,7 +185,11 @@ impl Default for DisputeConfig {
         Self {
             panel_size: 3,
             min_panel_size: 3,
-            max_panel_size: 9,
+            // Default 11 (4 odd choices: 3, 5, 7, 9, 11) lets the
+            // Figma 3 / 7 / 11 picker triplet work without admin
+            // intervention. Earlier draft used 9 which rejected the
+            // "Slow" Figma option.
+            max_panel_size: 11,
             evidence_window_ns: 3 * NANOS_PER_DAY,
             voting_window_ns: 2 * NANOS_PER_DAY,
             arbitration_fee_bps: 500,
@@ -209,7 +213,7 @@ mod tests {
         let cfg = DisputeConfig::default();
         assert_eq!(cfg.panel_size, 3);
         assert_eq!(cfg.min_panel_size, 3);
-        assert_eq!(cfg.max_panel_size, 9);
+        assert_eq!(cfg.max_panel_size, 11);
         assert_eq!(cfg.evidence_window_ns, 3 * 24 * 60 * 60 * 1_000_000_000);
         assert_eq!(cfg.voting_window_ns, 2 * 24 * 60 * 60 * 1_000_000_000);
         assert_eq!(cfg.arbitration_fee_bps, 500);

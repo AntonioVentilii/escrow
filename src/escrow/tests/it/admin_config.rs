@@ -201,10 +201,10 @@ fn update_config_rejects_max_panel_below_min() {
 #[test]
 fn update_config_rejects_default_panel_size_outside_bounds() {
     let (_pic, escrow) = setup();
-    // panel_size = 11 but max_panel_size still defaults to 9.
+    // panel_size = 13 but max_panel_size still defaults to 11.
     let cfg = Config {
         dispute_config: Some(DisputeConfig {
-            panel_size: 11,
+            panel_size: 13,
             ..DisputeConfig::default()
         }),
     };

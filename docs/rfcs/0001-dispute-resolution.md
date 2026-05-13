@@ -545,7 +545,10 @@ $1M deal should not be forced to share the same arbitration
 weight. New shape:
 
 - `DisputeConfig` gains `min_panel_size: u32` (default 3) and
-  `max_panel_size: u32` (default 9) — admin-tunable bounds.
+  `max_panel_size: u32` (default 11) — admin-tunable bounds.
+  Default 11 (4 odd choices: 3, 5, 7, 9, 11) accommodates the FE's
+  3 / 7 / 11 picker triplet without needing an admin
+  `update_config` call.
 - `Deal` gains `panel_size: Option<u32>` — locked at create time
   via `CreateDealArgs.panel_size: Option<u32>`.
 - `validate_panel_size_choice(panel_size, &cfg)` enforces odd +

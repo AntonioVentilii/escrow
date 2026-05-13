@@ -1315,9 +1315,9 @@ mod tests {
 
     #[test]
     fn dispute_config_rejects_default_panel_size_outside_bounds() {
-        // panel_size = 11, but max_panel_size = 9 (default).
+        // panel_size = 13, but max_panel_size = 11 (default).
         let cfg = DisputeConfig {
-            panel_size: 11,
+            panel_size: 13,
             ..DisputeConfig::default()
         };
         let msg = validation_err_msg(&cfg);
@@ -1337,7 +1337,7 @@ mod tests {
     #[test]
     fn panel_size_choice_accepts_within_bounds_and_odd() {
         let cfg = DisputeConfig::default();
-        for n in [3_u32, 5, 7, 9] {
+        for n in [3_u32, 5, 7, 9, 11] {
             assert!(validate_panel_size_choice(Some(n), &cfg).is_ok(), "n={n}");
         }
     }
@@ -1351,7 +1351,7 @@ mod tests {
         match validate_panel_size_choice(Some(3), &cfg).unwrap_err() {
             EscrowError::PanelSizeOutOfRange { min, max, got } => {
                 assert_eq!(min, 5);
-                assert_eq!(max, 9);
+                assert_eq!(max, 11);
                 assert_eq!(got, 3);
             }
             other => panic!("wrong error: {other:?}"),
@@ -1361,11 +1361,12 @@ mod tests {
     #[test]
     fn panel_size_choice_rejects_above_max() {
         let cfg = DisputeConfig::default();
-        match validate_panel_size_choice(Some(11), &cfg).unwrap_err() {
+        // Default max is 11 — pick 13 to land above it.
+        match validate_panel_size_choice(Some(13), &cfg).unwrap_err() {
             EscrowError::PanelSizeOutOfRange { min, max, got } => {
                 assert_eq!(min, 3);
-                assert_eq!(max, 9);
-                assert_eq!(got, 11);
+                assert_eq!(max, 11);
+                assert_eq!(got, 13);
             }
             other => panic!("wrong error: {other:?}"),
         }
@@ -1373,14 +1374,14 @@ mod tests {
 
     #[test]
     fn panel_size_choice_rejects_even_in_range() {
-        // 4 is within [3, 9] but even — must be rejected. `got = 4`
+        // 4 is within [3, 11] but even — must be rejected. `got = 4`
         // distinguishes this from out-of-range cases where `got` falls
         // outside `[min, max]`.
         let cfg = DisputeConfig::default();
         match validate_panel_size_choice(Some(4), &cfg).unwrap_err() {
             EscrowError::PanelSizeOutOfRange { min, max, got } => {
                 assert_eq!(min, 3);
-                assert_eq!(max, 9);
+                assert_eq!(max, 11);
                 assert_eq!(got, 4);
             }
             other => panic!("wrong error: {other:?}"),

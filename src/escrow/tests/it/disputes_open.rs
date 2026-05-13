@@ -137,10 +137,11 @@ fn create_deal_accepts_none_panel_size() {
 
 #[test]
 fn create_deal_accepts_in_range_odd_panel_size() {
-    // Defaults: min=3, max=9. 3, 5, 7, 9 all valid.
+    // Defaults: min=3, max=11 — covers Figma's 3 / 7 / 11 picker
+    // triplet without needing FE curation. 3, 5, 7, 9, 11 all valid.
     let (_pic, escrow) = setup();
-    for (i, n) in [3_u32, 5, 7, 9].into_iter().enumerate() {
-        // i ∈ 0..4, well within u8.
+    for (i, n) in [3_u32, 5, 7, 9, 11].into_iter().enumerate() {
+        // i ∈ 0..5, well within u8.
         let caller = user(10_u8.saturating_add(u8::try_from(i).unwrap_or(0)));
         match try_create_with_panel_size(&escrow, caller, Some(n)) {
             CreateDealResult::Ok(view) => {
@@ -158,7 +159,7 @@ fn create_deal_rejects_panel_size_below_min() {
     match try_create_with_panel_size(&escrow, user(20), Some(1)) {
         CreateDealResult::Err(EscrowError::PanelSizeOutOfRange { min, max, got }) => {
             assert_eq!(min, 3);
-            assert_eq!(max, 9);
+            assert_eq!(max, 11);
             assert_eq!(got, 1);
         }
         other => panic!("wrong response: {other:?}"),
@@ -168,12 +169,12 @@ fn create_deal_rejects_panel_size_below_min() {
 #[test]
 fn create_deal_rejects_panel_size_above_max() {
     let (_pic, escrow) = setup();
-    // Default max = 9; n=11 is above.
-    match try_create_with_panel_size(&escrow, user(21), Some(11)) {
+    // Default max = 11; n=13 is above.
+    match try_create_with_panel_size(&escrow, user(21), Some(13)) {
         CreateDealResult::Err(EscrowError::PanelSizeOutOfRange { min, max, got }) => {
             assert_eq!(min, 3);
-            assert_eq!(max, 9);
-            assert_eq!(got, 11);
+            assert_eq!(max, 11);
+            assert_eq!(got, 13);
         }
         other => panic!("wrong response: {other:?}"),
     }
@@ -182,11 +183,11 @@ fn create_deal_rejects_panel_size_above_max() {
 #[test]
 fn create_deal_rejects_even_panel_size_in_range() {
     let (_pic, escrow) = setup();
-    // n=4 is within [3, 9] but even.
+    // n=4 is within [3, 11] but even.
     match try_create_with_panel_size(&escrow, user(22), Some(4)) {
         CreateDealResult::Err(EscrowError::PanelSizeOutOfRange { min, max, got }) => {
             assert_eq!(min, 3);
-            assert_eq!(max, 9);
+            assert_eq!(max, 11);
             assert_eq!(got, 4);
         }
         other => panic!("wrong response: {other:?}"),
