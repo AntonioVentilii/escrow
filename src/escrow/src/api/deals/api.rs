@@ -78,33 +78,45 @@ pub async fn reclaim_deal(ReclaimDealArgs { deal_id }: ReclaimDealArgs) -> Recla
 /// Cancels a deal that has not yet been funded.
 ///
 /// Either party may cancel. The deal transitions from `Created` to
-/// `Cancelled`. Funded deals cannot be cancelled — use [`reclaim_deal`] after
-/// expiry instead.
+/// `Cancelled`. Any reserves already deposited (the receiver's
+/// `DC/2` on a 3a deal where consent already moved money) are
+/// refunded; the operator retains its `escrow_fee` share when a
+/// reserve was on hand. Funded deals cannot be cancelled — use
+/// [`reclaim_deal`] after expiry instead.
 #[update(guard = "caller_is_not_anonymous")]
-#[must_use]
-pub fn cancel_deal(CancelDealArgs { deal_id }: CancelDealArgs) -> CancelDealResult {
-    services::deals::cancel(msg_caller(), deal_id, time()).into()
+pub async fn cancel_deal(CancelDealArgs { deal_id }: CancelDealArgs) -> CancelDealResult {
+    services::deals::cancel(msg_caller(), deal_id, time())
+        .await
+        .into()
 }
 
 /// Explicitly consents to a deal's terms.
 ///
-/// The caller must be the payer or recipient. Sets their consent to `Accepted`.
-/// Both parties must consent before the payer can fund a deal with a known
-/// recipient.
+/// The caller must be the payer or recipient. For the bound
+/// receiver of a deal in `Created` state, `consent_deal` performs
+/// the ICRC-2 deposit of the receiver's `DC/2` dispute reserve
+/// into the deal subaccount — receivers must therefore approve
+/// the escrow canister to spend at least `DC/2 + ledger_fee`
+/// beforehand. Payer consent is a pure state flip (the payer's
+/// actual commitment is `fund_deal`, which pulls `amount + DC/2`).
 #[update(guard = "caller_is_not_anonymous")]
-#[must_use]
-pub fn consent_deal(ConsentDealArgs { deal_id }: ConsentDealArgs) -> ConsentDealResult {
-    services::deals::consent(msg_caller(), deal_id, time()).into()
+pub async fn consent_deal(ConsentDealArgs { deal_id }: ConsentDealArgs) -> ConsentDealResult {
+    services::deals::consent(msg_caller(), deal_id, time())
+        .await
+        .into()
 }
 
 /// Rejects a deal's terms. The deal transitions to `Rejected` (terminal).
 ///
-/// The caller must be the payer or recipient. Their consent is set to
-/// `Rejected` and the deal becomes final.
+/// The caller must be the payer or recipient. Their consent is set
+/// to `Rejected` and the deal becomes final. Any reserves already
+/// deposited are refunded; the operator retains its `escrow_fee`
+/// share when a reserve was on hand.
 #[update(guard = "caller_is_not_anonymous")]
-#[must_use]
-pub fn reject_deal(RejectDealArgs { deal_id }: RejectDealArgs) -> RejectDealResult {
-    services::deals::reject(msg_caller(), deal_id, time()).into()
+pub async fn reject_deal(RejectDealArgs { deal_id }: RejectDealArgs) -> RejectDealResult {
+    services::deals::reject(msg_caller(), deal_id, time())
+        .await
+        .into()
 }
 
 /// Batch-processes expired deals by refunding escrowed tokens back to their

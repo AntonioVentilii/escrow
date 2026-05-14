@@ -465,6 +465,14 @@ type EscrowError = variant {
 	EvidenceTooLarge : record { max : nat32 };
 	// An error occurred while communicating with the ICRC ledger canister.
 	LedgerError : text;
+	// The caller has not approved the escrow canister to pull
+	// their `DC/2` dispute reserve, OR the ledger
+	// `icrc2_transfer_from` failed (insufficient funds /
+	// insufficient allowance). Returned by `consent_deal` for a
+	// bound-receiver deal and by `create_deal` when the receiver
+	// is the creator (3b). The deal stays `Created` so the caller
+	// can retry after approving.
+	DisputeReserveRequired;
 	// The expiry timestamp is too far in the future.
 	ExpiryTooFar;
 	// The caller's reliability score is below the minimum threshold.
@@ -765,8 +773,11 @@ service : () -> {
 	// Cancels a deal that has not yet been funded.
 	//
 	// Either party may cancel. The deal transitions from `Created` to
-	// `Cancelled`. Funded deals cannot be cancelled — use [`reclaim_deal`] after
-	// expiry instead.
+	// `Cancelled`. Any reserves already deposited (the receiver's
+	// `DC/2` on a 3a deal where consent already moved money) are
+	// refunded; the operator retains its `escrow_fee` share when a
+	// reserve was on hand. Funded deals cannot be cancelled — use
+	// [`reclaim_deal`] after expiry instead.
 	cancel_deal : (CancelDealArgs) -> (AcceptDealResult);
 	// Casts a vote on a dispute. Caller must be on the panel and
 	// currently `Active`. Allowed only during the open voting window
@@ -779,9 +790,13 @@ service : () -> {
 	config : () -> (Config) query;
 	// Explicitly consents to a deal's terms.
 	//
-	// The caller must be the payer or recipient. Sets their consent to `Accepted`.
-	// Both parties must consent before the payer can fund a deal with a known
-	// recipient.
+	// The caller must be the payer or recipient. For the bound
+	// receiver of a deal in `Created` state, `consent_deal` performs
+	// the ICRC-2 deposit of the receiver's `DC/2` dispute reserve
+	// into the deal subaccount — receivers must therefore approve
+	// the escrow canister to spend at least `DC/2 + ledger_fee`
+	// beforehand. Payer consent is a pure state flip (the payer's
+	// actual commitment is `fund_deal`, which pulls `amount + DC/2`).
 	consent_deal : (CancelDealArgs) -> (AcceptDealResult);
 	// Creates a new escrow deal.
 	//
@@ -947,8 +962,10 @@ service : () -> {
 	reclaim_deal : (FundDealArgs) -> (GetDealResult);
 	// Rejects a deal's terms. The deal transitions to `Rejected` (terminal).
 	//
-	// The caller must be the payer or recipient. Their consent is set to
-	// `Rejected` and the deal becomes final.
+	// The caller must be the payer or recipient. Their consent is set
+	// to `Rejected` and the deal becomes final. Any reserves already
+	// deposited are refunded; the operator retains its `escrow_fee`
+	// share when a reserve was on hand.
 	reject_deal : (FundDealArgs) -> (GetDealResult);
 	// Submits a piece of evidence on a dispute. Caller must be a party
 	// of the parent deal or an arbitrator on the panel. Allowed during

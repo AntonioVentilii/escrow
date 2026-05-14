@@ -102,6 +102,14 @@ pub enum EscrowError {
     /// so callers can retry with the reported value directly.
     /// Same convention as `AmountTooSmallForArbitration`.
     AmountBelowMinimum { min: u128 },
+    /// The caller has not approved the escrow canister to pull
+    /// their `DC/2` dispute reserve, OR the ledger
+    /// `icrc2_transfer_from` failed (insufficient funds /
+    /// insufficient allowance). Returned by `consent_deal` for a
+    /// bound-receiver deal and by `create_deal` when the receiver
+    /// is the creator (3b). The deal stays `Created` so the caller
+    /// can retry after approving.
+    DisputeReserveRequired,
     /// `create_deal` was called with a `panel_size` outside the range
     /// `[DisputeConfig.min_panel_size, DisputeConfig.max_panel_size]`,
     /// or a value that is not odd.
