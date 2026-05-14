@@ -173,7 +173,51 @@ pub async fn create(
         fees,
     });
 
-    Ok(DealView::from(&deal))
+    // RFC-002 Case 3b: receiver-creator path. When the caller is
+    // the bound recipient (and not also the payer), the receiver's
+    // `DC/2` reserve is pulled atomically with the deal creation.
+    // On failure the deal is rolled forward to `Cancelled` so we
+    // don't leak a `Created` deal that nobody can resolve.
+    let caller_is_receiver_only = recipient == Some(caller) && payer != Some(caller);
+    if caller_is_receiver_only && deal.fees.dispute_reserve_per_party > 0 {
+        let escrow_account = Account {
+            owner: canister_self(),
+            subaccount: Some(deal.escrow_subaccount.clone()),
+        };
+        let receiver_account = Account {
+            owner: caller,
+            subaccount: None,
+        };
+        let deposit = ledger::transfer_from(
+            args.token_ledger,
+            receiver_account,
+            escrow_account,
+            deal.fees.dispute_reserve_per_party,
+        )
+        .await;
+        if deposit.is_ok() {
+            // `recipient_consent` is already `Accepted` from
+            // `resolve_parties` because the caller is the recipient;
+            // just bump the audit timestamps.
+            with_deal(deal.id, |d| {
+                d.updated_at_ns = Some(now);
+                d.updated_by = Some(caller);
+            });
+        } else {
+            // Roll the half-formed deal forward to `Cancelled` so it
+            // doesn't sit around as a stuck `Created` record.
+            with_deal(deal.id, |d| {
+                d.status = DealStatus::Cancelled;
+                d.updated_at_ns = Some(now);
+                d.updated_by = Some(caller);
+            });
+            return Err(EscrowError::DisputeReserveRequired);
+        }
+    }
+
+    load_deal(deal.id)
+        .map(|d| DealView::from(&d))
+        .ok_or(EscrowError::NotFound)
 }
 
 pub async fn fund(caller: Principal, deal_id: DealId) -> Result<DealView, EscrowError> {
@@ -227,7 +271,7 @@ pub async fn reclaim(
     result
 }
 
-pub fn cancel(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, EscrowError> {
+pub async fn cancel(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, EscrowError> {
     let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
 
     let already_done = validation::validate_can_cancel(&deal, caller)?;
@@ -235,56 +279,55 @@ pub fn cancel(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, 
         return Ok(DealView::from(&deal));
     }
 
-    with_deal(deal_id, |d| {
-        d.status = DealStatus::Cancelled;
-        d.updated_at_ns = Some(now);
-        d.updated_by = Some(caller);
-    });
-
-    load_deal(deal_id)
-        .map(|d| DealView::from(&d))
-        .ok_or(EscrowError::NotFound)
+    try_acquire_lock(deal_id)?;
+    let result = execute_terminate(deal_id, &deal, caller, now, DealStatus::Cancelled).await;
+    release_lock(deal_id);
+    result
 }
 
-pub fn consent(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, EscrowError> {
+pub async fn consent(
+    caller: Principal,
+    deal_id: DealId,
+    now: u64,
+) -> Result<DealView, EscrowError> {
     let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
 
     let is_payer = validation::validate_can_consent(&deal, caller)?;
 
-    with_deal(deal_id, |d| {
-        if is_payer {
+    // Payer consent is still a pure state flip — the payer's actual
+    // commitment is `fund_deal`, which pulls `amount + DC/2` and
+    // implicitly sets `payer_consent = Accepted`.
+    if is_payer {
+        with_deal(deal_id, |d| {
             d.payer_consent = Consent::Accepted;
-        } else {
-            d.recipient_consent = Consent::Accepted;
-        }
-        d.updated_at_ns = Some(now);
-        d.updated_by = Some(caller);
-    });
+            d.updated_at_ns = Some(now);
+            d.updated_by = Some(caller);
+        });
+        return load_deal(deal_id)
+            .map(|d| DealView::from(&d))
+            .ok_or(EscrowError::NotFound);
+    }
 
-    load_deal(deal_id)
-        .map(|d| DealView::from(&d))
-        .ok_or(EscrowError::NotFound)
+    // Receiver consent: the receiver deposits their `DC/2` reserve
+    // into the deal subaccount via `icrc2_transfer_from`. Receiver
+    // must have approved the canister beforehand for at least
+    // `DC/2 + ledger_fee`. Idempotent on the canister side via the
+    // processing lock.
+    try_acquire_lock(deal_id)?;
+    let result = execute_receiver_consent(deal_id, &deal, caller, now).await;
+    release_lock(deal_id);
+    result
 }
 
-pub fn reject(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, EscrowError> {
+pub async fn reject(caller: Principal, deal_id: DealId, now: u64) -> Result<DealView, EscrowError> {
     let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
 
     let is_payer = validation::validate_can_reject(&deal, caller)?;
 
-    with_deal(deal_id, |d| {
-        if is_payer {
-            d.payer_consent = Consent::Rejected;
-        } else {
-            d.recipient_consent = Consent::Rejected;
-        }
-        d.status = DealStatus::Rejected;
-        d.updated_at_ns = Some(now);
-        d.updated_by = Some(caller);
-    });
-
-    load_deal(deal_id)
-        .map(|d| DealView::from(&d))
-        .ok_or(EscrowError::NotFound)
+    try_acquire_lock(deal_id)?;
+    let result = execute_terminate_with_reject(deal_id, &deal, caller, now, is_payer).await;
+    release_lock(deal_id);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +402,61 @@ async fn generate_claim_code() -> Result<String, EscrowError> {
 // Internal async executors (run inside processing lock)
 // ---------------------------------------------------------------------------
 
+/// Pulls the receiver's `DC/2` reserve into the deal subaccount and
+/// flips `recipient_consent` to `Accepted` on success. Mapped errors:
+///
+/// - `ConsentRequired` is not used here — that's the legacy "consent before fund" check; here the
+///   operation IS the consent.
+/// - `DisputeReserveRequired` if the ledger refuses the transfer (insufficient allowance /
+///   insufficient funds). The deal stays `Created` with `recipient_consent = Pending` so the caller
+///   can retry after fixing the approval / balance.
+async fn execute_receiver_consent(
+    deal_id: DealId,
+    deal: &Deal,
+    recipient: Principal,
+    now: u64,
+) -> Result<DealView, EscrowError> {
+    let reserve = deal.fees.dispute_reserve_per_party;
+
+    // Zero-reserve deals (DC = 0) skip the ledger round-trip and
+    // collapse to a plain state flip. Only happens on synthetic
+    // test deals where the dispute config sets the arbitration fee
+    // to 0; production deals are gated by `validate_min_amount`.
+    if reserve == 0 {
+        with_deal(deal_id, |d| {
+            d.recipient_consent = Consent::Accepted;
+            d.updated_at_ns = Some(now);
+            d.updated_by = Some(recipient);
+        });
+        return load_deal(deal_id)
+            .map(|d| DealView::from(&d))
+            .ok_or(EscrowError::NotFound);
+    }
+
+    let receiver_account = Account {
+        owner: recipient,
+        subaccount: None,
+    };
+    let escrow_account = Account {
+        owner: canister_self(),
+        subaccount: Some(deal.escrow_subaccount.clone()),
+    };
+
+    ledger::transfer_from(deal.token_ledger, receiver_account, escrow_account, reserve)
+        .await
+        .map_err(|_| EscrowError::DisputeReserveRequired)?;
+
+    with_deal(deal_id, |d| {
+        d.recipient_consent = Consent::Accepted;
+        d.updated_at_ns = Some(now);
+        d.updated_by = Some(recipient);
+    });
+
+    load_deal(deal_id)
+        .map(|d| DealView::from(&d))
+        .ok_or(EscrowError::NotFound)
+}
+
 async fn execute_fund(
     deal_id: DealId,
     deal: &Deal,
@@ -368,6 +466,12 @@ async fn execute_fund(
     // transfer attempt but only persist the binding after a successful transfer
     // so a failed ledger call cannot permanently lock the deal.
     let payer = deal.payer.unwrap_or(caller);
+    let reserve = deal.fees.dispute_reserve_per_party;
+    // Payer's contribution to the escrow subaccount: the deal amount
+    // plus the payer's `DC/2` reserve. The receiver's matching half
+    // was deposited earlier (at `consent_deal` for 3a, or inside
+    // `create_deal` for 3b receiver-creator deals).
+    let pull = deal.amount.saturating_add(reserve);
 
     let escrow_account = Account {
         owner: canister_self(),
@@ -378,13 +482,8 @@ async fn execute_fund(
         subaccount: None,
     };
 
-    let block_index = ledger::transfer_from(
-        deal.token_ledger,
-        payer_account,
-        escrow_account,
-        deal.amount,
-    )
-    .await?;
+    let block_index =
+        ledger::transfer_from(deal.token_ledger, payer_account, escrow_account, pull).await?;
 
     let now = time();
     with_deal(deal_id, |d| {
@@ -418,33 +517,57 @@ async fn execute_accept(
         d.recipient_consent = Consent::Accepted;
     });
 
-    let recipient_account = Account {
-        owner: recipient,
-        subaccount: None,
-    };
-
-    // Deduct the snapshotted `escrow_fee` and the live ledger fee
-    // from the recipient's payout so the escrow subaccount (which
-    // holds exactly `amount` after `execute_fund`) can actually
-    // settle the transfer. `escrow_fee` remains in the subaccount
-    // as the operator's share.
     let ledger_fee = ledger::fee(deal.token_ledger).await?;
-    let payout = payout_after_fees(deal.amount, &deal.fees, ledger_fee);
+    let reserve = deal.fees.dispute_reserve_per_party;
 
-    let block_index = ledger::transfer(
+    // Fan-out per RFC-002 § Q5:
+    //   - Recipient gets `amount − EF + DC/2 − LF` in ONE combined transfer (settlement + reserve
+    //     refund, minus the single LF burned on the outbound transfer).
+    //   - Payer gets `DC/2 − LF` in a separate transfer.
+    // Subaccount math: held `amount + DC` after fund. Outgoing
+    // ledger debits: `(amount − EF + DC/2)` (combined transfer
+    // amount + 1 LF burned by the ledger) + `DC/2` (payer reserve
+    // amount + 1 LF burned), totalling `amount − EF + DC`. Subaccount
+    // left with `(amount + DC) − (amount − EF + DC) = EF`.
+    let recipient_payout = deal
+        .amount
+        .saturating_sub(deal.fees.escrow_fee)
+        .saturating_add(reserve)
+        .saturating_sub(ledger_fee);
+    let payer_reserve_refund = reserve.saturating_sub(ledger_fee);
+
+    let payout_tx = ledger::transfer(
         deal.token_ledger,
         Some(deal.escrow_subaccount.clone()),
-        recipient_account,
-        payout,
+        Account {
+            owner: recipient,
+            subaccount: None,
+        },
+        recipient_payout,
     )
     .await?;
+
+    if payer_reserve_refund > 0 {
+        if let Some(payer) = deal.payer {
+            ledger::transfer(
+                deal.token_ledger,
+                Some(deal.escrow_subaccount.clone()),
+                Account {
+                    owner: payer,
+                    subaccount: None,
+                },
+                payer_reserve_refund,
+            )
+            .await?;
+        }
+    }
 
     let settled_at = time();
     with_deal(deal_id, |d| {
         if d.status == DealStatus::Funded {
             d.status = DealStatus::Settled;
             d.settled_at_ns = Some(settled_at);
-            d.payout_tx = Some(block_index);
+            d.payout_tx = Some(payout_tx);
             d.updated_at_ns = Some(settled_at);
             d.updated_by = Some(recipient);
         }
@@ -461,31 +584,53 @@ async fn execute_reclaim(
     caller: Principal,
 ) -> Result<DealView, EscrowError> {
     let payer = deal.payer.ok_or(EscrowError::PayerNotSet)?;
-
-    let payer_account = Account {
-        owner: payer,
-        subaccount: None,
-    };
-
-    // Expiry refund is symmetric with settlement — escrow keeps
-    // `escrow_fee`, payer gets `amount - EF - LF` back.
     let ledger_fee = ledger::fee(deal.token_ledger).await?;
-    let refund = payout_after_fees(deal.amount, &deal.fees, ledger_fee);
+    let reserve = deal.fees.dispute_reserve_per_party;
 
-    let block_index = ledger::transfer(
+    // Symmetric fan-out with `execute_accept`, but the deal amount
+    // flows BACK to the payer.
+    //   - Payer gets `amount − EF + DC/2 − LF` combined (deal-amount refund + their own reserve
+    //     refund, minus one outbound LF).
+    //   - Recipient gets `DC/2 − LF` separately.
+    let payer_refund = deal
+        .amount
+        .saturating_sub(deal.fees.escrow_fee)
+        .saturating_add(reserve)
+        .saturating_sub(ledger_fee);
+    let recipient_reserve_refund = reserve.saturating_sub(ledger_fee);
+
+    let refund_tx = ledger::transfer(
         deal.token_ledger,
         Some(deal.escrow_subaccount.clone()),
-        payer_account,
-        refund,
+        Account {
+            owner: payer,
+            subaccount: None,
+        },
+        payer_refund,
     )
     .await?;
+
+    if recipient_reserve_refund > 0 {
+        if let Some(recipient) = deal.recipient {
+            ledger::transfer(
+                deal.token_ledger,
+                Some(deal.escrow_subaccount.clone()),
+                Account {
+                    owner: recipient,
+                    subaccount: None,
+                },
+                recipient_reserve_refund,
+            )
+            .await?;
+        }
+    }
 
     let now = time();
     with_deal(deal_id, |d| {
         if d.status == DealStatus::Funded {
             d.status = DealStatus::Refunded;
             d.refunded_at_ns = Some(now);
-            d.refund_tx = Some(block_index);
+            d.refund_tx = Some(refund_tx);
             d.updated_at_ns = Some(now);
             d.updated_by = Some(caller);
         }
@@ -496,6 +641,91 @@ async fn execute_reclaim(
         .ok_or(EscrowError::NotFound)
 }
 
+/// Refunds any reserves deposited on a `Created` deal and flips
+/// the status to the supplied terminal (`Cancelled` or `Rejected`).
+///
+/// State at entry:
+///   - The deal is `Created`.
+///   - The payer has NOT funded (status is `Created`, so `amount` is not in the subaccount).
+///   - The receiver MAY have deposited `DC/2` (iff `recipient_consent == Accepted` for a 3a flow,
+///     OR the receiver is the deal creator in a 3b flow).
+///
+/// If a reserve is on hand the operator's `EF` is retained as the
+/// service fee; the rejector (or whichever party deposited) bears
+/// the cost. If no reserve was deposited the operation is a pure
+/// state flip with no ledger calls.
+async fn execute_terminate(
+    deal_id: DealId,
+    deal: &Deal,
+    caller: Principal,
+    now: u64,
+    new_status: DealStatus,
+) -> Result<DealView, EscrowError> {
+    let reserve = deal.fees.dispute_reserve_per_party;
+    let receiver_deposited = receiver_has_deposited(deal);
+
+    if receiver_deposited && reserve > 0 {
+        if let Some(recipient) = deal.recipient {
+            let ledger_fee = ledger::fee(deal.token_ledger).await?;
+            let refund = reserve
+                .saturating_sub(deal.fees.escrow_fee)
+                .saturating_sub(ledger_fee);
+            if refund > 0 {
+                ledger::transfer(
+                    deal.token_ledger,
+                    Some(deal.escrow_subaccount.clone()),
+                    Account {
+                        owner: recipient,
+                        subaccount: None,
+                    },
+                    refund,
+                )
+                .await?;
+            }
+        }
+    }
+
+    with_deal(deal_id, |d| {
+        if d.status == DealStatus::Created {
+            d.status = new_status;
+            d.updated_at_ns = Some(now);
+            d.updated_by = Some(caller);
+        }
+    });
+
+    load_deal(deal_id)
+        .map(|d| DealView::from(&d))
+        .ok_or(EscrowError::NotFound)
+}
+
+async fn execute_terminate_with_reject(
+    deal_id: DealId,
+    deal: &Deal,
+    caller: Principal,
+    now: u64,
+    is_payer: bool,
+) -> Result<DealView, EscrowError> {
+    let view = execute_terminate(deal_id, deal, caller, now, DealStatus::Rejected).await?;
+    with_deal(deal_id, |d| {
+        if is_payer {
+            d.payer_consent = Consent::Rejected;
+        } else {
+            d.recipient_consent = Consent::Rejected;
+        }
+    });
+    Ok(view)
+}
+
+/// Returns `true` iff the receiver has actually deposited their
+/// `DC/2` reserve. True when the receiver consented (their
+/// `consent_deal` performed the `icrc2_transfer_from`) or when the
+/// receiver is the creator of the deal — receiver-creator deposits
+/// happen atomically inside `create_deal` per RFC-002 Case 3b.
+fn receiver_has_deposited(deal: &Deal) -> bool {
+    let receiver_is_creator = deal.recipient == Some(deal.created_by);
+    receiver_is_creator || matches!(deal.recipient_consent, Consent::Accepted)
+}
+
 // ---------------------------------------------------------------------------
 // Tests — sync service functions only (async requires IC runtime)
 // ---------------------------------------------------------------------------
@@ -504,7 +734,7 @@ async fn execute_reclaim(
 mod tests {
     use candid::Principal;
 
-    use super::{cancel, consent, get, get_claimable, get_escrow_account, list_for_caller, reject};
+    use super::{get, get_claimable, get_escrow_account, list_for_caller};
     use crate::{
         api::deals::errors::EscrowError,
         memory::insert_new_deal,
@@ -570,23 +800,11 @@ mod tests {
         )
     }
 
-    #[test]
-    fn cancel_succeeds_for_created_deal() {
-        let payer = test_principal(1);
-        let deal = store_tip(payer);
-        let cancelled = cancel(payer, deal.id, 200).unwrap();
-        assert_eq!(cancelled.status, DealStatus::Cancelled);
-        assert_eq!(cancelled.updated_at_ns, Some(200));
-        assert_eq!(cancelled.updated_by, Some(payer));
-    }
-
-    #[test]
-    fn cancel_rejects_non_payer() {
-        let payer = test_principal(1);
-        let other = test_principal(2);
-        let deal = store_tip(payer);
-        assert!(cancel(other, deal.id, 200).is_err());
-    }
+    // `cancel`, `consent`, and `reject` are now async (they may
+    // pull / refund reserves via ICRC-2). Their happy paths and
+    // authorisation checks are covered by the integration tests
+    // in `tests/it/`; the validator-only invariants live in
+    // `validation::tests`.
 
     #[test]
     fn get_returns_deal_for_payer() {
@@ -654,52 +872,6 @@ mod tests {
         let claimable = get_claimable(deal.id).unwrap();
         assert!(!claimable.is_recipient_bound);
         assert_eq!(claimable.amount, 1_000_000);
-    }
-
-    #[test]
-    fn consent_sets_payer_consent() {
-        let payer = test_principal(1);
-        let recip = test_principal(2);
-        let deal = store_deal(
-            Some(payer),
-            Some(recip),
-            DealStatus::Created,
-            Consent::Pending,
-            Consent::Accepted,
-        );
-        let updated = consent(payer, deal.id, 200).unwrap();
-        assert_eq!(updated.payer_consent, Consent::Accepted);
-    }
-
-    #[test]
-    fn consent_sets_recipient_consent() {
-        let payer = test_principal(1);
-        let recip = test_principal(2);
-        let deal = store_deal(
-            Some(payer),
-            Some(recip),
-            DealStatus::Created,
-            Consent::Accepted,
-            Consent::Pending,
-        );
-        let updated = consent(recip, deal.id, 200).unwrap();
-        assert_eq!(updated.recipient_consent, Consent::Accepted);
-    }
-
-    #[test]
-    fn reject_transitions_to_rejected() {
-        let payer = test_principal(1);
-        let recip = test_principal(2);
-        let deal = store_deal(
-            Some(payer),
-            Some(recip),
-            DealStatus::Created,
-            Consent::Accepted,
-            Consent::Pending,
-        );
-        let updated = reject(recip, deal.id, 200).unwrap();
-        assert_eq!(updated.status, DealStatus::Rejected);
-        assert_eq!(updated.recipient_consent, Consent::Rejected);
     }
 
     #[test]
