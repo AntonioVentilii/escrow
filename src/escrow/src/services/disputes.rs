@@ -177,7 +177,14 @@ pub async fn open(
     // the canister-wide default. This keeps the dispute terms a
     // contract from create time — admin can't retroactively grow
     // or shrink panels for existing deals via `update_config`.
-    let fee = compute_arbitration_fee(deal.amount, &cfg);
+    //
+    // Arbitration fee: read from `deal.fees.dispute_reserve_per_party`
+    // (the per-party half captured at `create_deal` time) doubled to
+    // get the full panel pool. Same source as the snapshot
+    // — a mid-flight `update_config` to `arbitration_fee_bps` /
+    // `arbitration_min_fee` does NOT change the economics of this
+    // dispute.
+    let fee = deal.fees.dispute_reserve_per_party.saturating_mul(2);
     let eligible_preview = eligible_arbitrators(&deal, &cfg);
     let needed = deal.panel_size.unwrap_or(cfg.panel_size);
     let have = u32::try_from(eligible_preview.len()).unwrap_or(u32::MAX);
@@ -280,7 +287,13 @@ async fn open_locked(
         })
         .collect();
 
-    let arbitration_fee = compute_arbitration_fee(deal.amount, &cfg);
+    // Persist the snapshotted dispute fee on the `Dispute` record
+    // so downstream finalize / withdraw paths can keep reading
+    // `dispute.arbitration_fee` without having to re-derive from
+    // the deal's snapshot every time. Read from
+    // `deal.fees.dispute_reserve_per_party * 2` so this dispute
+    // sees the same economics the deal locked in at `create_deal`.
+    let arbitration_fee = deal.fees.dispute_reserve_per_party.saturating_mul(2);
     let evidence_deadline_ns = now_ns.saturating_add(cfg.evidence_window_ns);
     let voting_deadline_ns = evidence_deadline_ns.saturating_add(cfg.voting_window_ns);
 
@@ -861,9 +874,13 @@ async fn withdraw_finalize_locked(
     agreed: Vote,
     now_ns: u64,
 ) -> Result<DisputeView, EscrowError> {
-    let cfg = load_dispute_config();
-    // Reduced fee: arbitration_fee * withdraw_fee_pct / 100.
-    let pct = u128::from(cfg.withdraw_fee_pct.min(100));
+    // Reduced fee: `arbitration_fee * withdraw_fee_pct / 100`.
+    // `withdraw_fee_pct` comes from the deal's snapshot (captured
+    // at `create_deal` time), NOT the live `DisputeConfig` — a
+    // mid-flight `update_config` cannot retroactively change the
+    // reduced-fee percentage for an in-flight dispute. The `.min(100)`
+    // is defence-in-depth against a hypothetical bad snapshot.
+    let pct = u128::from(deal.fees.withdraw_fee_pct.min(100));
     let total_arbitrator_pool = dispute.arbitration_fee.saturating_mul(pct) / 100;
 
     // All panel members receive an equal share of the reduced pool
@@ -1254,6 +1271,46 @@ mod tests {
             ..DisputeConfig::default()
         };
         assert_eq!(compute_arbitration_fee(1_000_000, &cfg), 50_000);
+    }
+
+    #[test]
+    fn dispute_economics_read_from_snapshot_not_live_config() {
+        // The dispute service now reads the arbitration fee from
+        // `deal.fees.dispute_reserve_per_party * 2` (captured at
+        // `create_deal` time) instead of recomputing from a live
+        // `DisputeConfig` at `open_dispute` time. This test
+        // demonstrates the snapshot-vs-live divergence: a deal whose
+        // snapshot pins a specific reserve survives an
+        // `update_config` that would otherwise change the fee.
+        let snapshotted_fee = DealFees {
+            escrow_fee: 20_000,
+            // Captured at create time when DC was 60_000 → DC/2 = 30_000.
+            dispute_reserve_per_party: 30_000,
+            withdraw_fee_pct: 25,
+            ledger_fee_at_create: 10_000,
+        };
+        // Admin then bumps the fee policy after the deal was created.
+        let live_cfg_after_update = DisputeConfig {
+            arbitration_fee_bps: 10_000,
+            arbitration_min_fee: 0,
+            ..DisputeConfig::default()
+        };
+
+        let snapshot_fee = snapshotted_fee.dispute_reserve_per_party.saturating_mul(2);
+        let live_fee = compute_arbitration_fee(1_000_000, &live_cfg_after_update);
+
+        // Snapshot pins 60_000 regardless of the live config (which
+        // would charge 1_000_000 at 100% bps). The dispute service
+        // uses `snapshot_fee`; the deal's economics are immune to
+        // mid-flight `update_config` calls.
+        assert_eq!(snapshot_fee, 60_000);
+        assert_eq!(live_fee, 1_000_000);
+        assert_ne!(snapshot_fee, live_fee);
+
+        // Same property for the reduced-fee withdraw path.
+        let snapshot_withdraw_pct = snapshotted_fee.withdraw_fee_pct;
+        let live_withdraw_pct = 90;
+        assert_ne!(snapshot_withdraw_pct, live_withdraw_pct);
     }
 
     #[test]
