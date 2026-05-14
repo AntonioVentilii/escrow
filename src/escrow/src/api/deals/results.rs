@@ -2,7 +2,7 @@ use candid::{CandidType, Deserialize, Principal};
 
 use super::errors::EscrowError;
 use crate::types::{
-    deal::{Consent, Deal, DealId, DealStatus},
+    deal::{Consent, Deal, DealFees, DealId, DealStatus},
     dispute::DisputeId,
     ledger_types::Account,
 };
@@ -94,6 +94,14 @@ pub struct DealView {
     /// Surfaced in the public view so a counterparty can see the
     /// committed dispute terms before consenting.
     pub panel_size: Option<u32>,
+    /// Per-deal fee snapshot taken at `create_deal` time —
+    /// `escrow_fee`, per-party dispute reserve, withdraw-fee
+    /// percentage, and create-time ledger fee. Frontends should
+    /// render these for transparent quoting (the recipient's
+    /// expected payout is `amount - fees.escrow_fee - live ledger
+    /// fee`). `None` for pre-RFC-002 deals — see
+    /// [RFC-002 § Migration](../../../../docs/rfcs/0002-symmetric-escrow-fees.md#migration).
+    pub fees: Option<DealFees>,
 }
 
 impl From<&Deal> for DealView {
@@ -121,6 +129,7 @@ impl From<&Deal> for DealView {
             claim_code: deal.claim_code.clone(),
             dispute: deal.dispute,
             panel_size: deal.panel_size,
+            fees: deal.fees.clone(),
         }
     }
 }
@@ -204,6 +213,7 @@ mod tests {
             }),
             dispute: None,
             panel_size: None,
+            fees: None,
         };
         let view = DealView::from(&deal);
         assert_eq!(view.title.as_deref(), Some("Test tip"));
@@ -246,6 +256,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
+            fees: None,
         };
         let view = ClaimableDealView::from(&deal);
         assert!(view.is_recipient_bound);

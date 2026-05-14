@@ -352,6 +352,7 @@ mod tests {
             }),
             dispute: None,
             panel_size: None,
+            fees: None,
         })
     }
 

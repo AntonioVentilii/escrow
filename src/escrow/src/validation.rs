@@ -4,7 +4,7 @@ use crate::{
     api::deals::errors::EscrowError,
     memory,
     types::{
-        deal::{Consent, Deal, DealStatus},
+        deal::{Consent, Deal, DealFees, DealStatus},
         dispute::DisputeConfig,
         state::Config,
     },
@@ -35,6 +35,43 @@ pub fn validate_create(amount: u128, expires_at_ns: u64, now_ns: u64) -> Result<
     }
     if expires_at_ns.saturating_sub(now_ns) > MAX_EXPIRY_WINDOW_NS {
         return Err(EscrowError::ExpiryTooFar);
+    }
+    Ok(())
+}
+
+/// Returns the minimum viable deal amount given the snapshot fees
+/// and the live ledger fee. A deal whose `amount` is at or below
+/// this floor would leave zero (or negative) remainder for the
+/// recipient after all fee deductions, so creation is rejected
+/// upstream.
+///
+/// Formula: `min = escrow_fee + 2 * ledger_fee + 2 *
+/// dispute_reserve_per_party`. The two ledger-fee headrooms cover
+/// the outgoing settle/refund transfer and the per-arbitrator
+/// fan-out worst case; `2 * dispute_reserve_per_party` = `DC`
+/// (full panel consumption). `amount > min` is required (strict
+/// inequality — `> min` guarantees at least 1 token unit remains
+/// for the recipient). See RFC-002 § Q3 for the full derivation.
+#[must_use]
+pub fn compute_min_viable_amount(fees: &DealFees, ledger_fee: u128) -> u128 {
+    fees.escrow_fee
+        .saturating_add(ledger_fee.saturating_mul(2))
+        .saturating_add(fees.dispute_reserve_per_party.saturating_mul(2))
+}
+
+/// Rejects a `create_deal` whose `amount` is at or below the
+/// computed minimum (`amount <= compute_min_viable_amount(...)`).
+/// Returns `EscrowError::AmountBelowMinimum { min }` carrying the
+/// floor so the caller can render the rejection without
+/// recomputing.
+pub fn validate_min_amount(
+    amount: u128,
+    fees: &DealFees,
+    ledger_fee: u128,
+) -> Result<(), EscrowError> {
+    let min = compute_min_viable_amount(fees, ledger_fee);
+    if amount <= min {
+        return Err(EscrowError::AmountBelowMinimum { min });
     }
     Ok(())
 }
@@ -633,6 +670,7 @@ mod tests {
             }),
             dispute: None,
             panel_size: None,
+            fees: None,
         }
     }
 
@@ -1080,6 +1118,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
+            fees: None,
         });
     }
 
@@ -1386,5 +1425,63 @@ mod tests {
             }
             other => panic!("wrong error: {other:?}"),
         }
+    }
+
+    // --- RFC-002: validate_min_amount + compute_min_viable_amount ---
+
+    use super::{compute_min_viable_amount, validate_min_amount};
+    use crate::types::deal::DealFees;
+
+    fn fees(escrow_fee: u128, dispute_reserve_per_party: u128) -> DealFees {
+        DealFees {
+            escrow_fee,
+            dispute_reserve_per_party,
+            withdraw_fee_pct: 25,
+            ledger_fee_at_create: 10_000,
+        }
+    }
+
+    #[test]
+    fn min_amount_floor_is_ef_plus_two_lf_plus_dc() {
+        // EF=20_000, LF=10_000, DC/2=5_000 → DC=10_000.
+        // floor = 20_000 + 2*10_000 + 2*5_000 = 50_000.
+        let f = fees(20_000, 5_000);
+        assert_eq!(compute_min_viable_amount(&f, 10_000), 50_000);
+    }
+
+    #[test]
+    fn min_amount_accepts_just_above_floor() {
+        let f = fees(20_000, 5_000);
+        // amount must be strictly greater than the floor.
+        assert!(validate_min_amount(50_001, &f, 10_000).is_ok());
+    }
+
+    #[test]
+    fn min_amount_rejects_at_floor() {
+        let f = fees(20_000, 5_000);
+        match validate_min_amount(50_000, &f, 10_000).unwrap_err() {
+            EscrowError::AmountBelowMinimum { min } => assert_eq!(min, 50_000),
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn min_amount_rejects_below_floor() {
+        let f = fees(20_000, 5_000);
+        // 1_000 << 50_000 floor.
+        match validate_min_amount(1_000, &f, 10_000).unwrap_err() {
+            EscrowError::AmountBelowMinimum { min } => assert_eq!(min, 50_000),
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn min_amount_with_zero_reserve_is_just_ef_plus_two_lf() {
+        // Edge case: dispute reserve is 0 (legacy / no dispute configured) —
+        // floor degenerates to EF + 2*LF.
+        let f = fees(20_000, 0);
+        assert_eq!(compute_min_viable_amount(&f, 10_000), 40_000);
+        assert!(validate_min_amount(40_001, &f, 10_000).is_ok());
+        assert!(validate_min_amount(40_000, &f, 10_000).is_err());
     }
 }

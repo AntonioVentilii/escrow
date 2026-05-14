@@ -12,7 +12,7 @@ use super::{
 ///
 /// New fields use `Option` for backward-compatible deserialisation from
 /// older stable-memory snapshots that lack them.
-#[derive(CandidType, Deserialize, Clone, Debug)]
+#[derive(CandidType, Deserialize, Clone, Debug, Default)]
 pub struct Config {
     /// Admin-tunable dispute parameters. The fallback is whole-struct,
     /// not per-field — when `dispute_config` is `None` (legacy
@@ -24,6 +24,15 @@ pub struct Config {
     /// the default value — there's no per-field "leave unchanged"
     /// merge mechanism).
     pub dispute_config: Option<DisputeConfig>,
+    /// Per-deal escrow service fee, in the deal's token. Charged on
+    /// every terminal state. `None` on pre-RFC-002 stable snapshots
+    /// — `services::deals::load_escrow_fee` returns the default
+    /// (`DEFAULT_ESCROW_FEE`) in that case. Once a controller calls
+    /// `update_config` with a `Some(_)` value the snapshot at
+    /// `create_deal` time uses that. Subsequent changes do not
+    /// retroactively alter in-flight deals — see
+    /// [RFC-002](../../../docs/rfcs/0002-symmetric-escrow-fees.md).
+    pub escrow_fee: Option<u128>,
 }
 
 /// Represents the complete state of the Escrow canister for persistence.

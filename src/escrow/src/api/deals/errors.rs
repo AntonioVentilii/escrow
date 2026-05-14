@@ -94,6 +94,17 @@ pub enum EscrowError {
     /// the configured arbitration fee plus the per-arbitrator ICRC-1
     /// ledger fees. Tiny deals are not disputable.
     AmountTooSmallForArbitration { min: u128 },
+    /// `create_deal` was called with an `amount` too small to
+    /// cover the escrow fee + per-arbitrator ledger fees + the
+    /// full dispute reserve, leaving zero or negative remainder
+    /// for the recipient. The `min` field surfaces the
+    /// calculated floor so the caller can render the rejection
+    /// without recomputing. Mirrors
+    /// `AmountTooSmallForArbitration` but lifted to create time
+    /// (the latter is checked at `open_dispute` and is kept for
+    /// pre-RFC-002 deals that don't carry a fee snapshot). See
+    /// [RFC-002 Q3](../../../docs/rfcs/0002-symmetric-escrow-fees.md#q3--minimum-viable-amount).
+    AmountBelowMinimum { min: u128 },
     /// `create_deal` was called with a `panel_size` outside the range
     /// `[DisputeConfig.min_panel_size, DisputeConfig.max_panel_size]`,
     /// or a value that is not odd.

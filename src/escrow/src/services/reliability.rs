@@ -100,6 +100,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
+            fees: None,
         });
     }
 

@@ -41,6 +41,7 @@ fn update_config_accepts_default_dispute_config() {
     let (_pic, escrow) = setup();
     let cfg = Config {
         dispute_config: Some(DisputeConfig::default()),
+        ..Config::default()
     };
     match try_update_config(&escrow, cfg) {
         UpdateConfigResult::Ok => {}
@@ -55,6 +56,7 @@ fn update_config_accepts_none_dispute_config() {
     let (_pic, escrow) = setup();
     let cfg = Config {
         dispute_config: None,
+        ..Config::default()
     };
     match try_update_config(&escrow, cfg) {
         UpdateConfigResult::Ok => {}
@@ -70,6 +72,7 @@ fn update_config_rejects_even_panel_size() {
             panel_size: 4,
             ..DisputeConfig::default()
         }),
+        ..Config::default()
     };
     match try_update_config(&escrow, cfg) {
         UpdateConfigResult::Err(EscrowError::ValidationError(msg)) => {
@@ -87,6 +90,7 @@ fn update_config_rejects_panel_size_below_3() {
             panel_size: 1,
             ..DisputeConfig::default()
         }),
+        ..Config::default()
     };
     match try_update_config(&escrow, cfg) {
         UpdateConfigResult::Err(EscrowError::ValidationError(msg)) => {
@@ -104,6 +108,7 @@ fn update_config_rejects_zero_voting_window() {
             voting_window_ns: 0,
             ..DisputeConfig::default()
         }),
+        ..Config::default()
     };
     match try_update_config(&escrow, cfg) {
         UpdateConfigResult::Err(EscrowError::ValidationError(msg)) => {
@@ -121,6 +126,7 @@ fn update_config_rejects_withdraw_fee_pct_over_100() {
             withdraw_fee_pct: 200,
             ..DisputeConfig::default()
         }),
+        ..Config::default()
     };
     match try_update_config(&escrow, cfg) {
         UpdateConfigResult::Err(EscrowError::ValidationError(msg)) => {
@@ -138,6 +144,7 @@ fn update_config_rejects_fee_bps_above_100_pct() {
             arbitration_fee_bps: 10_001,
             ..DisputeConfig::default()
         }),
+        ..Config::default()
     };
     match try_update_config(&escrow, cfg) {
         UpdateConfigResult::Err(EscrowError::ValidationError(msg)) => {
@@ -153,6 +160,7 @@ fn update_config_does_not_persist_invalid_config() {
     // First land a known-good config so we have a baseline.
     let good = Config {
         dispute_config: Some(DisputeConfig::default()),
+        ..Config::default()
     };
     try_update_config(&escrow, good);
     let baseline = read_config(&escrow);
@@ -167,6 +175,7 @@ fn update_config_does_not_persist_invalid_config() {
             panel_size: 0,
             ..DisputeConfig::default()
         }),
+        ..Config::default()
     };
     let result = try_update_config(&escrow, bad);
     assert!(matches!(result, UpdateConfigResult::Err(_)));
@@ -186,6 +195,7 @@ fn update_config_rejects_max_panel_below_min() {
             panel_size: 7,
             ..DisputeConfig::default()
         }),
+        ..Config::default()
     };
     match try_update_config(&escrow, cfg) {
         UpdateConfigResult::Err(EscrowError::ValidationError(msg)) => {
@@ -207,6 +217,7 @@ fn update_config_rejects_default_panel_size_outside_bounds() {
             panel_size: 13,
             ..DisputeConfig::default()
         }),
+        ..Config::default()
     };
     match try_update_config(&escrow, cfg) {
         UpdateConfigResult::Err(EscrowError::ValidationError(msg)) => {
@@ -222,6 +233,7 @@ fn update_config_rejects_non_controller_caller() {
     let stranger = Principal::from_slice(&[99]);
     let cfg = Config {
         dispute_config: Some(DisputeConfig::default()),
+        ..Config::default()
     };
     let result: Result<UpdateConfigResult, String> =
         escrow.update(stranger, "update_config", (cfg,));

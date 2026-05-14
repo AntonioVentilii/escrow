@@ -145,6 +145,15 @@ type ClaimableDealView = record {
 // New fields use `Option` for backward-compatible deserialisation from
 // older stable-memory snapshots that lack them.
 type Config = record {
+	// Per-deal escrow service fee, in the deal's token. Charged on
+	// every terminal state. `None` on pre-RFC-002 stable snapshots
+	// — `services::deals::load_escrow_fee` returns the default
+	// (`DEFAULT_ESCROW_FEE`) in that case. Once a controller calls
+	// `update_config` with a `Some(_)` value the snapshot at
+	// `create_deal` time uses that. Subsequent changes do not
+	// retroactively alter in-flight deals — see
+	// [RFC-002](../../../docs/rfcs/0002-symmetric-escrow-fees.md).
+	escrow_fee : opt nat;
 	// Admin-tunable dispute parameters. The fallback is whole-struct,
 	// not per-field — when `dispute_config` is `None` (legacy
 	// snapshots; fresh deployments before `update_config` is first
@@ -192,6 +201,50 @@ type CreateDealArgs = record {
 	// Nanosecond UTC timestamp after which the deal expires and becomes reclaimable.
 	expires_at_ns : nat64
 };
+// Per-deal fee snapshot taken at `create_deal` time.
+//
+// Every fee the canister will charge against this deal over its
+// lifetime is locked here so that subsequent `update_config` calls
+// cannot retroactively alter the agreed economics. Same pattern as
+// `Deal.panel_size` (see RFC-001 Q6 revisit) but applied to every
+// fee instead of just the arbitration panel size.
+//
+// See [RFC-002](../../../docs/rfcs/0002-symmetric-escrow-fees.md) for
+// the full design.
+type DealFees = record {
+	// Escrow service fee in the deal's token. Charged on every
+	// terminal state (`Settled`, `Refunded`, `Cancelled` with a
+	// committed reserve, `Rejected` with a committed reserve,
+	// `ArbitratedSettled`, `ArbitratedRefunded`). Snapshot of
+	// `Config.escrow_fee` at `create_deal` time.
+	escrow_fee : nat;
+	// Reduced-fee percentage the arbitrator panel receives when
+	// the parties resolve out-of-band via `withdraw_dispute`.
+	// Snapshot of `DisputeConfig.withdraw_fee_pct` at create time.
+	// In RFC-002 PR-1 this is recorded but not yet consumed; PR-3
+	// switches the withdraw fan-out math to read from here.
+	withdraw_fee_pct : nat32;
+	// Per-party dispute reserve. Each party pre-commits this amount
+	// before the deal can be `Funded`. Refunded on happy-path
+	// terminal states (minus one `ledger_fee` per outgoing refund
+	// transfer); consumed by the arbitrator panel on
+	// `Disputed → ArbitratedX`. Snapshot of
+	// `compute_arbitration_fee(amount, DisputeConfig) / 2` at
+	// create time.
+	//
+	// In RFC-002 PR-1 this field is populated but not yet
+	// consumed — the two-sided ICRC-2 reserve flow lands in PR-2.
+	// Frontends can already read it for transparent quoting.
+	dispute_reserve_per_party : nat;
+	// Ledger `icrc1_fee` value at create time, in the deal's
+	// token. RECORD ONLY — never used for arithmetic. Every
+	// actual transfer re-queries the live fee via
+	// `ledger::fee`. Snapshotted so the audit trail can answer
+	// "what was the user shown at create time?" even if the
+	// ledger later changes its fee. Operator absorbs any drift
+	// between create-time and runtime fees out of `escrow_fee`.
+	ledger_fee_at_create : nat
+};
 type DealStatus = variant {
 	// A dispute is open on this deal. Funds remain in the escrow
 	// subaccount until the dispute resolves to `ArbitratedSettled` /
@@ -235,6 +288,14 @@ type DealView = record {
 	panel_size : opt nat32;
 	// Recipient's consent to the deal terms.
 	recipient_consent : Consent;
+	// Per-deal fee snapshot taken at `create_deal` time —
+	// `escrow_fee`, per-party dispute reserve, withdraw-fee
+	// percentage, and create-time ledger fee. Frontends should
+	// render these for transparent quoting (the recipient's
+	// expected payout is `amount - fees.escrow_fee - live ledger
+	// fee`). `None` for pre-RFC-002 deals — see
+	// [RFC-002 § Migration](../../../../docs/rfcs/0002-symmetric-escrow-fees.md#migration).
+	fees : opt DealFees;
 	// Timestamp when the deal was refunded, if applicable.
 	refunded_at_ns : opt nat64;
 	// Optional note or message.
@@ -389,6 +450,17 @@ type EscrowError = variant {
 	InvalidAmount;
 	// The requested dispute does not exist.
 	DisputeNotFound;
+	// `create_deal` was called with an `amount` too small to
+	// cover the escrow fee + per-arbitrator ledger fees + the
+	// full dispute reserve, leaving zero or negative remainder
+	// for the recipient. The `min` field surfaces the
+	// calculated floor so the caller can render the rejection
+	// without recomputing. Mirrors
+	// `AmountTooSmallForArbitration` but lifted to create time
+	// (the latter is checked at `open_dispute` and is kept for
+	// pre-RFC-002 deals that don't carry a fee snapshot). See
+	// [RFC-002 Q3](../../../docs/rfcs/0002-symmetric-escrow-fees.md#q3--minimum-viable-amount).
+	AmountBelowMinimum : record { min : nat };
 	// The payer principal is not set for this deal.
 	PayerNotSet;
 	// The requested deal does not exist.

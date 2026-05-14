@@ -41,6 +41,55 @@ pub struct DealMetadata {
     pub note: Option<String>,
 }
 
+/// Per-deal fee snapshot taken at `create_deal` time.
+///
+/// Every fee the canister will charge against this deal over its
+/// lifetime is locked here so that subsequent `update_config` calls
+/// cannot retroactively alter the agreed economics. Same pattern as
+/// `Deal.panel_size` (see RFC-001 Q6 revisit) but applied to every
+/// fee instead of just the arbitration panel size.
+///
+/// See [RFC-002](../../../docs/rfcs/0002-symmetric-escrow-fees.md) for
+/// the full design.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct DealFees {
+    /// Escrow service fee in the deal's token. Charged on every
+    /// terminal state (`Settled`, `Refunded`, `Cancelled` with a
+    /// committed reserve, `Rejected` with a committed reserve,
+    /// `ArbitratedSettled`, `ArbitratedRefunded`). Snapshot of
+    /// `Config.escrow_fee` at `create_deal` time.
+    pub escrow_fee: u128,
+
+    /// Per-party dispute reserve. Each party pre-commits this amount
+    /// before the deal can be `Funded`. Refunded on happy-path
+    /// terminal states (minus one `ledger_fee` per outgoing refund
+    /// transfer); consumed by the arbitrator panel on
+    /// `Disputed → ArbitratedX`. Snapshot of
+    /// `compute_arbitration_fee(amount, DisputeConfig) / 2` at
+    /// create time.
+    ///
+    /// In RFC-002 PR-1 this field is populated but not yet
+    /// consumed — the two-sided ICRC-2 reserve flow lands in PR-2.
+    /// Frontends can already read it for transparent quoting.
+    pub dispute_reserve_per_party: u128,
+
+    /// Reduced-fee percentage the arbitrator panel receives when
+    /// the parties resolve out-of-band via `withdraw_dispute`.
+    /// Snapshot of `DisputeConfig.withdraw_fee_pct` at create time.
+    /// In RFC-002 PR-1 this is recorded but not yet consumed; PR-3
+    /// switches the withdraw fan-out math to read from here.
+    pub withdraw_fee_pct: u32,
+
+    /// Ledger `icrc1_fee` value at create time, in the deal's
+    /// token. RECORD ONLY — never used for arithmetic. Every
+    /// actual transfer re-queries the live fee via
+    /// `ledger::fee`. Snapshotted so the audit trail can answer
+    /// "what was the user shown at create time?" even if the
+    /// ledger later changes its fee. Operator absorbs any drift
+    /// between create-time and runtime fees out of `escrow_fee`.
+    pub ledger_fee_at_create: u128,
+}
+
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct Deal {
     pub id: DealId,
@@ -83,4 +132,15 @@ pub struct Deal {
     /// `max_panel_size` at create time via
     /// `validation::validate_panel_size_choice`.
     pub panel_size: Option<u32>,
+    /// Fee snapshot taken at `create_deal` time. See [`DealFees`]
+    /// and [RFC-002](../../../docs/rfcs/0002-symmetric-escrow-fees.md).
+    ///
+    /// `Option`-wrapped for backward-compat with pre-RFC-002 stable
+    /// snapshots: deals created before this field existed
+    /// deserialise as `None` and are processed through the legacy
+    /// code path (no `escrow_fee` charged at terminal time, but
+    /// outgoing transfers still account for the live ledger fee so
+    /// the latent `InsufficientFunds` bug is fixed for them too —
+    /// see RFC-002 § Migration).
+    pub fees: Option<DealFees>,
 }
