@@ -1190,7 +1190,7 @@ mod tests {
         subaccounts::derive_deal_subaccount,
         types::{
             arbitrator::{ArbitratorProfile, ArbitratorStatus},
-            deal::{Consent, Deal, DealStatus},
+            deal::{Consent, Deal, DealFees, DealStatus},
             dispute::{Dispute, DisputeConfig, DisputePhase, PanelMember},
         },
     };
@@ -1241,7 +1241,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
-            fees: None,
+            fees: DealFees::default(),
         })
     }
 

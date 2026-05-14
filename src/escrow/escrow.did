@@ -141,23 +141,16 @@ type ClaimableDealView = record {
 	is_recipient_bound : bool
 };
 // Global configuration for the Escrow canister.
-//
-// New fields use `Option` for backward-compatible deserialisation from
-// older stable-memory snapshots that lack them.
 type Config = record {
 	// Per-deal escrow service fee, in the deal's token. Charged on
-	// every terminal state. `None` on pre-RFC-002 stable snapshots
-	// — `services::deals::load_escrow_fee` returns the default
-	// (`DEFAULT_ESCROW_FEE`) in that case. Once a controller calls
-	// `update_config` with a `Some(_)` value the snapshot at
-	// `create_deal` time uses that. Subsequent changes do not
-	// retroactively alter in-flight deals — see
-	// [RFC-002](../../../docs/rfcs/0002-symmetric-escrow-fees.md).
-	escrow_fee : opt nat;
+	// every terminal state. Defaults to [`DEFAULT_ESCROW_FEE`].
+	// Snapshotted into each `Deal.fees.escrow_fee` at `create_deal`
+	// time; subsequent `update_config` changes do not retroactively
+	// alter in-flight deals.
+	escrow_fee : nat;
 	// Admin-tunable dispute parameters. The fallback is whole-struct,
-	// not per-field — when `dispute_config` is `None` (legacy
-	// snapshots; fresh deployments before `update_config` is first
-	// called), `services::disputes::load_dispute_config` returns
+	// not per-field — when `dispute_config` is `None`,
+	// `services::disputes::load_dispute_config` returns
 	// `DisputeConfig::default()`. Once a controller calls
 	// `update_config` with a `Some(_)` value, every field comes from
 	// that struct (including any fields the controller wants set to
@@ -206,11 +199,10 @@ type CreateDealArgs = record {
 // Every fee the canister will charge against this deal over its
 // lifetime is locked here so that subsequent `update_config` calls
 // cannot retroactively alter the agreed economics. Same pattern as
-// `Deal.panel_size` (see RFC-001 Q6 revisit) but applied to every
-// fee instead of just the arbitration panel size.
+// `Deal.panel_size`: the deal terms are a contract at create time.
 //
-// See [RFC-002](../../../docs/rfcs/0002-symmetric-escrow-fees.md) for
-// the full design.
+// `Default` is implemented for test ergonomics — production code
+// always builds a `DealFees` via `services::deals::compute_deal_fees`.
 type DealFees = record {
 	// Escrow service fee in the deal's token. Charged on every
 	// terminal state (`Settled`, `Refunded`, `Cancelled` with a
@@ -221,8 +213,6 @@ type DealFees = record {
 	// Reduced-fee percentage the arbitrator panel receives when
 	// the parties resolve out-of-band via `withdraw_dispute`.
 	// Snapshot of `DisputeConfig.withdraw_fee_pct` at create time.
-	// In RFC-002 PR-1 this is recorded but not yet consumed; PR-3
-	// switches the withdraw fan-out math to read from here.
 	withdraw_fee_pct : nat32;
 	// Per-party dispute reserve. Each party pre-commits this amount
 	// before the deal can be `Funded`. Refunded on happy-path
@@ -231,10 +221,6 @@ type DealFees = record {
 	// `Disputed → ArbitratedX`. Snapshot of
 	// `compute_arbitration_fee(amount, DisputeConfig) / 2` at
 	// create time.
-	//
-	// In RFC-002 PR-1 this field is populated but not yet
-	// consumed — the two-sided ICRC-2 reserve flow lands in PR-2.
-	// Frontends can already read it for transparent quoting.
 	dispute_reserve_per_party : nat;
 	// Ledger `icrc1_fee` value at create time, in the deal's
 	// token. RECORD ONLY — never used for arithmetic. Every
@@ -293,9 +279,8 @@ type DealView = record {
 	// percentage, and create-time ledger fee. Frontends should
 	// render these for transparent quoting (the recipient's
 	// expected payout is `amount - fees.escrow_fee - live ledger
-	// fee`). `None` for pre-RFC-002 deals — see
-	// [RFC-002 § Migration](../../../../docs/rfcs/0002-symmetric-escrow-fees.md#migration).
-	fees : opt DealFees;
+	// fee`).
+	fees : DealFees;
 	// Timestamp when the deal was refunded, if applicable.
 	refunded_at_ns : opt nat64;
 	// Optional note or message.
@@ -458,8 +443,7 @@ type EscrowError = variant {
 	// without recomputing. Mirrors
 	// `AmountTooSmallForArbitration` but lifted to create time
 	// (the latter is checked at `open_dispute` and is kept for
-	// pre-RFC-002 deals that don't carry a fee snapshot). See
-	// [RFC-002 Q3](../../../docs/rfcs/0002-symmetric-escrow-fees.md#q3--minimum-viable-amount).
+	// legacy deals that don't carry a fee snapshot).
 	AmountBelowMinimum : record { min : nat };
 	// The payer principal is not set for this deal.
 	PayerNotSet;

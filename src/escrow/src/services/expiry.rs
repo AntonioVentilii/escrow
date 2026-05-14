@@ -6,7 +6,7 @@ use crate::{
     memory::{release_lock, try_acquire_lock, with_deal, with_deals},
     services::deals::payout_after_fees,
     types::{
-        deal::{DealFees, DealId, DealStatus},
+        deal::{DealId, DealStatus},
         ledger_types::Account,
     },
 };
@@ -71,8 +71,7 @@ async fn try_refund_deal(deal_id: DealId) -> Result<(), EscrowError> {
     // The `fees` snapshot is cloned out of the deal so we don't hold
     // a borrow over the await.
     let ledger_fee = ledger::fee(ledger_id).await?;
-    let fees_ref: Option<&DealFees> = fees.as_ref();
-    let refund = payout_after_fees(amount, fees_ref, ledger_fee);
+    let refund = payout_after_fees(amount, &fees, ledger_fee);
 
     let block_index = ledger::transfer(ledger_id, Some(subaccount), payer_account, refund).await?;
 

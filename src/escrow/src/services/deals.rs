@@ -28,23 +28,12 @@ use crate::{
 // Fee snapshot + accessors
 // ---------------------------------------------------------------------------
 
-/// Default escrow service fee, in token base units. Calibrated to
-/// `2 × ICP_LEDGER_FEE` (= `20_000` e8s for ICP). Used when
-/// `Config.escrow_fee` is `None` — either a legacy stable snapshot
-/// or a fresh deployment that hasn't been admin-configured yet. The
-/// default is denominated in the deal's token; non-ICP ledgers with
-/// materially different transfer-fee scales may need the controller
-/// to call `update_config` with a token-appropriate override before
-/// deals on that token can be created.
-pub const DEFAULT_ESCROW_FEE: u128 = 20_000;
-
-/// Returns the currently-configured escrow service fee, or
-/// [`DEFAULT_ESCROW_FEE`] if `Config.escrow_fee` is unset (legacy
-/// snapshots / fresh deployments). Called once per `create_deal` to
-/// build the per-deal [`DealFees`] snapshot.
+/// Returns the currently-configured escrow service fee. Called once
+/// per `create_deal` to build the per-deal [`DealFees`] snapshot.
+/// Defaults are sourced from [`crate::types::state::Config::default`].
 #[must_use]
 pub fn load_escrow_fee() -> u128 {
-    CONFIG.with(|c| c.borrow().escrow_fee.unwrap_or(DEFAULT_ESCROW_FEE))
+    CONFIG.with(|c| c.borrow().escrow_fee)
 }
 
 /// Computes the per-deal fee snapshot from the current configs +
@@ -79,21 +68,14 @@ pub fn compute_deal_fees(
 /// stays locked in the per-deal subaccount as the operator's
 /// share; a sweeper is out of scope for now).
 ///
-/// For legacy deals (`fees = None`), only the ledger fee is
-/// deducted — `escrow_fee = 0` — which still fixes the latent
-/// `InsufficientFunds` bug on those deals (today they can't settle
-/// at all because `execute_accept` tries to transfer the full
-/// `amount` and the subaccount is `ledger_fee` short).
-///
 /// Saturating arithmetic — if `amount < escrow_fee + ledger_fee`
 /// the function returns `0`. The `validate_min_amount` check at
-/// create time prevents new deals from hitting this case; legacy
-/// deals where `amount < ledger_fee` are pathological and the
-/// caller layer should surface a clearer error.
+/// create time prevents production deals from hitting this case.
 #[must_use]
-pub fn payout_after_fees(amount: u128, fees: Option<&DealFees>, ledger_fee: u128) -> u128 {
-    let escrow_fee = fees.map_or(0, |f| f.escrow_fee);
-    amount.saturating_sub(escrow_fee).saturating_sub(ledger_fee)
+pub fn payout_after_fees(amount: u128, fees: &DealFees, ledger_fee: u128) -> u128 {
+    amount
+        .saturating_sub(fees.escrow_fee)
+        .saturating_sub(ledger_fee)
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +163,7 @@ pub async fn create(
         metadata,
         dispute: None,
         panel_size: args.panel_size,
-        fees: Some(fees),
+        fees,
     });
 
     Ok(DealView::from(&deal))
@@ -438,11 +420,9 @@ async fn execute_accept(
     // from the recipient's payout so the escrow subaccount (which
     // holds exactly `amount` after `execute_fund`) can actually
     // settle the transfer. `escrow_fee` remains in the subaccount
-    // as the operator's share. Legacy deals (`fees = None`) deduct
-    // only the ledger fee — they pre-date the service fee and the
-    // snapshot-based economics.
+    // as the operator's share.
     let ledger_fee = ledger::fee(deal.token_ledger).await?;
-    let payout = payout_after_fees(deal.amount, deal.fees.as_ref(), ledger_fee);
+    let payout = payout_after_fees(deal.amount, &deal.fees, ledger_fee);
 
     let block_index = ledger::transfer(
         deal.token_ledger,
@@ -481,11 +461,9 @@ async fn execute_reclaim(
     };
 
     // Expiry refund is symmetric with settlement — escrow keeps
-    // `escrow_fee`, payer gets `amount - EF - LF` back. Legacy
-    // deals (`fees = None`) only pay the ledger fee, which is
-    // also the latent-bug fix for settle/refund on those deals.
+    // `escrow_fee`, payer gets `amount - EF - LF` back.
     let ledger_fee = ledger::fee(deal.token_ledger).await?;
-    let refund = payout_after_fees(deal.amount, deal.fees.as_ref(), ledger_fee);
+    let refund = payout_after_fees(deal.amount, &deal.fees, ledger_fee);
 
     let block_index = ledger::transfer(
         deal.token_ledger,
@@ -524,7 +502,7 @@ mod tests {
         api::deals::errors::EscrowError,
         memory::insert_new_deal,
         subaccounts::derive_deal_subaccount,
-        types::deal::{Consent, Deal, DealMetadata, DealStatus},
+        types::deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
     };
 
     fn test_principal(id: u8) -> Principal {
@@ -571,7 +549,7 @@ mod tests {
             }),
             dispute: None,
             panel_size: None,
-            fees: None,
+            fees: DealFees::default(),
         })
     }
 
@@ -727,10 +705,13 @@ mod tests {
 
     // --- fee snapshot + payout math ---
 
-    use super::{compute_deal_fees, load_escrow_fee, payout_after_fees, DEFAULT_ESCROW_FEE};
+    use super::{compute_deal_fees, load_escrow_fee, payout_after_fees};
     use crate::{
         memory::CONFIG,
-        types::{deal::DealFees, dispute::DisputeConfig, state::Config},
+        types::{
+            dispute::DisputeConfig,
+            state::{Config, DEFAULT_ESCROW_FEE},
+        },
     };
 
     #[test]
@@ -746,7 +727,7 @@ mod tests {
         CONFIG.with(|c| {
             *c.borrow_mut() = Config {
                 dispute_config: None,
-                escrow_fee: Some(123_456),
+                escrow_fee: 123_456,
             };
         });
         assert_eq!(load_escrow_fee(), 123_456);
@@ -782,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn payout_after_fees_subtracts_ef_plus_lf_when_fees_present() {
+    fn payout_after_fees_subtracts_ef_plus_lf() {
         let fees = DealFees {
             escrow_fee: 20_000,
             dispute_reserve_per_party: 5_000,
@@ -790,15 +771,7 @@ mod tests {
             ledger_fee_at_create: 10_000,
         };
         // amount = 1_000_000, EF=20_000, live_LF=10_000 → 970_000.
-        assert_eq!(payout_after_fees(1_000_000, Some(&fees), 10_000), 970_000);
-    }
-
-    #[test]
-    fn payout_after_fees_legacy_deal_subtracts_only_lf() {
-        // fees = None (legacy deal) → only the ledger fee is
-        // deducted. Latent-bug fix: without this, these deals try
-        // to send the full amount and fail with InsufficientFunds.
-        assert_eq!(payout_after_fees(1_000_000, None, 10_000), 990_000);
+        assert_eq!(payout_after_fees(1_000_000, &fees, 10_000), 970_000);
     }
 
     #[test]
@@ -810,6 +783,6 @@ mod tests {
             ledger_fee_at_create: 10_000,
         };
         // amount < EF + LF → saturating_sub clamps to 0.
-        assert_eq!(payout_after_fees(500_000, Some(&fees), 10_000), 0);
+        assert_eq!(payout_after_fees(500_000, &fees, 10_000), 0);
     }
 }

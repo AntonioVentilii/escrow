@@ -670,7 +670,7 @@ mod tests {
             }),
             dispute: None,
             panel_size: None,
-            fees: None,
+            fees: DealFees::default(),
         }
     }
 
@@ -1118,7 +1118,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
-            fees: None,
+            fees: DealFees::default(),
         });
     }
 

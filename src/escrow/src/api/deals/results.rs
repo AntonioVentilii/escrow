@@ -99,9 +99,8 @@ pub struct DealView {
     /// percentage, and create-time ledger fee. Frontends should
     /// render these for transparent quoting (the recipient's
     /// expected payout is `amount - fees.escrow_fee - live ledger
-    /// fee`). `None` for legacy deals created before the fee
-    /// snapshot was introduced.
-    pub fees: Option<DealFees>,
+    /// fee`).
+    pub fees: DealFees,
 }
 
 impl From<&Deal> for DealView {
@@ -176,7 +175,7 @@ mod tests {
     use candid::Principal;
 
     use super::{ClaimableDealView, DealView};
-    use crate::types::deal::{Consent, Deal, DealMetadata, DealStatus};
+    use crate::types::deal::{Consent, Deal, DealFees, DealMetadata, DealStatus};
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])
@@ -213,7 +212,7 @@ mod tests {
             }),
             dispute: None,
             panel_size: None,
-            fees: None,
+            fees: DealFees::default(),
         };
         let view = DealView::from(&deal);
         assert_eq!(view.title.as_deref(), Some("Test tip"));
@@ -256,7 +255,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
-            fees: None,
+            fees: DealFees::default(),
         };
         let view = ClaimableDealView::from(&deal);
         assert!(view.is_recipient_bound);

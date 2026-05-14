@@ -47,7 +47,10 @@ pub struct DealMetadata {
 /// lifetime is locked here so that subsequent `update_config` calls
 /// cannot retroactively alter the agreed economics. Same pattern as
 /// `Deal.panel_size`: the deal terms are a contract at create time.
-#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+///
+/// `Default` is implemented for test ergonomics — production code
+/// always builds a `DealFees` via `services::deals::compute_deal_fees`.
+#[derive(CandidType, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct DealFees {
     /// Escrow service fee in the deal's token. Charged on every
     /// terminal state (`Settled`, `Refunded`, `Cancelled` with a
@@ -123,12 +126,5 @@ pub struct Deal {
     /// `validation::validate_panel_size_choice`.
     pub panel_size: Option<u32>,
     /// Fee snapshot taken at `create_deal` time. See [`DealFees`].
-    ///
-    /// `Option`-wrapped for backward-compat with legacy stable
-    /// snapshots: deals created before this field existed
-    /// deserialise as `None` and are processed through the legacy
-    /// code path (no `escrow_fee` charged at terminal time, but
-    /// outgoing transfers still account for the live ledger fee so
-    /// the latent `InsufficientFunds` bug is fixed for them too).
-    pub fees: Option<DealFees>,
+    pub fees: DealFees,
 }

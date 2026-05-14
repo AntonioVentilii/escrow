@@ -162,12 +162,13 @@ pub struct DealFees {
 pub struct Config {
     pub dispute_config: Option<DisputeConfig>,
     /// Per-deal escrow service fee, in the deal's token. Charged on
-    /// every terminal state. `None` on pre-v0.1 stable snapshots —
-    /// `services::config::load_escrow_fee` returns the default
-    /// (`DEFAULT_ESCROW_FEE` = `20_000`, = `2 × ICP_LEDGER_FEE`) in
-    /// that case. Once a controller calls `update_config` with a
-    /// `Some(_)` the value comes from there.
-    pub escrow_fee: Option<u128>,
+    /// every terminal state. Defaults to `DEFAULT_ESCROW_FEE`
+    /// (`20_000` e8s = `2 × ICP_LEDGER_FEE`) via the manual
+    /// `Default for Config` impl. Snapshotted into each
+    /// `Deal.fees.escrow_fee` at `create_deal` time; subsequent
+    /// `update_config` changes do not retroactively alter
+    /// in-flight deals.
+    pub escrow_fee: u128,
 }
 ```
 
@@ -176,15 +177,13 @@ pub struct Config {
 ```rust
 pub struct Deal {
     // ... existing fields ...
-    /// Fee snapshot taken at `create_deal` time. `Option`-wrapped
-    /// for backward-compat with pre-v0.1 stable snapshots. Deals
-    /// created before this field existed deserialise as `None` and
-    /// are processed through the legacy code path (no `EF` charged,
-    /// no `DC/2` refund — preserves the existing economics for
-    /// in-flight deals at the moment of upgrade).
-    pub fees: Option<DealFees>,
+    /// Fee snapshot taken at `create_deal` time.
+    pub fees: DealFees,
 }
 ```
+
+Required (not `Option`-wrapped) per the [Migration](#migration)
+section: dev-mode canister, reinstalled from scratch.
 
 ### New `EscrowError` variants (in `api/deals/errors.rs`)
 
@@ -283,7 +282,7 @@ the same types. No client breakage.
 ```diff
  type Config = record {
    dispute_config : opt DisputeConfig;
-+  escrow_fee : opt nat;
++  escrow_fee : nat;
  };
 
 +type DealFees = record {
@@ -295,12 +294,12 @@ the same types. No client breakage.
 
  type Deal = record {
    // ... existing fields ...
-+  fees : opt DealFees;
++  fees : DealFees;
  };
 
  type DealView = record {
    // ... existing fields ...
-+  fees : opt DealFees;
++  fees : DealFees;
  };
 
  type EscrowError = variant {
@@ -438,24 +437,23 @@ referencing RFC-002 in their commit body. Recommended split:
 
 ## Migration
 
-**Existing stable state on `v0.0.5`.** The canister has 3 deals on
-the staging canister `umxj5-niaaa-aaaae-af2sq-cai`. None of them
-will have `fees` populated after the upgrade. Two handling rules:
+This canister is in active development (pre-v0.1.0). The staging
+canister `umxj5-niaaa-aaaae-af2sq-cai` is reinstalled from scratch
+on every deploy and holds no production-meaningful state, so this
+RFC drops backward-compat for legacy snapshots entirely:
 
-1. **Reads:** every fee-consuming service site reads `deal.fees`.
-   `None` is interpreted as "legacy deal — use the pre-RFC-002 code
-   path." Concretely: `EF = 0`, no `DC/2` to refund, settle/refund
-   uses the new fee-aware math (still pays the recipient `amount`,
-   but now subtracts `ledger_fee` from the outgoing transfer so the
-   transfer actually succeeds — this fixes the latent under-funding
-   bug for legacy deals too).
+- `Deal.fees: DealFees` is required (not `Option`-wrapped). Any
+  pre-snapshot stable state that lacks the field fails to
+  deserialise on `post_upgrade` — by design.
+- `Config.escrow_fee: u128` is required, with a `Default` impl
+  that supplies `DEFAULT_ESCROW_FEE` on fresh deployments.
 
-2. **Writes:** every new deal created post-upgrade gets a populated
-   `DealFees`. Legacy deals are never retroactively populated.
-
-This grandfathers existing deals through their lifecycle without
-breaking them, while new deals get the full RFC-002 economics from
-PR-2 onwards.
+Once the canister reaches v1.0 and accumulates real deals, future
+schema changes will need to add new fields as `Option<T>` for
+backward-compat (the existing precedent on `StableState.deals` /
+`StableState.disputes` and `Deal.dispute` already demonstrates this
+pattern). The current required-field choice is a "dev-mode now,
+add `Option` wrappers when there's anything to migrate" stance.
 
 ## Out of scope
 

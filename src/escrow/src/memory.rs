@@ -10,12 +10,17 @@ use crate::{
         arbitrator::ArbitratorProfile,
         deal::{Deal, DealId, DealStatus},
         dispute::{Dispute, DisputeId},
-        state::{Config, StableState},
+        state::{Config, StableState, DEFAULT_ESCROW_FEE},
     },
 };
 
 thread_local! {
-    pub static CONFIG: RefCell<Config> = const { RefCell::new(Config { dispute_config: None, escrow_fee: None }) };
+    pub static CONFIG: RefCell<Config> = const {
+        RefCell::new(Config {
+            dispute_config: None,
+            escrow_fee: DEFAULT_ESCROW_FEE,
+        })
+    };
     static DEALS: RefCell<BTreeMap<DealId, Deal>> = const { RefCell::new(BTreeMap::new()) };
     static NEXT_DEAL_ID: RefCell<DealId> = const { RefCell::new(1) };
     /// Transient lock preventing concurrent async processing of the same deal.
@@ -312,7 +317,7 @@ mod tests {
     use candid::Principal;
 
     use super::{get_deal, insert_new_deal, release_lock, try_acquire_lock, with_deal, with_deals};
-    use crate::types::deal::{Consent, Deal, DealStatus};
+    use crate::types::deal::{Consent, Deal, DealFees, DealStatus};
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])
@@ -345,7 +350,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
-            fees: None,
+            fees: DealFees::default(),
         })
     }
 
@@ -406,7 +411,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
-            fees: None,
+            fees: DealFees::default(),
         });
         assert_ne!(deal.id, 999_999_999);
         assert!(get_deal(deal.id).is_some());
