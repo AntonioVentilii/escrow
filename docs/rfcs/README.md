@@ -6,10 +6,9 @@ process is documented in
 
 ## Index
 
-| #   | Title                            | Status            |
-| --- | -------------------------------- | ----------------- |
-| 001 | Dispute resolution + arbitrators | _filed in PR #27_ |
+| #   | Title                                                                      | Status      |
+| --- | -------------------------------------------------------------------------- | ----------- |
+| 001 | [Dispute resolution + arbitrators](./0001-dispute-resolution.md)           | Implemented |
+| 002 | [Symmetric escrow fees + dispute reserve](./0002-symmetric-escrow-fees.md) | Proposed    |
 
-> When the first RFC merges, replace its row's `_filed in PR #27_` cell
-> with a link to the markdown file (`[0001-dispute-resolution.md](./0001-dispute-resolution.md)`)
-> and a status (`Open` / `Accepted` / `Implemented` / `Withdrawn`).
+> Status values: `Proposed` / `Accepted` / `Implemented` / `Withdrawn`.

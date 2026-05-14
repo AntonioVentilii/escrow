@@ -4,6 +4,7 @@ use crate::{
     api::deals::errors::EscrowError,
     ledger,
     memory::{release_lock, try_acquire_lock, with_deal, with_deals},
+    services::deals::payout_after_fees,
     types::{
         deal::{DealId, DealStatus},
         ledger_types::Account,
@@ -45,7 +46,7 @@ pub async fn process_expired(limit: u32) -> Result<Vec<DealId>, EscrowError> {
 }
 
 async fn try_refund_deal(deal_id: DealId) -> Result<(), EscrowError> {
-    let (ledger_id, subaccount, payer, amount) = with_deal(deal_id, |deal| {
+    let (ledger_id, subaccount, payer, amount, fees) = with_deal(deal_id, |deal| {
         if deal.status != DealStatus::Funded {
             return Err(EscrowError::AlreadyFinalised);
         }
@@ -55,6 +56,7 @@ async fn try_refund_deal(deal_id: DealId) -> Result<(), EscrowError> {
             deal.escrow_subaccount.clone(),
             payer,
             deal.amount,
+            deal.fees.clone(),
         ))
     })
     .ok_or(EscrowError::NotFound)??;
@@ -64,7 +66,14 @@ async fn try_refund_deal(deal_id: DealId) -> Result<(), EscrowError> {
         subaccount: None,
     };
 
-    let block_index = ledger::transfer(ledger_id, Some(subaccount), payer_account, amount).await?;
+    // Auto-refund is symmetric with manual `reclaim_deal` —
+    // escrow keeps `escrow_fee`, refund covers `amount - EF - LF`.
+    // The `fees` snapshot is cloned out of the deal so we don't hold
+    // a borrow over the await.
+    let ledger_fee = ledger::fee(ledger_id).await?;
+    let refund = payout_after_fees(amount, &fees, ledger_fee);
+
+    let block_index = ledger::transfer(ledger_id, Some(subaccount), payer_account, refund).await?;
 
     let now = time();
     let canister = canister_self();

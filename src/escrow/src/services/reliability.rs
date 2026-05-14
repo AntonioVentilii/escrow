@@ -66,7 +66,7 @@ mod tests {
         api::deals::errors::EscrowError,
         memory::insert_new_deal,
         subaccounts::derive_deal_subaccount,
-        types::deal::{Consent, Deal, DealStatus},
+        types::deal::{Consent, Deal, DealFees, DealStatus},
     };
 
     fn test_principal(id: u8) -> Principal {
@@ -100,6 +100,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
+            fees: DealFees::default(),
         });
     }
 

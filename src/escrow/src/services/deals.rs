@@ -13,15 +13,73 @@ use crate::{
     ledger,
     memory::{
         get_deal as load_deal, insert_new_deal, release_lock, try_acquire_lock, with_deal,
-        with_deals,
+        with_deals, CONFIG,
     },
     subaccounts::derive_deal_subaccount,
     types::{
-        deal::{Consent, Deal, DealId, DealMetadata, DealStatus},
+        deal::{Consent, Deal, DealFees, DealId, DealMetadata, DealStatus},
+        dispute::DisputeConfig,
         ledger_types::Account,
     },
     validation,
 };
+
+// ---------------------------------------------------------------------------
+// Fee snapshot + accessors
+// ---------------------------------------------------------------------------
+
+/// Returns the currently-configured escrow service fee. Called once
+/// per `create_deal` to build the per-deal [`DealFees`] snapshot.
+/// Defaults are sourced from [`crate::types::state::Config::default`].
+#[must_use]
+pub fn load_escrow_fee() -> u128 {
+    CONFIG.with(|c| c.borrow().escrow_fee)
+}
+
+/// Computes the per-deal fee snapshot from the current configs +
+/// the deal's `amount` + the ledger's live fee. The returned
+/// [`DealFees`] is stored verbatim on the new deal so subsequent
+/// `update_config` calls cannot retroactively change the agreed
+/// economics.
+///
+/// `dispute_reserve_per_party` = `compute_arbitration_fee(amount,
+/// dispute_config).div_ceil(2)`. Ceiling division ensures
+/// `2 × dispute_reserve_per_party ≥ full_dispute_cost` even when
+/// the full cost is odd, so the panel can always be paid in full
+/// at finalize time. The (at-most-one-unit) overage on odd fees
+/// stays in the deal subaccount and accrues to the operator.
+#[must_use]
+pub fn compute_deal_fees(
+    amount: u128,
+    escrow_fee: u128,
+    dispute_cfg: &DisputeConfig,
+    ledger_fee: u128,
+) -> DealFees {
+    let full_dispute_cost = disputes::compute_arbitration_fee(amount, dispute_cfg);
+    DealFees {
+        escrow_fee,
+        dispute_reserve_per_party: full_dispute_cost.div_ceil(2),
+        withdraw_fee_pct: dispute_cfg.withdraw_fee_pct,
+        ledger_fee_at_create: ledger_fee,
+    }
+}
+
+/// Computes the recipient's payout on a happy-path `Settled` or
+/// `Refunded` transition: `amount − escrow_fee − ledger_fee` so
+/// the recipient gets exactly the value they were quoted at create
+/// time and the escrow subaccount retains `escrow_fee` (which
+/// stays locked in the per-deal subaccount as the operator's
+/// share; a sweeper is out of scope for now).
+///
+/// Saturating arithmetic — if `amount < escrow_fee + ledger_fee`
+/// the function returns `0`. The `validate_min_amount` check at
+/// create time prevents production deals from hitting this case.
+#[must_use]
+pub fn payout_after_fees(amount: u128, fees: &DealFees, ledger_fee: u128) -> u128 {
+    amount
+        .saturating_sub(fees.escrow_fee)
+        .saturating_sub(ledger_fee)
+}
 
 // ---------------------------------------------------------------------------
 // Commands
@@ -49,6 +107,31 @@ pub async fn create(
 
     let (payer, recipient, payer_consent, recipient_consent) =
         validation::resolve_parties(caller, args.payer, args.recipient)?;
+
+    // Snapshot every fee against the deal at create time. The
+    // ledger fee is queried live and stored on the snapshot for
+    // audit + the min-amount check, but every subsequent transfer
+    // re-queries it — the operator absorbs any drift between
+    // create-time and runtime fees out of `escrow_fee`.
+    //
+    // A failure to reach the ledger here is non-fatal: we fall
+    // back to `0` for the snapshot and the min-amount check
+    // becomes slightly looser (no `ledger_fee` headroom in the
+    // floor). All money-moving operations (`fund`, `accept`,
+    // `reclaim`, expiry sweep) re-query the live fee and fail
+    // hard if the ledger is unreachable, so a fake / misconfigured
+    // `token_ledger` cannot actually drain funds — it just creates
+    // a stuck deal that can never settle. This keeps create-time
+    // robust against transient ledger flakes without weakening
+    // any money-handling invariant.
+    let escrow_fee = load_escrow_fee();
+    let ledger_fee = ledger::fee(args.token_ledger).await.unwrap_or(0);
+    let fees = compute_deal_fees(args.amount, escrow_fee, &dispute_cfg, ledger_fee);
+    // For the min-amount floor we use the panel size that will
+    // actually be in effect: the deal's locked override if
+    // `Some(_)`, otherwise the current canister default.
+    let effective_panel_size = args.panel_size.unwrap_or(dispute_cfg.panel_size);
+    validation::validate_min_amount(args.amount, &fees, ledger_fee, effective_panel_size)?;
 
     let claim_code = generate_claim_code().await?;
 
@@ -87,6 +170,7 @@ pub async fn create(
         metadata,
         dispute: None,
         panel_size: args.panel_size,
+        fees,
     });
 
     Ok(DealView::from(&deal))
@@ -339,11 +423,19 @@ async fn execute_accept(
         subaccount: None,
     };
 
+    // Deduct the snapshotted `escrow_fee` and the live ledger fee
+    // from the recipient's payout so the escrow subaccount (which
+    // holds exactly `amount` after `execute_fund`) can actually
+    // settle the transfer. `escrow_fee` remains in the subaccount
+    // as the operator's share.
+    let ledger_fee = ledger::fee(deal.token_ledger).await?;
+    let payout = payout_after_fees(deal.amount, &deal.fees, ledger_fee);
+
     let block_index = ledger::transfer(
         deal.token_ledger,
         Some(deal.escrow_subaccount.clone()),
         recipient_account,
-        deal.amount,
+        payout,
     )
     .await?;
 
@@ -375,11 +467,16 @@ async fn execute_reclaim(
         subaccount: None,
     };
 
+    // Expiry refund is symmetric with settlement — escrow keeps
+    // `escrow_fee`, payer gets `amount - EF - LF` back.
+    let ledger_fee = ledger::fee(deal.token_ledger).await?;
+    let refund = payout_after_fees(deal.amount, &deal.fees, ledger_fee);
+
     let block_index = ledger::transfer(
         deal.token_ledger,
         Some(deal.escrow_subaccount.clone()),
         payer_account,
-        deal.amount,
+        refund,
     )
     .await?;
 
@@ -412,7 +509,7 @@ mod tests {
         api::deals::errors::EscrowError,
         memory::insert_new_deal,
         subaccounts::derive_deal_subaccount,
-        types::deal::{Consent, Deal, DealMetadata, DealStatus},
+        types::deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
     };
 
     fn test_principal(id: u8) -> Principal {
@@ -459,6 +556,7 @@ mod tests {
             }),
             dispute: None,
             panel_size: None,
+            fees: DealFees::default(),
         })
     }
 
@@ -610,5 +708,88 @@ mod tests {
         let deal = store_tip(payer);
         let view = get(payer, deal.id).unwrap();
         assert_eq!(view.claim_code.as_deref(), Some("test-code-abc"));
+    }
+
+    // --- fee snapshot + payout math ---
+
+    use super::{compute_deal_fees, load_escrow_fee, payout_after_fees};
+    use crate::{
+        memory::CONFIG,
+        types::{
+            dispute::DisputeConfig,
+            state::{Config, DEFAULT_ESCROW_FEE},
+        },
+    };
+
+    #[test]
+    fn load_escrow_fee_returns_default_when_unset() {
+        CONFIG.with(|c| {
+            *c.borrow_mut() = Config::default();
+        });
+        assert_eq!(load_escrow_fee(), DEFAULT_ESCROW_FEE);
+    }
+
+    #[test]
+    fn load_escrow_fee_returns_configured_value() {
+        CONFIG.with(|c| {
+            *c.borrow_mut() = Config {
+                dispute_config: DisputeConfig::default(),
+                escrow_fee: 123_456,
+            };
+        });
+        assert_eq!(load_escrow_fee(), 123_456);
+        // Reset to default to avoid cross-test pollution.
+        CONFIG.with(|c| {
+            *c.borrow_mut() = Config::default();
+        });
+    }
+
+    #[test]
+    fn compute_deal_fees_splits_dispute_cost_in_half() {
+        // amount = 1_000_000, default DisputeConfig: fee_bps=500 (5%),
+        // min_fee=0 → full DC = 50_000, half = 25_000.
+        let cfg = DisputeConfig::default();
+        let fees = compute_deal_fees(1_000_000, 20_000, &cfg, 10_000);
+        assert_eq!(fees.escrow_fee, 20_000);
+        assert_eq!(fees.dispute_reserve_per_party, 25_000);
+        assert_eq!(fees.withdraw_fee_pct, cfg.withdraw_fee_pct);
+        assert_eq!(fees.ledger_fee_at_create, 10_000);
+    }
+
+    #[test]
+    fn compute_deal_fees_honours_min_fee_floor() {
+        // amount = 1_000, fee_bps=500 (5%) → bps_fee = 50,
+        // min_fee = 10_000 wins → DC = 10_000, half = 5_000.
+        let cfg = DisputeConfig {
+            arbitration_fee_bps: 500,
+            arbitration_min_fee: 10_000,
+            ..DisputeConfig::default()
+        };
+        let fees = compute_deal_fees(1_000, 20_000, &cfg, 10_000);
+        assert_eq!(fees.dispute_reserve_per_party, 5_000);
+    }
+
+    #[test]
+    fn payout_after_fees_subtracts_ef_plus_lf() {
+        let fees = DealFees {
+            escrow_fee: 20_000,
+            dispute_reserve_per_party: 5_000,
+            withdraw_fee_pct: 25,
+            ledger_fee_at_create: 10_000,
+        };
+        // amount = 1_000_000, EF=20_000, live_LF=10_000 → 970_000.
+        assert_eq!(payout_after_fees(1_000_000, &fees, 10_000), 970_000);
+    }
+
+    #[test]
+    fn payout_after_fees_saturates_at_zero_on_underflow() {
+        let fees = DealFees {
+            escrow_fee: 1_000_000,
+            dispute_reserve_per_party: 0,
+            withdraw_fee_pct: 25,
+            ledger_fee_at_create: 10_000,
+        };
+        // amount < EF + LF → saturating_sub clamps to 0.
+        assert_eq!(payout_after_fees(500_000, &fees, 10_000), 0);
     }
 }

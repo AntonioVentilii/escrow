@@ -251,7 +251,7 @@ mod tests {
         token_owner, Value, COLLECTION_NAME,
     };
     use crate::types::{
-        deal::{Consent, Deal, DealMetadata, DealStatus},
+        deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
         ledger_types::Account,
     };
 
@@ -290,6 +290,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
+            fees: DealFees::default(),
         }
     }
 

@@ -141,20 +141,17 @@ type ClaimableDealView = record {
 	is_recipient_bound : bool
 };
 // Global configuration for the Escrow canister.
-//
-// New fields use `Option` for backward-compatible deserialisation from
-// older stable-memory snapshots that lack them.
 type Config = record {
-	// Admin-tunable dispute parameters. The fallback is whole-struct,
-	// not per-field — when `dispute_config` is `None` (legacy
-	// snapshots; fresh deployments before `update_config` is first
-	// called), `services::disputes::load_dispute_config` returns
-	// `DisputeConfig::default()`. Once a controller calls
-	// `update_config` with a `Some(_)` value, every field comes from
-	// that struct (including any fields the controller wants set to
-	// the default value — there's no per-field "leave unchanged"
-	// merge mechanism).
-	dispute_config : opt DisputeConfig
+	// Per-deal escrow service fee, in the deal's token. Charged on
+	// every terminal state. Defaults to [`DEFAULT_ESCROW_FEE`].
+	// Snapshotted into each `Deal.fees.escrow_fee` at `create_deal`
+	// time; subsequent `update_config` changes do not retroactively
+	// alter in-flight deals.
+	escrow_fee : nat;
+	// Admin-tunable dispute parameters. Fallback is whole-struct
+	// (`update_config` replaces the entire `DisputeConfig` — there
+	// is no per-field "leave unchanged" merge mechanism).
+	dispute_config : DisputeConfig
 };
 type Consent = variant { Rejected; Accepted; Pending };
 // Arguments for creating a new deal.
@@ -191,6 +188,43 @@ type CreateDealArgs = record {
 	token_ledger : principal;
 	// Nanosecond UTC timestamp after which the deal expires and becomes reclaimable.
 	expires_at_ns : nat64
+};
+// Per-deal fee snapshot taken at `create_deal` time.
+//
+// Every fee the canister will charge against this deal over its
+// lifetime is locked here so that subsequent `update_config` calls
+// cannot retroactively alter the agreed economics. Same pattern as
+// `Deal.panel_size`: the deal terms are a contract at create time.
+//
+// `Default` is implemented for test ergonomics — production code
+// always builds a `DealFees` via `services::deals::compute_deal_fees`.
+type DealFees = record {
+	// Escrow service fee in the deal's token. Charged on every
+	// terminal state (`Settled`, `Refunded`, `Cancelled` with a
+	// committed reserve, `Rejected` with a committed reserve,
+	// `ArbitratedSettled`, `ArbitratedRefunded`). Snapshot of
+	// `Config.escrow_fee` at `create_deal` time.
+	escrow_fee : nat;
+	// Reduced-fee percentage the arbitrator panel receives when
+	// the parties resolve out-of-band via `withdraw_dispute`.
+	// Snapshot of `DisputeConfig.withdraw_fee_pct` at create time.
+	withdraw_fee_pct : nat32;
+	// Per-party dispute reserve. Each party pre-commits this amount
+	// before the deal can be `Funded`. Refunded on happy-path
+	// terminal states (minus one `ledger_fee` per outgoing refund
+	// transfer); consumed by the arbitrator panel on
+	// `Disputed → ArbitratedX`. Snapshot of
+	// `compute_arbitration_fee(amount, DisputeConfig) / 2` at
+	// create time.
+	dispute_reserve_per_party : nat;
+	// Ledger `icrc1_fee` value at create time, in the deal's
+	// token. RECORD ONLY — never used for arithmetic. Every
+	// actual transfer re-queries the live fee via
+	// `ledger::fee`. Snapshotted so the audit trail can answer
+	// "what was the user shown at create time?" even if the
+	// ledger later changes its fee. Operator absorbs any drift
+	// between create-time and runtime fees out of `escrow_fee`.
+	ledger_fee_at_create : nat
 };
 type DealStatus = variant {
 	// A dispute is open on this deal. Funds remain in the escrow
@@ -235,6 +269,13 @@ type DealView = record {
 	panel_size : opt nat32;
 	// Recipient's consent to the deal terms.
 	recipient_consent : Consent;
+	// Per-deal fee snapshot taken at `create_deal` time —
+	// `escrow_fee`, per-party dispute reserve, withdraw-fee
+	// percentage, and create-time ledger fee. Frontends should
+	// render these for transparent quoting (the recipient's
+	// expected payout is `amount - fees.escrow_fee - live ledger
+	// fee`).
+	fees : DealFees;
 	// Timestamp when the deal was refunded, if applicable.
 	refunded_at_ns : opt nat64;
 	// Optional note or message.
@@ -389,6 +430,14 @@ type EscrowError = variant {
 	InvalidAmount;
 	// The requested dispute does not exist.
 	DisputeNotFound;
+	// `create_deal` was called with an `amount` too small to
+	// cover the escrow fee + per-arbitrator ledger fees + the
+	// full dispute reserve, leaving zero or negative remainder
+	// for the recipient. The `min` field carries the **smallest
+	// acceptable amount** (i.e. one more than the rejected floor)
+	// so callers can retry with the reported value directly.
+	// Same convention as `AmountTooSmallForArbitration`.
+	AmountBelowMinimum : record { min : nat };
 	// The payer principal is not set for this deal.
 	PayerNotSet;
 	// The requested deal does not exist.
@@ -907,9 +956,9 @@ service : () -> {
 	submit_evidence : (SubmitEvidenceArgs) -> (CastVoteResult);
 	// Updates the global configuration for the Escrow canister.
 	//
-	// Validates `config.dispute_config` (when set) against the
-	// invariants documented on `DisputeConfig` before persisting.
-	// Rejects with `EscrowError::ValidationError` on invalid input
+	// Validates `config.dispute_config` against the invariants documented
+	// on `DisputeConfig` before persisting. Rejects with
+	// `EscrowError::ValidationError` on invalid input
 	// rather than letting bad config poison the dispute machinery at
 	// runtime (e.g. even `panel_size`, zero windows, fee bps > 100%).
 	//

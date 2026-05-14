@@ -312,7 +312,7 @@ mod tests {
     use crate::{
         memory::insert_new_deal,
         types::{
-            deal::{Consent, Deal, DealMetadata, DealStatus},
+            deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
             icrc7::{Icrc7TransferArg, Icrc7TransferResponse, Value, COLLECTION_NAME},
             ledger_types::Account,
         },
@@ -352,6 +352,7 @@ mod tests {
             }),
             dispute: None,
             panel_size: None,
+            fees: DealFees::default(),
         })
     }
 

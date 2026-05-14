@@ -15,7 +15,7 @@ use crate::{
 };
 
 thread_local! {
-    pub static CONFIG: RefCell<Config> = const { RefCell::new(Config { dispute_config: None }) };
+    pub static CONFIG: RefCell<Config> = const { RefCell::new(Config::const_default()) };
     static DEALS: RefCell<BTreeMap<DealId, Deal>> = const { RefCell::new(BTreeMap::new()) };
     static NEXT_DEAL_ID: RefCell<DealId> = const { RefCell::new(1) };
     /// Transient lock preventing concurrent async processing of the same deal.
@@ -268,11 +268,11 @@ pub fn save_state() {
 
     let state = StableState {
         config,
-        deals: Some(deals),
-        next_deal_id: Some(next_deal_id),
-        disputes: Some(disputes),
-        next_dispute_id: Some(next_dispute_id),
-        arbitrators: Some(arbitrators),
+        deals,
+        next_deal_id,
+        disputes,
+        next_dispute_id,
+        arbitrators,
     };
 
     storage::stable_save((state,)).expect("Save failed");
@@ -298,11 +298,11 @@ pub fn restore_state() {
     } = state;
 
     CONFIG.with(|c| *c.borrow_mut() = config);
-    DEALS.with(|d| *d.borrow_mut() = deals.unwrap_or_default());
-    NEXT_DEAL_ID.with(|id| *id.borrow_mut() = next_deal_id.unwrap_or(1));
-    DISPUTES.with(|d| *d.borrow_mut() = disputes.unwrap_or_default());
-    NEXT_DISPUTE_ID.with(|id| *id.borrow_mut() = next_dispute_id.unwrap_or(1));
-    ARBITRATORS.with(|a| *a.borrow_mut() = arbitrators.unwrap_or_default());
+    DEALS.with(|d| *d.borrow_mut() = deals);
+    NEXT_DEAL_ID.with(|id| *id.borrow_mut() = next_deal_id);
+    DISPUTES.with(|d| *d.borrow_mut() = disputes);
+    NEXT_DISPUTE_ID.with(|id| *id.borrow_mut() = next_dispute_id);
+    ARBITRATORS.with(|a| *a.borrow_mut() = arbitrators);
 }
 
 #[cfg(test)]
@@ -312,7 +312,7 @@ mod tests {
     use candid::Principal;
 
     use super::{get_deal, insert_new_deal, release_lock, try_acquire_lock, with_deal, with_deals};
-    use crate::types::deal::{Consent, Deal, DealStatus};
+    use crate::types::deal::{Consent, Deal, DealFees, DealStatus};
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])
@@ -345,6 +345,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
+            fees: DealFees::default(),
         })
     }
 
@@ -405,6 +406,7 @@ mod tests {
             metadata: None,
             dispute: None,
             panel_size: None,
+            fees: DealFees::default(),
         });
         assert_ne!(deal.id, 999_999_999);
         assert!(get_deal(deal.id).is_some());

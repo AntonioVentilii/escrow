@@ -179,8 +179,13 @@ pub struct DisputeConfig {
     pub min_arbitrator_score: Option<u32>,
 }
 
-impl Default for DisputeConfig {
-    fn default() -> Self {
+impl DisputeConfig {
+    /// `const`-callable default. Used to initialise the `CONFIG`
+    /// thread-local in `const` context; `Default::default` delegates
+    /// here so runtime callers and the static initialiser stay in
+    /// sync.
+    #[must_use]
+    pub const fn const_default() -> Self {
         const NANOS_PER_DAY: u64 = 24 * 60 * 60 * 1_000_000_000;
         Self {
             panel_size: 3,
@@ -197,6 +202,12 @@ impl Default for DisputeConfig {
             withdraw_fee_pct: 25,
             min_arbitrator_score: None,
         }
+    }
+}
+
+impl Default for DisputeConfig {
+    fn default() -> Self {
+        Self::const_default()
     }
 }
 

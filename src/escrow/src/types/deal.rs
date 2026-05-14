@@ -41,6 +41,48 @@ pub struct DealMetadata {
     pub note: Option<String>,
 }
 
+/// Per-deal fee snapshot taken at `create_deal` time.
+///
+/// Every fee the canister will charge against this deal over its
+/// lifetime is locked here so that subsequent `update_config` calls
+/// cannot retroactively alter the agreed economics. Same pattern as
+/// `Deal.panel_size`: the deal terms are a contract at create time.
+///
+/// `Default` is implemented for test ergonomics — production code
+/// always builds a `DealFees` via `services::deals::compute_deal_fees`.
+#[derive(CandidType, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct DealFees {
+    /// Escrow service fee in the deal's token. Charged on every
+    /// terminal state (`Settled`, `Refunded`, `Cancelled` with a
+    /// committed reserve, `Rejected` with a committed reserve,
+    /// `ArbitratedSettled`, `ArbitratedRefunded`). Snapshot of
+    /// `Config.escrow_fee` at `create_deal` time.
+    pub escrow_fee: u128,
+
+    /// Per-party dispute reserve. Each party pre-commits this amount
+    /// before the deal can be `Funded`. Refunded on happy-path
+    /// terminal states (minus one `ledger_fee` per outgoing refund
+    /// transfer); consumed by the arbitrator panel on
+    /// `Disputed → ArbitratedX`. Snapshot of
+    /// `compute_arbitration_fee(amount, DisputeConfig) / 2` at
+    /// create time.
+    pub dispute_reserve_per_party: u128,
+
+    /// Reduced-fee percentage the arbitrator panel receives when
+    /// the parties resolve out-of-band via `withdraw_dispute`.
+    /// Snapshot of `DisputeConfig.withdraw_fee_pct` at create time.
+    pub withdraw_fee_pct: u32,
+
+    /// Ledger `icrc1_fee` value at create time, in the deal's
+    /// token. RECORD ONLY — never used for arithmetic. Every
+    /// actual transfer re-queries the live fee via
+    /// `ledger::fee`. Snapshotted so the audit trail can answer
+    /// "what was the user shown at create time?" even if the
+    /// ledger later changes its fee. Operator absorbs any drift
+    /// between create-time and runtime fees out of `escrow_fee`.
+    pub ledger_fee_at_create: u128,
+}
+
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct Deal {
     pub id: DealId,
@@ -68,9 +110,8 @@ pub struct Deal {
     pub metadata: Option<DealMetadata>,
     /// `Some(dispute_id)` while a dispute is open on the deal or after
     /// it has resolved (so the audit trail back to the `Dispute` record
-    /// survives terminal status). `None` for deals that never went into
-    /// dispute. `Option`-wrapped for backward-compat with pre-dispute
-    /// stable snapshots.
+    /// survives terminal status). `None` for deals that never went
+    /// into dispute.
     pub dispute: Option<DisputeId>,
     /// Per-deal panel size override, chosen by the deal creator at
     /// `create_deal` time. `Some(n)` locks `n` arbitrators for any
@@ -83,4 +124,6 @@ pub struct Deal {
     /// `max_panel_size` at create time via
     /// `validation::validate_panel_size_choice`.
     pub panel_size: Option<u32>,
+    /// Fee snapshot taken at `create_deal` time. See [`DealFees`].
+    pub fees: DealFees,
 }

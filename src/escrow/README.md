@@ -211,6 +211,23 @@ Rejected                  Cancelled             │  Disputed
 3. Payer funds → `Funded`
 4. Recipient accepts → `Settled`
 
+### Fee accounting (RFC-002)
+
+Every deal locks a [`DealFees`](./src/types/deal.rs) snapshot at `create_deal` time so subsequent admin `update_config` calls cannot retroactively change the agreed economics. The snapshot carries the escrow service fee, the per-party dispute reserve, the withdraw-fee percentage, and the create-time ledger fee (the last is record-only — every actual transfer re-queries the live `icrc1_fee`).
+
+On every terminal-state transition where funds leave the escrow subaccount, the recipient receives `amount − escrow_fee − ledger_fee`. The `escrow_fee` stays in the per-deal subaccount as the operator's share (a sweeper / treasury is deferred — see RFC-002 § Out of scope). The `ledger_fee` is debited by the ledger itself.
+
+For pre-RFC-002 deals (`fees = None` on stable state), the same outgoing transfers deduct only the ledger fee — no service fee. This is also the bug-fix path for those deals: today they try to send the full `amount` from a subaccount holding only `amount`, which fails with `InsufficientFunds`. After this PR they settle correctly (recipient gets `amount − ledger_fee`).
+
+| Field on `DealFees`         | What it locks                                                                                                                                                             |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `escrow_fee`                | Service fee charged on every terminal state. Default `20_000` e8s (= `2 × ICP_LEDGER_FEE`). Admin-tunable via `Config.escrow_fee`.                                        |
+| `dispute_reserve_per_party` | Each party's half of the full dispute cost. Snapshot of `compute_arbitration_fee(amount, DisputeConfig) / 2`. Used by the two-sided reserve flow landing in RFC-002 PR-2. |
+| `withdraw_fee_pct`          | Reduced arbitrator fee on Q12 out-of-band resolution. Snapshot of `DisputeConfig.withdraw_fee_pct`.                                                                       |
+| `ledger_fee_at_create`      | Record-only. The ledger's fee at the time of create — never used for arithmetic.                                                                                          |
+
+The min-amount check at `create_deal` rejects deals whose `amount` is too small to leave a positive remainder after all fee deductions — see `validation::validate_min_amount` and RFC-002 § Q3.
+
 ## Module structure
 
 | Module                       | Responsibility                                                                                                                                                   |
