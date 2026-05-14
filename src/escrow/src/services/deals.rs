@@ -112,20 +112,11 @@ pub async fn create(
     // ledger fee is queried live and stored on the snapshot for
     // audit + the min-amount check, but every subsequent transfer
     // re-queries it — the operator absorbs any drift between
-    // create-time and runtime fees out of `escrow_fee`.
-    //
-    // A failure to reach the ledger here is non-fatal: we fall
-    // back to `0` for the snapshot and the min-amount check
-    // becomes slightly looser (no `ledger_fee` headroom in the
-    // floor). All money-moving operations (`fund`, `accept`,
-    // `reclaim`, expiry sweep) re-query the live fee and fail
-    // hard if the ledger is unreachable, so a fake / misconfigured
-    // `token_ledger` cannot actually drain funds — it just creates
-    // a stuck deal that can never settle. This keeps create-time
-    // robust against transient ledger flakes without weakening
-    // any money-handling invariant.
+    // create-time and runtime fees out of `escrow_fee`. A failure
+    // to reach the ledger aborts the create (no stuck deals);
+    // callers must point `token_ledger` at a real ICRC-1 canister.
     let escrow_fee = load_escrow_fee();
-    let ledger_fee = ledger::fee(args.token_ledger).await.unwrap_or(0);
+    let ledger_fee = ledger::fee(args.token_ledger).await?;
     let fees = compute_deal_fees(args.amount, escrow_fee, &dispute_cfg, ledger_fee);
     // For the min-amount floor we use the panel size that will
     // actually be in effect: the deal's locked override if
@@ -149,7 +140,6 @@ pub async fn create(
         payer,
         recipient,
         token_ledger: args.token_ledger,
-        token_symbol: None,
         amount: args.amount,
         created_at_ns: now,
         created_by: caller,
@@ -835,7 +825,6 @@ mod tests {
             payer,
             recipient,
             token_ledger: ledger_principal(),
-            token_symbol: None,
             amount: 1_000_000,
             created_at_ns: 100,
             created_by: payer.or(recipient).unwrap_or(test_principal(1)),

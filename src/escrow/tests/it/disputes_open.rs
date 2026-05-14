@@ -1,32 +1,31 @@
 //! Integration tests for `open_dispute`.
 //!
-//! Covers the error paths reachable without a real ICRC ledger:
-//! - `NotFound` on unknown `deal_id`.
-//! - `InvalidState` on `Created` deals (no funds at risk yet).
-//! - `DisputeRequiresBoundRecipient` on tip-flow deals.
-//! - `NotAuthorised` for unrelated callers.
-//! - Anonymous caller blocked by guard.
+//! Covers the canister-boundary checks that are reachable without a
+//! real ICRC ledger installed in `pocket-ic`:
 //!
-//! The full happy-path test (`Funded → Disputed`, panel selection,
-//! `dispute_id` wired back to the deal) requires a deal that's actually
-//! `Funded` — which requires an ICRC-1/2 ledger canister installed in
-//! `pocket-ic`. That infrastructure lands in step 7 (finalize) where
-//! actual transfers happen; the open-dispute happy path will be
-//! exercised end-to-end alongside it.
+//! - The `caller_is_not_anonymous` guard on `open_dispute`.
+//! - `open_dispute` returns `NotFound` for unknown `deal_id`s.
+//! - `create_deal`'s `panel_size` validator rejects out-of-range / even values — this branch fires
+//!   before the create-time `ledger::fee` call so it's safe to exercise against the fake
+//!   `Principal([99])` ledger.
+//! - Read-side queries (`get_dispute`, `get_public_dispute`, `list_my_disputes`) return sensible
+//!   defaults / errors with no disputes in storage.
+//!
+//! Everything beyond that — happy-path `create_deal` (needs a real
+//! `icrc1_fee`), `Funded → Disputed`, panel selection, `dispute_id`
+//! wired back to the deal — requires a real ICRC-1/2 ledger canister
+//! and lives in the dispute-finalize end-to-end suite. State-machine
+//! error paths (`InvalidState`, `DisputeRequiresBoundRecipient`,
+//! `NotAuthorised`, `DisputeAlreadyExists`, `Expired`) are unit-tested
+//! against `validate_can_open_dispute` in
+//! `src/escrow/src/validation.rs`.
 
 use std::sync::Arc;
 
 use candid::Principal;
-use escrow::{
-    api::{
-        deals::{
-            errors::EscrowError,
-            params::CreateDealArgs,
-            results::{CreateDealResult, DealView},
-        },
-        disputes::{params::OpenDisputeArgs, results::OpenDisputeResult},
-    },
-    types::deal::DealStatus,
+use escrow::api::{
+    deals::{errors::EscrowError, params::CreateDealArgs, results::CreateDealResult},
+    disputes::{params::OpenDisputeArgs, results::OpenDisputeResult},
 };
 use pocket_ic::PocketIc;
 
@@ -46,54 +45,14 @@ fn setup() -> (Arc<PocketIc>, PicCanister) {
     (pic, escrow)
 }
 
-fn create_bound_deal(escrow: &PicCanister, payer: Principal, recipient: Principal) -> DealView {
-    let args = CreateDealArgs {
-        amount: 1_000_000,
-        token_ledger: ledger(),
-        // Far-future expiry so we don't trip the Expired check.
-        expires_at_ns: u64::MAX / 2,
-        payer: Some(payer),
-        recipient: Some(recipient),
-        title: None,
-        note: None,
-        panel_size: None,
-    };
-    let result: CreateDealResult = escrow
-        .update(payer, "create_deal", (args,))
-        .expect("create_deal call failed");
-    match result {
-        CreateDealResult::Ok(view) => *view,
-        CreateDealResult::Err(e) => panic!("create_deal returned error: {e:?}"),
-    }
-}
-
-fn create_tip_deal(escrow: &PicCanister, payer: Principal) -> DealView {
-    let args = CreateDealArgs {
-        amount: 1_000_000,
-        token_ledger: ledger(),
-        expires_at_ns: u64::MAX / 2,
-        payer: Some(payer),
-        recipient: None,
-        title: None,
-        note: None,
-        panel_size: None,
-    };
-    let result: CreateDealResult = escrow
-        .update(payer, "create_deal", (args,))
-        .expect("create_deal call failed");
-    match result {
-        CreateDealResult::Ok(view) => *view,
-        CreateDealResult::Err(e) => panic!("create_deal returned error: {e:?}"),
-    }
-}
-
-fn try_open_dispute(escrow: &PicCanister, caller: Principal, deal_id: u64) -> OpenDisputeResult {
-    escrow
-        .update(caller, "open_dispute", (OpenDisputeArgs { deal_id },))
-        .expect("open_dispute call failed")
-}
-
 // --- per-deal panel_size at create time ---
+//
+// These tests exercise the `validate_panel_size_choice` branch that
+// fires BEFORE the create-time `ledger::fee` call, so they don't
+// require a real ICRC ledger at `Principal([99])`. Happy-path
+// (in-range, valid panel_size accepted) is covered by the unit tests
+// in `validation::tests` and is exercised end-to-end in the
+// finalize integration suite where a real ledger is installed.
 
 fn try_create_with_panel_size(
     escrow: &PicCanister,
@@ -116,40 +75,6 @@ fn try_create_with_panel_size(
             },),
         )
         .expect("create_deal call failed")
-}
-
-#[test]
-fn create_deal_accepts_none_panel_size() {
-    // None = "use canister default at open_dispute time"; should pass
-    // validation regardless of the canister's current DisputeConfig.
-    let (_pic, escrow) = setup();
-    match try_create_with_panel_size(&escrow, user(1), None) {
-        CreateDealResult::Ok(view) => {
-            assert!(
-                view.panel_size.is_none(),
-                "view.panel_size: {:?}",
-                view.panel_size
-            );
-        }
-        CreateDealResult::Err(e) => panic!("expected Ok, got: {e:?}"),
-    }
-}
-
-#[test]
-fn create_deal_accepts_in_range_odd_panel_size() {
-    // Defaults: min=3, max=11 — covers Figma's 3 / 7 / 11 picker
-    // triplet without needing FE curation. 3, 5, 7, 9, 11 all valid.
-    let (_pic, escrow) = setup();
-    for (i, n) in [3_u32, 5, 7, 9, 11].into_iter().enumerate() {
-        // i ∈ 0..5, well within u8.
-        let caller = user(10_u8.saturating_add(u8::try_from(i).unwrap_or(0)));
-        match try_create_with_panel_size(&escrow, caller, Some(n)) {
-            CreateDealResult::Ok(view) => {
-                assert_eq!(view.panel_size, Some(n), "n={n}");
-            }
-            CreateDealResult::Err(e) => panic!("n={n}: expected Ok, got: {e:?}"),
-        }
-    }
 }
 
 #[test]
@@ -194,12 +119,40 @@ fn create_deal_rejects_even_panel_size_in_range() {
     }
 }
 
+// --- ledger reachability ---
+
+#[test]
+fn create_deal_hard_fails_when_ledger_unreachable() {
+    // PR #39 removed the `unwrap_or(0)` fallback on `ledger::fee`
+    // in `services::deals::create`, so a fake / unreachable
+    // `token_ledger` now surfaces as `EscrowError::LedgerError`
+    // instead of silently snapshotting `ledger_fee_at_create = 0`
+    // and creating a deal that can never settle. The fake
+    // `Principal::from_slice(&[99])` from the `ledger()` helper
+    // has no canister behind it; the inter-canister call to
+    // `icrc1_fee` is rejected synchronously. This test locks the
+    // behaviour in so a future refactor can't reintroduce the
+    // swallow-and-default fallback without flipping a deliberate
+    // alarm here.
+    let (_pic, escrow) = setup();
+    match try_create_with_panel_size(&escrow, user(30), Some(3)) {
+        CreateDealResult::Err(EscrowError::LedgerError(_)) => {}
+        other => panic!("expected LedgerError, got: {other:?}"),
+    }
+}
+
 // --- error variants ---
 
 #[test]
 fn open_dispute_returns_not_found_for_unknown_deal() {
     let (_pic, escrow) = setup();
-    let result = try_open_dispute(&escrow, user(1), 9_999_999);
+    let result: OpenDisputeResult = escrow
+        .update(
+            user(1),
+            "open_dispute",
+            (OpenDisputeArgs { deal_id: 9_999_999 },),
+        )
+        .expect("open_dispute call failed");
     match result {
         OpenDisputeResult::Err(EscrowError::NotFound) => {}
         OpenDisputeResult::Err(e) => panic!("wrong error: {e:?}"),
@@ -208,70 +161,15 @@ fn open_dispute_returns_not_found_for_unknown_deal() {
 }
 
 #[test]
-fn open_dispute_rejects_created_deal() {
-    let (_pic, escrow) = setup();
-    let payer = user(1);
-    let recipient = user(2);
-    let deal = create_bound_deal(&escrow, payer, recipient);
-    assert_eq!(deal.status, DealStatus::Created);
-
-    // Both parties present, but deal is still Created (no funding) →
-    // InvalidState should fire (Created is not Funded).
-    let result = try_open_dispute(&escrow, payer, deal.id);
-    match result {
-        OpenDisputeResult::Err(EscrowError::InvalidState { expected, actual }) => {
-            assert!(expected.contains("Funded"), "expected: {expected}");
-            assert!(actual.contains("Created"), "actual: {actual}");
-        }
-        OpenDisputeResult::Err(e) => panic!("wrong error: {e:?}"),
-        OpenDisputeResult::Ok(d) => panic!("unexpected ok: {d:?}"),
-    }
-}
-
-#[test]
-fn open_dispute_rejects_tip_flow_deal() {
-    let (_pic, escrow) = setup();
-    let payer = user(1);
-    let deal = create_tip_deal(&escrow, payer);
-
-    // Tip-flow deals have recipient = None → DisputeRequiresBoundRecipient.
-    // (This fires before the Funded check because the bound-recipient check
-    // is the first guard in `validate_can_open_dispute`.)
-    let result = try_open_dispute(&escrow, payer, deal.id);
-    match result {
-        OpenDisputeResult::Err(EscrowError::DisputeRequiresBoundRecipient) => {}
-        OpenDisputeResult::Err(e) => panic!("wrong error: {e:?}"),
-        OpenDisputeResult::Ok(d) => panic!("unexpected ok: {d:?}"),
-    }
-}
-
-#[test]
-fn open_dispute_rejects_unrelated_caller() {
-    let (_pic, escrow) = setup();
-    let payer = user(1);
-    let recipient = user(2);
-    let stranger = user(99);
-    let deal = create_bound_deal(&escrow, payer, recipient);
-
-    let result = try_open_dispute(&escrow, stranger, deal.id);
-    match result {
-        OpenDisputeResult::Err(EscrowError::NotAuthorised) => {}
-        OpenDisputeResult::Err(e) => panic!("wrong error: {e:?}"),
-        OpenDisputeResult::Ok(d) => panic!("unexpected ok: {d:?}"),
-    }
-}
-
-#[test]
 fn open_dispute_rejects_anonymous_caller() {
+    // The `caller_is_not_anonymous` guard fires before any deal lookup,
+    // so we can probe it with a fabricated deal_id — no `create_deal`
+    // (and therefore no real ledger) required.
     let (_pic, escrow) = setup();
-    let payer = user(1);
-    let recipient = user(2);
-    let deal = create_bound_deal(&escrow, payer, recipient);
-
     let result: Result<OpenDisputeResult, String> = escrow.update(
         Principal::anonymous(),
         "open_dispute",
-        (OpenDisputeArgs { deal_id: deal.id },),
+        (OpenDisputeArgs { deal_id: 1 },),
     );
     let err = result.expect_err("anonymous should be rejected by guard");
     assert!(

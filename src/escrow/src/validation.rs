@@ -641,7 +641,6 @@ mod tests {
             payer,
             recipient,
             token_ledger: test_principal(99),
-            token_symbol: None,
             amount: 1000,
             created_at_ns: 100,
             created_by: payer.or(recipient).unwrap_or(test_principal(1)),
@@ -1100,7 +1099,6 @@ mod tests {
             payer: Some(creator),
             recipient: None,
             token_ledger: test_principal(99),
-            token_symbol: None,
             amount: 1000,
             created_at_ns: 100,
             created_by: creator,
@@ -1498,5 +1496,116 @@ mod tests {
             EscrowError::AmountBelowMinimum { min } => assert_eq!(min, 50_001),
             other => panic!("wrong error: {other:?}"),
         }
+    }
+
+    // --- validate_can_open_dispute ---
+
+    use super::validate_can_open_dispute;
+
+    #[test]
+    fn open_dispute_rejects_tip_flow_deal() {
+        // Tip flow = recipient is None. Must surface
+        // DisputeRequiresBoundRecipient, the first guard in
+        // validate_can_open_dispute.
+        let payer = test_principal(1);
+        let deal = make_deal(DealStatus::Funded, Some(payer), None);
+        assert!(matches!(
+            validate_can_open_dispute(&deal, payer, 150),
+            Err(EscrowError::DisputeRequiresBoundRecipient)
+        ));
+    }
+
+    #[test]
+    fn open_dispute_rejects_open_payer_deal() {
+        // Payer is None (open-payer / invoice not yet paid) — also
+        // rejected by DisputeRequiresBoundRecipient since both parties
+        // must be bound to dispute.
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::Funded, None, Some(recip));
+        assert!(matches!(
+            validate_can_open_dispute(&deal, recip, 150),
+            Err(EscrowError::DisputeRequiresBoundRecipient)
+        ));
+    }
+
+    #[test]
+    fn open_dispute_rejects_unrelated_caller() {
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let stranger = test_principal(3);
+        let deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
+        assert!(matches!(
+            validate_can_open_dispute(&deal, stranger, 150),
+            Err(EscrowError::NotAuthorised)
+        ));
+    }
+
+    #[test]
+    fn open_dispute_rejects_created_deal() {
+        // Funded gate fires after the bound-parties + caller checks.
+        // Created deals are not yet at risk and cannot be disputed.
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::Created, Some(payer), Some(recip));
+        match validate_can_open_dispute(&deal, payer, 150) {
+            Err(EscrowError::InvalidState { expected, actual }) => {
+                assert!(expected.contains("Funded"), "expected: {expected}");
+                assert!(actual.contains("Created"), "actual: {actual}");
+            }
+            other => panic!("wrong response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_dispute_idempotent_on_already_disputed_deal() {
+        // Disputed → Ok(true), letting the service layer short-circuit
+        // and return the existing dispute view.
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let mut deal = make_deal(DealStatus::Disputed, Some(payer), Some(recip));
+        deal.dispute = Some(42);
+        assert_eq!(validate_can_open_dispute(&deal, payer, 150), Ok(true));
+    }
+
+    #[test]
+    fn open_dispute_rejects_deal_with_existing_dispute_attachment() {
+        // Funded but already has a dispute attached (e.g. the dispute
+        // resolved into ArbitratedSettled, leaving the audit-trail link
+        // — wait, status would be ArbitratedSettled then, not Funded.
+        // The realistic case: someone re-opens before status flips.
+        // Either way, the guard rejects DisputeAlreadyExists.
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let mut deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
+        deal.dispute = Some(7);
+        assert!(matches!(
+            validate_can_open_dispute(&deal, payer, 150),
+            Err(EscrowError::DisputeAlreadyExists)
+        ));
+    }
+
+    #[test]
+    fn open_dispute_rejects_expired_deal() {
+        // Expiry-at-open: the auto-refund sweep skips Disputed deals,
+        // so we cannot let a dispute open after the reclaim window has
+        // closed in the recipient's favour.
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
+        // make_deal sets expires_at_ns = 200. now_ns = 300 → expired.
+        assert!(matches!(
+            validate_can_open_dispute(&deal, payer, 300),
+            Err(EscrowError::Expired)
+        ));
+    }
+
+    #[test]
+    fn open_dispute_accepts_funded_deal_in_window() {
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
+        // expires_at_ns = 200 in make_deal; 150 is within the window.
+        assert_eq!(validate_can_open_dispute(&deal, payer, 150), Ok(false));
+        assert_eq!(validate_can_open_dispute(&deal, recip, 150), Ok(false));
     }
 }

@@ -89,7 +89,6 @@ pub struct Deal {
     pub payer: Option<Principal>,
     pub recipient: Option<Principal>,
     pub token_ledger: Principal,
-    pub token_symbol: Option<String>,
     pub amount: u128,
     pub created_at_ns: u64,
     pub created_by: Principal,
@@ -118,9 +117,8 @@ pub struct Deal {
     /// dispute opened on this deal regardless of subsequent
     /// `DisputeConfig.panel_size` changes — the deal terms are a
     /// contract at create time. `None` means "use whatever
-    /// `DisputeConfig.panel_size` is current at `open_dispute` time"
-    /// (the default behaviour for deals created before this field
-    /// existed). Validated against `DisputeConfig::min_panel_size` /
+    /// `DisputeConfig.panel_size` is current at `open_dispute` time".
+    /// Validated against `DisputeConfig::min_panel_size` /
     /// `max_panel_size` at create time via
     /// `validation::validate_panel_size_choice`.
     pub panel_size: Option<u32>,

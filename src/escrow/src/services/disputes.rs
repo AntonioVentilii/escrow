@@ -1261,7 +1261,6 @@ mod tests {
             payer: Some(payer),
             recipient: Some(recipient),
             token_ledger: principal(99),
-            token_symbol: None,
             amount: 1_000_000,
             created_at_ns: 100,
             created_by: payer,
