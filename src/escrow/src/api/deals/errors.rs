@@ -102,8 +102,7 @@ pub enum EscrowError {
     /// without recomputing. Mirrors
     /// `AmountTooSmallForArbitration` but lifted to create time
     /// (the latter is checked at `open_dispute` and is kept for
-    /// pre-RFC-002 deals that don't carry a fee snapshot). See
-    /// [RFC-002 Q3](../../../docs/rfcs/0002-symmetric-escrow-fees.md#q3--minimum-viable-amount).
+    /// legacy deals that don't carry a fee snapshot).
     AmountBelowMinimum { min: u128 },
     /// `create_deal` was called with a `panel_size` outside the range
     /// `[DisputeConfig.min_panel_size, DisputeConfig.max_panel_size]`,

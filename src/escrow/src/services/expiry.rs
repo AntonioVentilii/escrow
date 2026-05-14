@@ -66,7 +66,7 @@ async fn try_refund_deal(deal_id: DealId) -> Result<(), EscrowError> {
         subaccount: None,
     };
 
-    // RFC-002: auto-refund is symmetric with manual `reclaim_deal` —
+    // Auto-refund is symmetric with manual `reclaim_deal` —
     // escrow keeps `escrow_fee`, refund covers `amount - EF - LF`.
     // The `fees` snapshot is cloned out of the deal so we don't hold
     // a borrow over the await.

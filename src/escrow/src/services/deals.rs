@@ -25,21 +25,21 @@ use crate::{
 };
 
 // ---------------------------------------------------------------------------
-// Fee snapshot + accessors (RFC-002)
+// Fee snapshot + accessors
 // ---------------------------------------------------------------------------
 
 /// Default escrow service fee, in token base units. Calibrated to
 /// `2 × ICP_LEDGER_FEE` (= `20_000` e8s for ICP). Used when
-/// `Config.escrow_fee` is `None` — either a pre-RFC-002 stable
-/// snapshot or a fresh deployment that hasn't been admin-configured
-/// yet. The default is denominated in the deal's token; non-ICP
-/// ledgers with materially different transfer-fee scales may need
-/// the controller to call `update_config` with a token-appropriate
-/// override before deals on that token can be created.
+/// `Config.escrow_fee` is `None` — either a legacy stable snapshot
+/// or a fresh deployment that hasn't been admin-configured yet. The
+/// default is denominated in the deal's token; non-ICP ledgers with
+/// materially different transfer-fee scales may need the controller
+/// to call `update_config` with a token-appropriate override before
+/// deals on that token can be created.
 pub const DEFAULT_ESCROW_FEE: u128 = 20_000;
 
 /// Returns the currently-configured escrow service fee, or
-/// [`DEFAULT_ESCROW_FEE`] if `Config.escrow_fee` is unset (pre-RFC-002
+/// [`DEFAULT_ESCROW_FEE`] if `Config.escrow_fee` is unset (legacy
 /// snapshots / fresh deployments). Called once per `create_deal` to
 /// build the per-deal [`DealFees`] snapshot.
 #[must_use]
@@ -51,11 +51,11 @@ pub fn load_escrow_fee() -> u128 {
 /// the deal's `amount` + the ledger's live fee. The returned
 /// [`DealFees`] is stored verbatim on the new deal so subsequent
 /// `update_config` calls cannot retroactively change the agreed
-/// economics. See RFC-002 § Q6 for the snapshot-drift rule.
+/// economics.
 ///
 /// `dispute_reserve_per_party` = `compute_arbitration_fee(amount,
 /// dispute_config) / 2`. Same source as today's `open_dispute`-time
-/// computation; the two values will agree on RFC-002-era deals.
+/// computation; the two values agree on deals created post-snapshot.
 #[must_use]
 pub fn compute_deal_fees(
     amount: u128,
@@ -77,13 +77,13 @@ pub fn compute_deal_fees(
 /// the recipient gets exactly the value they were quoted at create
 /// time and the escrow subaccount retains `escrow_fee` (which
 /// stays locked in the per-deal subaccount as the operator's
-/// share; a sweeper is out of scope for RFC-002 PR-1).
+/// share; a sweeper is out of scope for now).
 ///
-/// For pre-RFC-002 deals (`fees = None`), only the ledger fee is
+/// For legacy deals (`fees = None`), only the ledger fee is
 /// deducted — `escrow_fee = 0` — which still fixes the latent
-/// `InsufficientFunds` bug on those legacy deals (today they
-/// can't settle at all because `execute_accept` tries to transfer
-/// the full `amount` and the subaccount is `ledger_fee` short).
+/// `InsufficientFunds` bug on those deals (today they can't settle
+/// at all because `execute_accept` tries to transfer the full
+/// `amount` and the subaccount is `ledger_fee` short).
 ///
 /// Saturating arithmetic — if `amount < escrow_fee + ledger_fee`
 /// the function returns `0`. The `validate_min_amount` check at
@@ -123,11 +123,11 @@ pub async fn create(
     let (payer, recipient, payer_consent, recipient_consent) =
         validation::resolve_parties(caller, args.payer, args.recipient)?;
 
-    // Snapshot every fee against the deal at create time (RFC-002).
-    // The ledger fee is queried live and stored on the snapshot
-    // for audit + the min-amount check, but every subsequent
-    // transfer re-queries it — the operator absorbs any drift
-    // between create-time and runtime fees out of `escrow_fee`.
+    // Snapshot every fee against the deal at create time. The
+    // ledger fee is queried live and stored on the snapshot for
+    // audit + the min-amount check, but every subsequent transfer
+    // re-queries it — the operator absorbs any drift between
+    // create-time and runtime fees out of `escrow_fee`.
     //
     // A failure to reach the ledger here is non-fatal: we fall
     // back to `0` for the snapshot and the min-amount check
@@ -434,13 +434,13 @@ async fn execute_accept(
         subaccount: None,
     };
 
-    // RFC-002: deduct the snapshotted `escrow_fee` and the live
-    // ledger fee from the recipient's payout so the escrow
-    // subaccount (which holds exactly `amount` after `execute_fund`)
-    // can actually settle the transfer. `escrow_fee` remains in the
-    // subaccount as the operator's share. Legacy deals
-    // (`fees = None`) deduct only the ledger fee — they pre-date
-    // the service fee and the snapshot-based economics.
+    // Deduct the snapshotted `escrow_fee` and the live ledger fee
+    // from the recipient's payout so the escrow subaccount (which
+    // holds exactly `amount` after `execute_fund`) can actually
+    // settle the transfer. `escrow_fee` remains in the subaccount
+    // as the operator's share. Legacy deals (`fees = None`) deduct
+    // only the ledger fee — they pre-date the service fee and the
+    // snapshot-based economics.
     let ledger_fee = ledger::fee(deal.token_ledger).await?;
     let payout = payout_after_fees(deal.amount, deal.fees.as_ref(), ledger_fee);
 
@@ -480,10 +480,10 @@ async fn execute_reclaim(
         subaccount: None,
     };
 
-    // RFC-002: expiry refund is symmetric with settlement — escrow
-    // keeps `escrow_fee`, payer gets `amount - EF - LF` back.
-    // Legacy deals (`fees = None`) only pay the ledger fee, which
-    // is also the latent-bug fix from RFC-002 § Problem Statement.
+    // Expiry refund is symmetric with settlement — escrow keeps
+    // `escrow_fee`, payer gets `amount - EF - LF` back. Legacy
+    // deals (`fees = None`) only pay the ledger fee, which is
+    // also the latent-bug fix for settle/refund on those deals.
     let ledger_fee = ledger::fee(deal.token_ledger).await?;
     let refund = payout_after_fees(deal.amount, deal.fees.as_ref(), ledger_fee);
 
@@ -725,7 +725,7 @@ mod tests {
         assert_eq!(view.claim_code.as_deref(), Some("test-code-abc"));
     }
 
-    // --- RFC-002: fee snapshot + payout math ---
+    // --- fee snapshot + payout math ---
 
     use super::{compute_deal_fees, load_escrow_fee, payout_after_fees, DEFAULT_ESCROW_FEE};
     use crate::{
@@ -795,10 +795,9 @@ mod tests {
 
     #[test]
     fn payout_after_fees_legacy_deal_subtracts_only_lf() {
-        // fees = None (pre-RFC-002 deal) → only the ledger fee is
-        // deducted. This is the latent-bug fix from RFC-002 §
-        // Problem Statement: today these deals try to send the full
-        // amount and fail with InsufficientFunds.
+        // fees = None (legacy deal) → only the ledger fee is
+        // deducted. Latent-bug fix: without this, these deals try
+        // to send the full amount and fail with InsufficientFunds.
         assert_eq!(payout_after_fees(1_000_000, None, 10_000), 990_000);
     }
 

@@ -99,8 +99,8 @@ pub struct DealView {
     /// percentage, and create-time ledger fee. Frontends should
     /// render these for transparent quoting (the recipient's
     /// expected payout is `amount - fees.escrow_fee - live ledger
-    /// fee`). `None` for pre-RFC-002 deals — see
-    /// [RFC-002 § Migration](../../../../docs/rfcs/0002-symmetric-escrow-fees.md#migration).
+    /// fee`). `None` for legacy deals created before the fee
+    /// snapshot was introduced.
     pub fees: Option<DealFees>,
 }
 

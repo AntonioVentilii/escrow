@@ -51,7 +51,7 @@ pub fn validate_create(amount: u128, expires_at_ns: u64, now_ns: u64) -> Result<
 /// fan-out worst case; `2 * dispute_reserve_per_party` = `DC`
 /// (full panel consumption). `amount > min` is required (strict
 /// inequality — `> min` guarantees at least 1 token unit remains
-/// for the recipient). See RFC-002 § Q3 for the full derivation.
+/// for the recipient).
 #[must_use]
 pub fn compute_min_viable_amount(fees: &DealFees, ledger_fee: u128) -> u128 {
     fees.escrow_fee
@@ -1427,7 +1427,7 @@ mod tests {
         }
     }
 
-    // --- RFC-002: validate_min_amount + compute_min_viable_amount ---
+    // --- validate_min_amount + compute_min_viable_amount ---
 
     use super::{compute_min_viable_amount, validate_min_amount};
     use crate::types::deal::DealFees;

@@ -46,11 +46,7 @@ pub struct DealMetadata {
 /// Every fee the canister will charge against this deal over its
 /// lifetime is locked here so that subsequent `update_config` calls
 /// cannot retroactively alter the agreed economics. Same pattern as
-/// `Deal.panel_size` (see RFC-001 Q6 revisit) but applied to every
-/// fee instead of just the arbitration panel size.
-///
-/// See [RFC-002](../../../docs/rfcs/0002-symmetric-escrow-fees.md) for
-/// the full design.
+/// `Deal.panel_size`: the deal terms are a contract at create time.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct DealFees {
     /// Escrow service fee in the deal's token. Charged on every
@@ -67,17 +63,11 @@ pub struct DealFees {
     /// `Disputed → ArbitratedX`. Snapshot of
     /// `compute_arbitration_fee(amount, DisputeConfig) / 2` at
     /// create time.
-    ///
-    /// In RFC-002 PR-1 this field is populated but not yet
-    /// consumed — the two-sided ICRC-2 reserve flow lands in PR-2.
-    /// Frontends can already read it for transparent quoting.
     pub dispute_reserve_per_party: u128,
 
     /// Reduced-fee percentage the arbitrator panel receives when
     /// the parties resolve out-of-band via `withdraw_dispute`.
     /// Snapshot of `DisputeConfig.withdraw_fee_pct` at create time.
-    /// In RFC-002 PR-1 this is recorded but not yet consumed; PR-3
-    /// switches the withdraw fan-out math to read from here.
     pub withdraw_fee_pct: u32,
 
     /// Ledger `icrc1_fee` value at create time, in the deal's
@@ -132,15 +122,13 @@ pub struct Deal {
     /// `max_panel_size` at create time via
     /// `validation::validate_panel_size_choice`.
     pub panel_size: Option<u32>,
-    /// Fee snapshot taken at `create_deal` time. See [`DealFees`]
-    /// and [RFC-002](../../../docs/rfcs/0002-symmetric-escrow-fees.md).
+    /// Fee snapshot taken at `create_deal` time. See [`DealFees`].
     ///
-    /// `Option`-wrapped for backward-compat with pre-RFC-002 stable
+    /// `Option`-wrapped for backward-compat with legacy stable
     /// snapshots: deals created before this field existed
     /// deserialise as `None` and are processed through the legacy
     /// code path (no `escrow_fee` charged at terminal time, but
     /// outgoing transfers still account for the live ledger fee so
-    /// the latent `InsufficientFunds` bug is fixed for them too —
-    /// see RFC-002 § Migration).
+    /// the latent `InsufficientFunds` bug is fixed for them too).
     pub fees: Option<DealFees>,
 }

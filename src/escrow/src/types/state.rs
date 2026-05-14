@@ -25,13 +25,13 @@ pub struct Config {
     /// merge mechanism).
     pub dispute_config: Option<DisputeConfig>,
     /// Per-deal escrow service fee, in the deal's token. Charged on
-    /// every terminal state. `None` on pre-RFC-002 stable snapshots
+    /// every terminal state. `None` on legacy stable snapshots
     /// — `services::deals::load_escrow_fee` returns the default
     /// (`DEFAULT_ESCROW_FEE`) in that case. Once a controller calls
     /// `update_config` with a `Some(_)` value the snapshot at
     /// `create_deal` time uses that. Subsequent changes do not
-    /// retroactively alter in-flight deals — see
-    /// [RFC-002](../../../docs/rfcs/0002-symmetric-escrow-fees.md).
+    /// retroactively alter in-flight deals — the create-time
+    /// snapshot on each `Deal` is the contract.
     pub escrow_fee: Option<u128>,
 }
 
