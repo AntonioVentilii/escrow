@@ -1,5 +1,6 @@
 mod admin_config;
 mod arbitrators;
+mod deals_money_flow;
 mod disputes_evidence;
 mod disputes_finalize;
 mod disputes_open;
