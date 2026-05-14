@@ -10,17 +10,12 @@ use crate::{
         arbitrator::ArbitratorProfile,
         deal::{Deal, DealId, DealStatus},
         dispute::{Dispute, DisputeId},
-        state::{Config, StableState, DEFAULT_ESCROW_FEE},
+        state::{Config, StableState},
     },
 };
 
 thread_local! {
-    pub static CONFIG: RefCell<Config> = const {
-        RefCell::new(Config {
-            dispute_config: None,
-            escrow_fee: DEFAULT_ESCROW_FEE,
-        })
-    };
+    pub static CONFIG: RefCell<Config> = const { RefCell::new(Config::const_default()) };
     static DEALS: RefCell<BTreeMap<DealId, Deal>> = const { RefCell::new(BTreeMap::new()) };
     static NEXT_DEAL_ID: RefCell<DealId> = const { RefCell::new(1) };
     /// Transient lock preventing concurrent async processing of the same deal.
@@ -273,11 +268,11 @@ pub fn save_state() {
 
     let state = StableState {
         config,
-        deals: Some(deals),
-        next_deal_id: Some(next_deal_id),
-        disputes: Some(disputes),
-        next_dispute_id: Some(next_dispute_id),
-        arbitrators: Some(arbitrators),
+        deals,
+        next_deal_id,
+        disputes,
+        next_dispute_id,
+        arbitrators,
     };
 
     storage::stable_save((state,)).expect("Save failed");
@@ -303,11 +298,11 @@ pub fn restore_state() {
     } = state;
 
     CONFIG.with(|c| *c.borrow_mut() = config);
-    DEALS.with(|d| *d.borrow_mut() = deals.unwrap_or_default());
-    NEXT_DEAL_ID.with(|id| *id.borrow_mut() = next_deal_id.unwrap_or(1));
-    DISPUTES.with(|d| *d.borrow_mut() = disputes.unwrap_or_default());
-    NEXT_DISPUTE_ID.with(|id| *id.borrow_mut() = next_dispute_id.unwrap_or(1));
-    ARBITRATORS.with(|a| *a.borrow_mut() = arbitrators.unwrap_or_default());
+    DEALS.with(|d| *d.borrow_mut() = deals);
+    NEXT_DEAL_ID.with(|id| *id.borrow_mut() = next_deal_id);
+    DISPUTES.with(|d| *d.borrow_mut() = disputes);
+    NEXT_DISPUTE_ID.with(|id| *id.borrow_mut() = next_dispute_id);
+    ARBITRATORS.with(|a| *a.borrow_mut() = arbitrators);
 }
 
 #[cfg(test)]

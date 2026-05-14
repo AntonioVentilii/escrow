@@ -134,11 +134,10 @@ fn next_u64(bytes: &[u8], cursor: usize) -> u64 {
     u64::from_le_bytes(buf)
 }
 
-/// Reads `Config::dispute_config` with a fallback to `DisputeConfig::default()`
-/// when admin hasn't set one (legacy snapshots, fresh deployments).
+/// Reads `Config::dispute_config`.
 #[must_use]
 pub fn load_dispute_config() -> DisputeConfig {
-    CONFIG.with(|c| c.borrow().dispute_config.clone().unwrap_or_default())
+    CONFIG.with(|c| c.borrow().dispute_config.clone())
 }
 
 /// Opens a new dispute on `deal_id`.
@@ -1572,8 +1571,7 @@ mod tests {
     // --- load_dispute_config ---
 
     #[test]
-    fn load_dispute_config_falls_back_to_default() {
-        // CONFIG starts with dispute_config = None per memory.rs init.
+    fn load_dispute_config_reads_canister_default() {
         let cfg = load_dispute_config();
         assert_eq!(cfg.panel_size, DisputeConfig::default().panel_size);
     }

@@ -110,9 +110,8 @@ pub struct Deal {
     pub metadata: Option<DealMetadata>,
     /// `Some(dispute_id)` while a dispute is open on the deal or after
     /// it has resolved (so the audit trail back to the `Dispute` record
-    /// survives terminal status). `None` for deals that never went into
-    /// dispute. `Option`-wrapped for backward-compat with pre-dispute
-    /// stable snapshots.
+    /// survives terminal status). `None` for deals that never went
+    /// into dispute.
     pub dispute: Option<DisputeId>,
     /// Per-deal panel size override, chosen by the deal creator at
     /// `create_deal` time. `Some(n)` locks `n` arbitrators for any

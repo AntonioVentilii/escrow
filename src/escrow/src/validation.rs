@@ -183,13 +183,10 @@ pub fn validate_dispute_config(cfg: &DisputeConfig) -> Result<(), EscrowError> {
     Ok(())
 }
 
-/// Validates a top-level [`Config`]. Currently delegates to
-/// [`validate_dispute_config`] when `dispute_config` is set.
+/// Validates a top-level [`Config`]. Delegates to
+/// [`validate_dispute_config`] for the nested struct.
 pub fn validate_config(cfg: &Config) -> Result<(), EscrowError> {
-    if let Some(dc) = &cfg.dispute_config {
-        validate_dispute_config(dc)?;
-    }
-    Ok(())
+    validate_dispute_config(&cfg.dispute_config)
 }
 
 /// Validates a deal creator's per-deal `panel_size` choice against

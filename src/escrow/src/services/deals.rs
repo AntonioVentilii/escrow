@@ -726,7 +726,7 @@ mod tests {
     fn load_escrow_fee_returns_configured_value() {
         CONFIG.with(|c| {
             *c.borrow_mut() = Config {
-                dispute_config: None,
+                dispute_config: DisputeConfig::default(),
                 escrow_fee: 123_456,
             };
         });

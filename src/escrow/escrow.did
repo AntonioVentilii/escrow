@@ -148,15 +148,10 @@ type Config = record {
 	// time; subsequent `update_config` changes do not retroactively
 	// alter in-flight deals.
 	escrow_fee : nat;
-	// Admin-tunable dispute parameters. The fallback is whole-struct,
-	// not per-field — when `dispute_config` is `None`,
-	// `services::disputes::load_dispute_config` returns
-	// `DisputeConfig::default()`. Once a controller calls
-	// `update_config` with a `Some(_)` value, every field comes from
-	// that struct (including any fields the controller wants set to
-	// the default value — there's no per-field "leave unchanged"
-	// merge mechanism).
-	dispute_config : opt DisputeConfig
+	// Admin-tunable dispute parameters. Fallback is whole-struct
+	// (`update_config` replaces the entire `DisputeConfig` — there
+	// is no per-field "leave unchanged" merge mechanism).
+	dispute_config : DisputeConfig
 };
 type Consent = variant { Rejected; Accepted; Pending };
 // Arguments for creating a new deal.
@@ -963,9 +958,9 @@ service : () -> {
 	submit_evidence : (SubmitEvidenceArgs) -> (CastVoteResult);
 	// Updates the global configuration for the Escrow canister.
 	//
-	// Validates `config.dispute_config` (when set) against the
-	// invariants documented on `DisputeConfig` before persisting.
-	// Rejects with `EscrowError::ValidationError` on invalid input
+	// Validates `config.dispute_config` against the invariants documented
+	// on `DisputeConfig` before persisting. Rejects with
+	// `EscrowError::ValidationError` on invalid input
 	// rather than letting bad config poison the dispute machinery at
 	// runtime (e.g. even `panel_size`, zero windows, fee bps > 100%).
 	//

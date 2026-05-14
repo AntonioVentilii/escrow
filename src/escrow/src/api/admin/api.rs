@@ -18,9 +18,9 @@ pub fn config() -> Config {
 
 /// Updates the global configuration for the Escrow canister.
 ///
-/// Validates `config.dispute_config` (when set) against the
-/// invariants documented on `DisputeConfig` before persisting.
-/// Rejects with `EscrowError::ValidationError` on invalid input
+/// Validates `config.dispute_config` against the invariants documented
+/// on `DisputeConfig` before persisting. Rejects with
+/// `EscrowError::ValidationError` on invalid input
 /// rather than letting bad config poison the dispute machinery at
 /// runtime (e.g. even `panel_size`, zero windows, fee bps > 100%).
 ///
