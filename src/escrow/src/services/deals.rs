@@ -43,8 +43,11 @@ pub fn load_escrow_fee() -> u128 {
 /// economics.
 ///
 /// `dispute_reserve_per_party` = `compute_arbitration_fee(amount,
-/// dispute_config) / 2`. Same source as today's `open_dispute`-time
-/// computation; the two values agree on deals created post-snapshot.
+/// dispute_config).div_ceil(2)`. Ceiling division ensures
+/// `2 × dispute_reserve_per_party ≥ full_dispute_cost` even when
+/// the full cost is odd, so the panel can always be paid in full
+/// at finalize time. The (at-most-one-unit) overage on odd fees
+/// stays in the deal subaccount and accrues to the operator.
 #[must_use]
 pub fn compute_deal_fees(
     amount: u128,
@@ -55,7 +58,7 @@ pub fn compute_deal_fees(
     let full_dispute_cost = disputes::compute_arbitration_fee(amount, dispute_cfg);
     DealFees {
         escrow_fee,
-        dispute_reserve_per_party: full_dispute_cost / 2,
+        dispute_reserve_per_party: full_dispute_cost.div_ceil(2),
         withdraw_fee_pct: dispute_cfg.withdraw_fee_pct,
         ledger_fee_at_create: ledger_fee,
     }
@@ -124,7 +127,11 @@ pub async fn create(
     let escrow_fee = load_escrow_fee();
     let ledger_fee = ledger::fee(args.token_ledger).await.unwrap_or(0);
     let fees = compute_deal_fees(args.amount, escrow_fee, &dispute_cfg, ledger_fee);
-    validation::validate_min_amount(args.amount, &fees, ledger_fee)?;
+    // For the min-amount floor we use the panel size that will
+    // actually be in effect: the deal's locked override if
+    // `Some(_)`, otherwise the current canister default.
+    let effective_panel_size = args.panel_size.unwrap_or(dispute_cfg.panel_size);
+    validation::validate_min_amount(args.amount, &fees, ledger_fee, effective_panel_size)?;
 
     let claim_code = generate_claim_code().await?;
 

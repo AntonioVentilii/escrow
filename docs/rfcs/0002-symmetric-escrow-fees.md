@@ -85,11 +85,11 @@ retroactively alter in-flight deals.
   via `update_config`. Default = `2 × ICP_LEDGER_FEE` = `20_000` e8s.
 - A `validate_create` minimum-amount check that rejects deals whose
   `amount` cannot cover `EF + ledger_fee × N + DC + ε`.
-- Fix the settle/refund/expiry under-funding: every outgoing
-  `icrc1_transfer` from the escrow subaccount must account for the
-  ledger fee in the amount it sends, OR the escrow subaccount must be
-  pre-funded with the headroom. We pick the latter (pre-fund) so the
-  recipient receives exactly `amount − EF`.
+- Fix the settle/refund/expiry under-funding by deducting the live
+  `ledger_fee` from every outgoing `icrc1_transfer` so the escrow
+  subaccount (which holds exactly `amount` after funding) can fulfil
+  the transfer. The recipient nets `amount − EF − ledger_fee`; `EF`
+  remains in the per-deal subaccount as the operator's share.
 - A two-sided dispute reserve: both payer and receiver commit `DC/2`
   before the deal can be `Funded`. On happy paths each gets their
   `DC/2 − ledger_fee` back; on disputes the full `DC` is consumed by
@@ -105,10 +105,10 @@ retroactively alter in-flight deals.
 - Frontend coordination (the PandaMe repo will be updated in a
   follow-up PR per the cross-repo coordination rule in
   [`docs/ai/pr-and-ci.md`](../ai/pr-and-ci.md)).
-- A platform-wide treasury / sweeper — `EF` accumulates in the
-  canister's main account (subaccount `None`) and is left there for
-  controllers to sweep manually. A dedicated treasury mechanism is a
-  separate concern.
+- A platform-wide treasury / sweeper — `EF` accumulates in each
+  deal's escrow subaccount (one `EF` worth per terminal deal) and
+  is left there for controllers to sweep manually. A dedicated
+  treasury mechanism is a separate concern.
 - Per-outcome fee rates (settled vs rejected vs expired) — per
   [Q2](#q2-penalty-vs-escrow-fee), v1 uses a single `EF` for every
   terminal state. Differentiated rates can be added later by
@@ -353,21 +353,29 @@ costs the same as a successful settlement. Rationale:
 
 ### Q3 — Minimum viable amount
 
-**Decision:** `validate_create` rejects deals where
-`amount ≤ EF + 2 × ledger_fee + DC + ε`.
+**Decision:** `validate_create` rejects deals where `amount` is
+not strictly greater than the larger of the happy-path floor
+(`EF + ledger_fee`) and the dispute-path floor
+(`DC + (panel_size + 1) × ledger_fee`). The error carries the
+smallest acceptable amount (`floor + 1`) so callers can retry with
+the reported value directly, matching the convention of
+`AmountTooSmallForArbitration`.
 
 The actual check:
 
 ```
-let DC = compute_arbitration_fee(amount, dispute_config);
-let min = EF
-    + 2 * ledger_fee_at_create   // settle/refund + dispute panel fee
-    + DC                          // potential full panel consumption
-    + 1;                          // > 0 leftover for recipient
-if amount <= min {
-    return Err(AmountBelowMinimum { min });
+let DC      = compute_arbitration_fee(amount, dispute_config);
+let happy   = EF + ledger_fee_at_create;
+let dispute = DC + (panel_size + 1) * ledger_fee_at_create;
+let floor   = max(happy, dispute);
+if amount <= floor {
+    return Err(AmountBelowMinimum { min: floor + 1 });
 }
 ```
+
+The `panel_size` here is the value that will be in effect on
+`open_dispute`: the deal's locked override if `Some(_)`, otherwise
+the current `DisputeConfig.panel_size` snapshot.
 
 Mirrors the existing `AmountTooSmallForArbitration` check in
 `services/disputes.rs::open_dispute_async` but lifts it to create

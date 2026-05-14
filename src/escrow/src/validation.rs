@@ -39,39 +39,45 @@ pub fn validate_create(amount: u128, expires_at_ns: u64, now_ns: u64) -> Result<
     Ok(())
 }
 
-/// Returns the minimum viable deal amount given the snapshot fees
-/// and the live ledger fee. A deal whose `amount` is at or below
-/// this floor would leave zero (or negative) remainder for the
-/// recipient after all fee deductions, so creation is rejected
-/// upstream.
+/// Returns the strict floor `amount` must exceed to be viable across
+/// every terminal path: happy-path settle/refund AND a dispute opened
+/// with the deal's locked panel size.
 ///
-/// Formula: `min = escrow_fee + 2 * ledger_fee + 2 *
-/// dispute_reserve_per_party`. The two ledger-fee headrooms cover
-/// the outgoing settle/refund transfer and the per-arbitrator
-/// fan-out worst case; `2 * dispute_reserve_per_party` = `DC`
-/// (full panel consumption). `amount > min` is required (strict
-/// inequality — `> min` guarantees at least 1 token unit remains
-/// for the recipient).
+/// Formula: `floor = max(happy, dispute)` where
+/// - `happy = escrow_fee + ledger_fee` (settle/refund pays one outgoing ledger fee and retains
+///   `escrow_fee` in the subaccount).
+/// - `dispute = 2 * dispute_reserve_per_party + (panel_size + 1) * ledger_fee` (panel fan-out is
+///   one ledger fee per arbitrator plus one for the prevailing-party transfer; matches the existing
+///   `open_dispute` headroom check in `services::disputes`).
+///
+/// `amount > floor` is required — a deal at exactly the floor would
+/// leave zero remainder for the recipient or the prevailing party.
 #[must_use]
-pub fn compute_min_viable_amount(fees: &DealFees, ledger_fee: u128) -> u128 {
-    fees.escrow_fee
-        .saturating_add(ledger_fee.saturating_mul(2))
-        .saturating_add(fees.dispute_reserve_per_party.saturating_mul(2))
+pub fn compute_min_viable_amount(fees: &DealFees, ledger_fee: u128, panel_size: u32) -> u128 {
+    let happy = fees.escrow_fee.saturating_add(ledger_fee);
+    let dispute = fees
+        .dispute_reserve_per_party
+        .saturating_mul(2)
+        .saturating_add(ledger_fee.saturating_mul(u128::from(panel_size).saturating_add(1)));
+    happy.max(dispute)
 }
 
-/// Rejects a `create_deal` whose `amount` is at or below the
-/// computed minimum (`amount <= compute_min_viable_amount(...)`).
-/// Returns `EscrowError::AmountBelowMinimum { min }` carrying the
-/// floor so the caller can render the rejection without
-/// recomputing.
+/// Rejects a `create_deal` whose `amount` is at or below the computed
+/// floor. Returns `EscrowError::AmountBelowMinimum { min }` carrying
+/// the **smallest acceptable amount** (i.e. `floor + 1`), matching the
+/// convention of `AmountTooSmallForArbitration` so callers can retry
+/// with the reported value directly.
 pub fn validate_min_amount(
     amount: u128,
     fees: &DealFees,
     ledger_fee: u128,
+    panel_size: u32,
 ) -> Result<(), EscrowError> {
-    let min = compute_min_viable_amount(fees, ledger_fee);
-    if amount <= min {
-        return Err(EscrowError::AmountBelowMinimum { min });
+    let floor = compute_min_viable_amount(fees, ledger_fee, panel_size);
+    if amount <= floor {
+        return Err(EscrowError::AmountBelowMinimum {
+            min: floor.saturating_add(1),
+        });
     }
     Ok(())
 }
@@ -1439,25 +1445,48 @@ mod tests {
     }
 
     #[test]
-    fn min_amount_floor_is_ef_plus_two_lf_plus_dc() {
-        // EF=20_000, LF=10_000, DC/2=5_000 → DC=10_000.
-        // floor = 20_000 + 2*10_000 + 2*5_000 = 50_000.
+    fn min_amount_floor_for_default_panel() {
+        // EF=20_000, LF=10_000, DC/2=5_000 (→ DC=10_000), panel=3.
+        // happy = 20_000 + 10_000 = 30_000.
+        // dispute = 2 * 5_000 + (3 + 1) * 10_000 = 50_000.
+        // floor = max(30_000, 50_000) = 50_000.
         let f = fees(20_000, 5_000);
-        assert_eq!(compute_min_viable_amount(&f, 10_000), 50_000);
+        assert_eq!(compute_min_viable_amount(&f, 10_000, 3), 50_000);
+    }
+
+    #[test]
+    fn min_amount_floor_scales_with_panel_size() {
+        // Larger panel → more outgoing per-arbitrator ledger fees,
+        // so the floor must grow. EF=20_000, LF=10_000, DC/2=5_000.
+        // panel=11 → dispute = 10_000 + 12 * 10_000 = 130_000.
+        let f = fees(20_000, 5_000);
+        assert_eq!(compute_min_viable_amount(&f, 10_000, 11), 130_000);
+    }
+
+    #[test]
+    fn min_amount_floor_takes_happy_path_when_panel_is_cheap() {
+        // Tiny DC + tiny panel → happy path dominates.
+        // EF=20_000, LF=10_000, DC/2=0, panel=3.
+        // happy = 30_000. dispute = 0 + 4*10_000 = 40_000.
+        // floor = max(30_000, 40_000) = 40_000. (Still dispute, even
+        // with DC=0, because the per-arbitrator fees count.)
+        let f = fees(20_000, 0);
+        assert_eq!(compute_min_viable_amount(&f, 10_000, 3), 40_000);
     }
 
     #[test]
     fn min_amount_accepts_just_above_floor() {
         let f = fees(20_000, 5_000);
-        // amount must be strictly greater than the floor.
-        assert!(validate_min_amount(50_001, &f, 10_000).is_ok());
+        assert!(validate_min_amount(50_001, &f, 10_000, 3).is_ok());
     }
 
     #[test]
-    fn min_amount_rejects_at_floor() {
+    fn min_amount_rejects_at_floor_and_reports_min_acceptable() {
+        // floor is rejected (strict inequality); error reports
+        // floor + 1 so the caller can retry with the value as-is.
         let f = fees(20_000, 5_000);
-        match validate_min_amount(50_000, &f, 10_000).unwrap_err() {
-            EscrowError::AmountBelowMinimum { min } => assert_eq!(min, 50_000),
+        match validate_min_amount(50_000, &f, 10_000, 3).unwrap_err() {
+            EscrowError::AmountBelowMinimum { min } => assert_eq!(min, 50_001),
             other => panic!("wrong error: {other:?}"),
         }
     }
@@ -1465,20 +1494,9 @@ mod tests {
     #[test]
     fn min_amount_rejects_below_floor() {
         let f = fees(20_000, 5_000);
-        // 1_000 << 50_000 floor.
-        match validate_min_amount(1_000, &f, 10_000).unwrap_err() {
-            EscrowError::AmountBelowMinimum { min } => assert_eq!(min, 50_000),
+        match validate_min_amount(1_000, &f, 10_000, 3).unwrap_err() {
+            EscrowError::AmountBelowMinimum { min } => assert_eq!(min, 50_001),
             other => panic!("wrong error: {other:?}"),
         }
-    }
-
-    #[test]
-    fn min_amount_with_zero_reserve_is_just_ef_plus_two_lf() {
-        // Edge case: dispute reserve is 0 (legacy / no dispute configured) —
-        // floor degenerates to EF + 2*LF.
-        let f = fees(20_000, 0);
-        assert_eq!(compute_min_viable_amount(&f, 10_000), 40_000);
-        assert!(validate_min_amount(40_001, &f, 10_000).is_ok());
-        assert!(validate_min_amount(40_000, &f, 10_000).is_err());
     }
 }
