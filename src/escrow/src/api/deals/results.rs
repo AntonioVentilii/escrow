@@ -2,6 +2,7 @@ use candid::{CandidType, Deserialize, Principal};
 
 use super::errors::EscrowError;
 use crate::types::{
+    asset::Asset,
     deal::{Consent, Deal, DealFees, DealId, DealStatus},
     dispute::DisputeId,
     ledger_types::Account,
@@ -49,8 +50,10 @@ pub struct DealView {
     pub recipient: Option<Principal>,
     /// Escrowed token amount.
     pub amount: u128,
-    /// Principal of the ICRC token ledger canister.
-    pub token_ledger: Principal,
+    /// Settlement asset for this deal. Today always
+    /// [`Asset::Icrc`]; the enum exists so future settlement
+    /// domains can be added without renaming this field.
+    pub asset: Asset,
     /// Current lifecycle status of the deal.
     pub status: DealStatus,
     /// Nanosecond UTC timestamp when the deal was created.
@@ -110,7 +113,7 @@ impl From<&Deal> for DealView {
             payer: deal.payer,
             recipient: deal.recipient,
             amount: deal.amount,
-            token_ledger: deal.token_ledger,
+            asset: deal.asset.clone(),
             status: deal.status.clone(),
             created_at_ns: deal.created_at_ns,
             created_by: deal.created_by,
@@ -141,8 +144,9 @@ pub struct ClaimableDealView {
     pub id: DealId,
     /// Escrowed token amount.
     pub amount: u128,
-    /// Principal of the ICRC token ledger canister.
-    pub token_ledger: Principal,
+    /// Settlement asset for this deal. Today always
+    /// [`Asset::Icrc`].
+    pub asset: Asset,
     /// Current lifecycle status of the deal.
     pub status: DealStatus,
     /// Whether a recipient principal has already been bound to this deal.
@@ -160,7 +164,7 @@ impl From<&Deal> for ClaimableDealView {
         Self {
             id: deal.id,
             amount: deal.amount,
-            token_ledger: deal.token_ledger,
+            asset: deal.asset.clone(),
             status: deal.status.clone(),
             is_recipient_bound: deal.recipient.is_some(),
             expires_at_ns: deal.expires_at_ns,
@@ -175,7 +179,10 @@ mod tests {
     use candid::Principal;
 
     use super::{ClaimableDealView, DealView};
-    use crate::types::deal::{Consent, Deal, DealFees, DealMetadata, DealStatus};
+    use crate::types::{
+        asset::Asset,
+        deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
+    };
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])
@@ -187,7 +194,7 @@ mod tests {
             id: 1,
             payer: Some(test_principal(1)),
             recipient: None,
-            token_ledger: test_principal(99),
+            asset: Asset::Icrc(test_principal(99)),
             amount: 1_000_000,
             created_at_ns: 100,
             created_by: test_principal(1),
@@ -232,7 +239,7 @@ mod tests {
             id: 1,
             payer: Some(test_principal(1)),
             recipient: Some(test_principal(2)),
-            token_ledger: test_principal(99),
+            asset: Asset::Icrc(test_principal(99)),
             amount: 500,
             created_at_ns: 100,
             created_by: test_principal(1),

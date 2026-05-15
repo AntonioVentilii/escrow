@@ -312,6 +312,7 @@ mod tests {
     use crate::{
         memory::insert_new_deal,
         types::{
+            asset::Asset,
             deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
             icrc7::{Icrc7TransferArg, Icrc7TransferResponse, Value, COLLECTION_NAME},
             ledger_types::Account,
@@ -327,7 +328,7 @@ mod tests {
             id: deal_id,
             payer: Some(payer),
             recipient,
-            token_ledger: test_principal(99),
+            asset: Asset::Icrc(test_principal(99)),
             amount: 1000,
             created_at_ns: 100,
             created_by: payer,

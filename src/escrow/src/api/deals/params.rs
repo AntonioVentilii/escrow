@@ -1,6 +1,6 @@
 use candid::{CandidType, Deserialize, Principal};
 
-use crate::types::deal::DealId;
+use crate::types::{asset::Asset, deal::DealId};
 
 /// Arguments for creating a new deal.
 ///
@@ -11,10 +11,17 @@ use crate::types::deal::DealId;
 /// consent starts as `Pending`.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct CreateDealArgs {
-    /// Token amount to escrow (must be > 0).
+    /// Token amount to escrow (must be > 0). Denominated in the
+    /// base units of the deal's `asset` (e.g. e8s for ICP).
     pub amount: u128,
-    /// Principal of the ICRC-1/ICRC-2 token ledger canister.
-    pub token_ledger: Principal,
+    /// Settlement asset for this deal. Today the canister only
+    /// handles ICRC-1 / ICRC-2 ledgers, so clients pass the asset
+    /// as the `Icrc` variant — at the Candid boundary that's
+    /// `asset = variant { Icrc = <ledger principal> }` (and
+    /// `Asset::Icrc(<ledger principal>)` from Rust). The variant
+    /// exists so future settlement domains (EVM, Solana, …) can
+    /// be added without renaming this field.
+    pub asset: Asset,
     /// Nanosecond UTC timestamp after which the deal expires and becomes reclaimable.
     pub expires_at_ns: u64,
     /// Optional payer principal. If `None`, defaults to the caller when the

@@ -32,7 +32,10 @@ src/escrow/src/
 │
 ├── types/                  Internal + public Candid types. Distinguished by visibility.
 │   ├── mod.rs
-│   ├── deal.rs             Internal `Deal`, `DealStatus`, `Consent`, `DealMetadata`.
+│   ├── arbitrator.rs       Arbitrator profile + status (curated registry).
+│   ├── asset.rs            `Asset` enum — settlement-currency abstraction (today: `Icrc(Principal)` only).
+│   ├── deal.rs             Internal `Deal`, `DealStatus`, `Consent`, `DealMetadata`, `DealFees`.
+│   ├── dispute.rs          `Dispute`, `DisputeConfig`, `DisputePhase`, `DisputeOutcome`, `Vote`, `PanelMember`, `Evidence`.
 │   ├── icrc7.rs            ICRC-7 / ICRC-16 `Value`, ownership helpers, metadata builders.
 │   ├── ledger_types.rs     ICRC-1 / -2 `Account` + transfer types (re-exported to api).
 │   └── state.rs            Canister `Config` + `StableState` for persistence.

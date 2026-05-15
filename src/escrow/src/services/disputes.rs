@@ -268,7 +268,8 @@ async fn open_with_lock(
     // the deal's locked-in panel_size (or canister default fallback)
     // — using `cfg.panel_size` would over-/under-shoot the headroom
     // for deals with a per-deal override.
-    let ledger_fee = ledger::fee(deal.token_ledger).await?;
+    let token_ledger = deal.asset.as_icrc()?;
+    let ledger_fee = ledger::fee(token_ledger).await?;
     let total_required = fee
         .checked_add(u128::from(needed).saturating_mul(ledger_fee))
         .and_then(|v| v.checked_add(ledger_fee))
@@ -612,12 +613,12 @@ async fn finalize_locked(
     // Query the ledger fee once — used for both per-arbitrator transfers
     // and for the prevailing-party-payout calculation (the prevailing
     // party absorbs the per-transfer ledger fees).
-    let ledger_fee = ledger::fee(deal.token_ledger).await?;
+    let token_ledger = deal.asset.as_icrc()?;
+    let ledger_fee = ledger::fee(token_ledger).await?;
 
     // 4 + 5: per-arbitrator fan-out + score update.
     if pays_arbitrators && fee_per_arbitrator > 0 {
         let escrow_account = deal.escrow_subaccount.clone();
-        let token_ledger = deal.token_ledger;
         let dispute_id = dispute.id;
 
         // We can't borrow `dispute.panel` across an await — clone the slice
@@ -699,7 +700,7 @@ async fn finalize_locked(
         subaccount: None,
     };
     let prevailing_block_index = ledger::transfer(
-        deal.token_ledger,
+        token_ledger,
         Some(deal.escrow_subaccount.clone()),
         prevailing_account,
         prevailing_payout,
@@ -916,11 +917,11 @@ async fn withdraw_finalize_locked(
     // returns None for Withdrawn, so `apply_score_updates` is a no-op.
     let panel_count = u128::try_from(dispute.panel.len()).unwrap_or(0);
     let fee_per_arbitrator = total_arbitrator_pool.checked_div(panel_count).unwrap_or(0);
-    let ledger_fee = ledger::fee(deal.token_ledger).await?;
+    let token_ledger = deal.asset.as_icrc()?;
+    let ledger_fee = ledger::fee(token_ledger).await?;
 
     if fee_per_arbitrator > 0 {
         let escrow_account = deal.escrow_subaccount.clone();
-        let token_ledger = deal.token_ledger;
         let dispute_id = dispute.id;
         let panel_snapshot: Vec<PanelMember> = dispute.panel.clone();
         for member in panel_snapshot {
@@ -988,7 +989,7 @@ async fn withdraw_finalize_locked(
         subaccount: None,
     };
     let prevailing_block_index = ledger::transfer(
-        deal.token_ledger,
+        token_ledger,
         Some(deal.escrow_subaccount.clone()),
         prevailing_account,
         prevailing_payout,
@@ -1231,6 +1232,7 @@ mod tests {
         subaccounts::derive_deal_subaccount,
         types::{
             arbitrator::{ArbitratorProfile, ArbitratorStatus},
+            asset::Asset,
             deal::{Consent, Deal, DealFees, DealStatus},
             dispute::{Dispute, DisputeConfig, DisputePhase, PanelMember},
         },
@@ -1260,7 +1262,7 @@ mod tests {
             id: deal_id,
             payer: Some(payer),
             recipient: Some(recipient),
-            token_ledger: principal(99),
+            asset: Asset::Icrc(principal(99)),
             amount: 1_000_000,
             created_at_ns: 100,
             created_by: payer,

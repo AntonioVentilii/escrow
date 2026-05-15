@@ -66,7 +66,10 @@ mod tests {
         api::deals::errors::EscrowError,
         memory::insert_new_deal,
         subaccounts::derive_deal_subaccount,
-        types::deal::{Consent, Deal, DealFees, DealStatus},
+        types::{
+            asset::Asset,
+            deal::{Consent, Deal, DealFees, DealStatus},
+        },
     };
 
     fn test_principal(id: u8) -> Principal {
@@ -78,7 +81,7 @@ mod tests {
             id: deal_id,
             payer: Some(creator),
             recipient: Some(test_principal(250)),
-            token_ledger: test_principal(99),
+            asset: Asset::Icrc(test_principal(99)),
             amount: 1000,
             created_at_ns: 100,
             created_by: creator,

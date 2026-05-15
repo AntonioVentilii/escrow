@@ -1,6 +1,7 @@
 use candid::{CandidType, Deserialize, Int, Nat};
 
 use super::{
+    asset::Asset,
     deal::{Deal, DealStatus},
     ledger_types::Account,
 };
@@ -146,8 +147,12 @@ pub fn deal_to_metadata(deal: &Deal) -> Vec<(String, Value)> {
             Value::Nat(Nat::from(deal.amount)),
         ),
         (
-            "escrow:token_ledger".to_owned(),
-            Value::Text(deal.token_ledger.to_text()),
+            "escrow:asset_kind".to_owned(),
+            Value::Text(deal.asset.kind().to_owned()),
+        ),
+        (
+            "escrow:asset".to_owned(),
+            Value::Text(deal.asset.to_string()),
         ),
         (
             "escrow:expires_at_ns".to_owned(),
@@ -170,6 +175,27 @@ pub fn deal_to_metadata(deal: &Deal) -> Vec<(String, Value)> {
             Value::Text(format!("{:?}", deal.recipient_consent)),
         ),
     ];
+
+    // For ICRC assets we additionally surface the bare ledger
+    // principal under the legacy `escrow:token_ledger` key so off-
+    // chain indexers built against the pre-asset interface keep
+    // working. Future non-ICRC variants will simply omit this key
+    // — they have their own structured representation under
+    // `escrow:asset_kind` / `escrow:asset`. The `if let` is
+    // irrefutable today (only `Icrc` exists) but is the natural
+    // shape for variant-specific dispatch — it will start matching
+    // selectively as soon as a second variant lands, at which point
+    // this `expect` will start firing and force the dev to revisit.
+    #[expect(
+        irrefutable_let_patterns,
+        reason = "Asset::Icrc is the only variant today; future variants will make this refutable"
+    )]
+    if let Asset::Icrc(ledger) = &deal.asset {
+        meta.push((
+            "escrow:token_ledger".to_owned(),
+            Value::Text(ledger.to_text()),
+        ));
+    }
 
     if let Some(payer) = deal.payer {
         meta.push(("escrow:payer".to_owned(), Value::Text(payer.to_text())));
@@ -247,6 +273,7 @@ mod tests {
         token_owner, Value, COLLECTION_NAME,
     };
     use crate::types::{
+        asset::Asset,
         deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
         ledger_types::Account,
     };
@@ -264,7 +291,7 @@ mod tests {
             id: 1,
             payer,
             recipient,
-            token_ledger: test_principal(99),
+            asset: Asset::Icrc(test_principal(99)),
             amount: 1000,
             created_at_ns: 100,
             created_by: payer.unwrap_or(test_principal(1)),
@@ -460,7 +487,12 @@ mod tests {
         assert!(keys.contains(&"escrow:status"));
         assert!(keys.contains(&"escrow:payer"));
         assert!(keys.contains(&"escrow:amount"));
-        assert!(keys.contains(&"escrow:token_ledger"));
+        assert!(keys.contains(&"escrow:asset_kind"));
+        assert!(keys.contains(&"escrow:asset"));
+        assert!(
+            keys.contains(&"escrow:token_ledger"),
+            "ICRC deals retain the legacy escrow:token_ledger key for indexer back-compat",
+        );
         assert!(keys.contains(&"escrow:expires_at_ns"));
         assert!(keys.contains(&"escrow:created_at_ns"));
         assert!(keys.contains(&"escrow:escrow_subaccount"));

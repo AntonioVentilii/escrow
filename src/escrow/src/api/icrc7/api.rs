@@ -136,8 +136,11 @@ pub fn icrc7_collection_metadata() -> Vec<(String, Value)> {
 /// Returns per-token metadata for each requested token ID.
 ///
 /// Each deal's metadata includes `icrc7:name`, `escrow:status`,
-/// `escrow:payer`, `escrow:amount`, `escrow:token_ledger`, and other
-/// deal-specific fields. Unknown IDs produce `None` in the result vector.
+/// `escrow:payer`, `escrow:amount`, `escrow:asset_kind`,
+/// `escrow:asset`, and other deal-specific fields. ICRC deals
+/// additionally surface the bare ledger principal under the
+/// legacy `escrow:token_ledger` key for indexer back-compat.
+/// Unknown IDs produce `None` in the result vector.
 #[query]
 #[must_use]
 pub fn icrc7_token_metadata(token_ids: Vec<Nat>) -> Vec<Option<Vec<(String, Value)>>> {

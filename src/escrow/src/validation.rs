@@ -624,7 +624,10 @@ mod tests {
         api::deals::errors::EscrowError,
         memory::{insert_new_deal, with_deal, with_deals},
         subaccounts::derive_deal_subaccount,
-        types::deal::{Consent, Deal, DealMetadata, DealStatus},
+        types::{
+            asset::Asset,
+            deal::{Consent, Deal, DealMetadata, DealStatus},
+        },
     };
 
     fn test_principal(id: u8) -> Principal {
@@ -640,7 +643,7 @@ mod tests {
             id: 1,
             payer,
             recipient,
-            token_ledger: test_principal(99),
+            asset: Asset::Icrc(test_principal(99)),
             amount: 1000,
             created_at_ns: 100,
             created_by: payer.or(recipient).unwrap_or(test_principal(1)),
@@ -1098,7 +1101,7 @@ mod tests {
             id: deal_id,
             payer: Some(creator),
             recipient: None,
-            token_ledger: test_principal(99),
+            asset: Asset::Icrc(test_principal(99)),
             amount: 1000,
             created_at_ns: 100,
             created_by: creator,

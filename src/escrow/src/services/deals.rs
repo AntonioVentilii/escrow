@@ -113,10 +113,12 @@ pub async fn create(
     // audit + the min-amount check, but every subsequent transfer
     // re-queries it — the operator absorbs any drift between
     // create-time and runtime fees out of `escrow_fee`. A failure
-    // to reach the ledger aborts the create (no stuck deals);
-    // callers must point `token_ledger` at a real ICRC-1 canister.
+    // to reach the ledger aborts the create (no stuck deals); the
+    // `args.asset` ICRC variant must therefore wrap a real ICRC-1
+    // canister principal.
+    let token_ledger = args.asset.as_icrc()?;
     let escrow_fee = load_escrow_fee();
-    let ledger_fee = ledger::fee(args.token_ledger).await?;
+    let ledger_fee = ledger::fee(token_ledger).await?;
     let fees = compute_deal_fees(args.amount, escrow_fee, &dispute_cfg, ledger_fee);
     // For the min-amount floor we use the panel size that will
     // actually be in effect: the deal's locked override if
@@ -135,11 +137,12 @@ pub async fn create(
         None
     };
 
+    let asset_for_deal = args.asset.clone();
     let deal = insert_new_deal(|deal_id| Deal {
         id: deal_id,
         payer,
         recipient,
-        token_ledger: args.token_ledger,
+        asset: asset_for_deal,
         amount: args.amount,
         created_at_ns: now,
         created_by: caller,
@@ -186,14 +189,9 @@ pub async fn create(
         // "skip the deposit"; the deal stays `Created` and the
         // receiver can retry via `consent_deal`.
         if try_acquire_lock(deal.id).is_ok() {
-            let result = execute_create_time_receiver_deposit(
-                deal.id,
-                &deal,
-                caller,
-                args.token_ledger,
-                now,
-            )
-            .await;
+            let result =
+                execute_create_time_receiver_deposit(deal.id, &deal, caller, token_ledger, now)
+                    .await;
             release_lock(deal.id);
             result?;
         }
@@ -488,7 +486,8 @@ async fn execute_receiver_consent(
         subaccount: Some(deal.escrow_subaccount.clone()),
     };
 
-    ledger::transfer_from(deal.token_ledger, receiver_account, escrow_account, reserve)
+    let token_ledger = deal.asset.as_icrc()?;
+    ledger::transfer_from(token_ledger, receiver_account, escrow_account, reserve)
         .await
         .map_err(|_| EscrowError::DisputeReserveRequired)?;
 
@@ -528,8 +527,9 @@ async fn execute_fund(
         subaccount: None,
     };
 
+    let token_ledger = deal.asset.as_icrc()?;
     let block_index =
-        ledger::transfer_from(deal.token_ledger, payer_account, escrow_account, pull).await?;
+        ledger::transfer_from(token_ledger, payer_account, escrow_account, pull).await?;
 
     let now = time();
     with_deal(deal_id, |d| {
@@ -563,7 +563,8 @@ async fn execute_accept(
         d.recipient_consent = Consent::Accepted;
     });
 
-    let ledger_fee = ledger::fee(deal.token_ledger).await?;
+    let token_ledger = deal.asset.as_icrc()?;
+    let ledger_fee = ledger::fee(token_ledger).await?;
     let reserve = deal.fees.dispute_reserve_per_party;
 
     // Fan-out per RFC-002 § Q5:
@@ -583,7 +584,7 @@ async fn execute_accept(
     let payer_reserve_refund = reserve.saturating_sub(ledger_fee);
 
     let payout_tx = ledger::transfer(
-        deal.token_ledger,
+        token_ledger,
         Some(deal.escrow_subaccount.clone()),
         Account {
             owner: recipient,
@@ -596,7 +597,7 @@ async fn execute_accept(
     if payer_reserve_refund > 0 {
         if let Some(payer) = deal.payer {
             ledger::transfer(
-                deal.token_ledger,
+                token_ledger,
                 Some(deal.escrow_subaccount.clone()),
                 Account {
                     owner: payer,
@@ -630,7 +631,8 @@ async fn execute_reclaim(
     caller: Principal,
 ) -> Result<DealView, EscrowError> {
     let payer = deal.payer.ok_or(EscrowError::PayerNotSet)?;
-    let ledger_fee = ledger::fee(deal.token_ledger).await?;
+    let token_ledger = deal.asset.as_icrc()?;
+    let ledger_fee = ledger::fee(token_ledger).await?;
     let reserve = deal.fees.dispute_reserve_per_party;
 
     // Symmetric fan-out with `execute_accept`, but the deal amount
@@ -646,7 +648,7 @@ async fn execute_reclaim(
     let recipient_reserve_refund = reserve.saturating_sub(ledger_fee);
 
     let refund_tx = ledger::transfer(
-        deal.token_ledger,
+        token_ledger,
         Some(deal.escrow_subaccount.clone()),
         Account {
             owner: payer,
@@ -659,7 +661,7 @@ async fn execute_reclaim(
     if recipient_reserve_refund > 0 {
         if let Some(recipient) = deal.recipient {
             ledger::transfer(
-                deal.token_ledger,
+                token_ledger,
                 Some(deal.escrow_subaccount.clone()),
                 Account {
                     owner: recipient,
@@ -719,7 +721,8 @@ async fn execute_terminate(
 
     if receiver_deposited && reserve > 0 {
         if let Some(recipient) = deal.recipient {
-            let ledger_fee = ledger::fee(deal.token_ledger).await?;
+            let token_ledger = deal.asset.as_icrc()?;
+            let ledger_fee = ledger::fee(token_ledger).await?;
             // `checked_sub` so a pathological `reserve < ledger_fee`
             // configuration surfaces explicitly instead of silently
             // confiscating the receiver's deposit. In production
@@ -735,7 +738,7 @@ async fn execute_terminate(
             })?;
             if refund > 0 {
                 ledger::transfer(
-                    deal.token_ledger,
+                    token_ledger,
                     Some(deal.escrow_subaccount.clone()),
                     Account {
                         owner: recipient,
@@ -802,7 +805,10 @@ mod tests {
         api::deals::errors::EscrowError,
         memory::insert_new_deal,
         subaccounts::derive_deal_subaccount,
-        types::deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
+        types::{
+            asset::Asset,
+            deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
+        },
     };
 
     fn test_principal(id: u8) -> Principal {
@@ -824,7 +830,7 @@ mod tests {
             id: deal_id,
             payer,
             recipient,
-            token_ledger: ledger_principal(),
+            asset: Asset::Icrc(ledger_principal()),
             amount: 1_000_000,
             created_at_ns: 100,
             created_by: payer.or(recipient).unwrap_or(test_principal(1)),

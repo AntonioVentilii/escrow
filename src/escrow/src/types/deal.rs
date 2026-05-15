@@ -1,6 +1,6 @@
 use candid::{CandidType, Deserialize, Principal};
 
-use crate::types::dispute::DisputeId;
+use crate::types::{asset::Asset, dispute::DisputeId};
 
 pub type DealId = u64;
 
@@ -88,7 +88,11 @@ pub struct Deal {
     pub id: DealId,
     pub payer: Option<Principal>,
     pub recipient: Option<Principal>,
-    pub token_ledger: Principal,
+    /// Settlement asset for this deal. Today always
+    /// [`Asset::Icrc`]; future variants extend the canister's
+    /// settlement domain without forcing a Candid-breaking field
+    /// rename.
+    pub asset: Asset,
     pub amount: u128,
     pub created_at_ns: u64,
     pub created_by: Principal,

@@ -23,9 +23,12 @@
 use std::sync::Arc;
 
 use candid::Principal;
-use escrow::api::{
-    deals::{errors::EscrowError, params::CreateDealArgs, results::CreateDealResult},
-    disputes::{params::OpenDisputeArgs, results::OpenDisputeResult},
+use escrow::{
+    api::{
+        deals::{errors::EscrowError, params::CreateDealArgs, results::CreateDealResult},
+        disputes::{params::OpenDisputeArgs, results::OpenDisputeResult},
+    },
+    types::asset::Asset,
 };
 use pocket_ic::PocketIc;
 
@@ -65,7 +68,7 @@ fn try_create_with_panel_size(
             "create_deal",
             (CreateDealArgs {
                 amount: 1_000_000,
-                token_ledger: ledger(),
+                asset: Asset::Icrc(ledger()),
                 expires_at_ns: u64::MAX / 2,
                 payer: Some(caller),
                 recipient: Some(user(2)),
@@ -125,7 +128,7 @@ fn create_deal_rejects_even_panel_size_in_range() {
 fn create_deal_hard_fails_when_ledger_unreachable() {
     // PR #39 removed the `unwrap_or(0)` fallback on `ledger::fee`
     // in `services::deals::create`, so a fake / unreachable
-    // `token_ledger` now surfaces as `EscrowError::LedgerError`
+    // ICRC ledger principal now surfaces as `EscrowError::LedgerError`
     // instead of silently snapshotting `ledger_fee_at_create = 0`
     // and creating a deal that can never settle. The fake
     // `Principal::from_slice(&[99])` from the `ledger()` helper

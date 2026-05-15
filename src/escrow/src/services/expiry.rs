@@ -50,8 +50,9 @@ async fn try_refund_deal(deal_id: DealId) -> Result<(), EscrowError> {
             return Err(EscrowError::AlreadyFinalised);
         }
         let payer = deal.payer.ok_or(EscrowError::PayerNotSet)?;
+        let ledger_id = deal.asset.as_icrc()?;
         Ok((
-            deal.token_ledger,
+            ledger_id,
             deal.escrow_subaccount.clone(),
             payer,
             deal.recipient,
