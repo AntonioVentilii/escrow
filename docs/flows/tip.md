@@ -24,7 +24,7 @@ sequenceDiagram
     Note over P,R: Payer shares QR / link (deal_id + claim_code)
 
     R->>E: accept_deal(deal_id, claim_code)
-    Note over E: bind R as recipient; recipient_consent = Accepted
+    Note over E: bind R as recipient, recipient_consent = Accepted
     E->>L: transfer(escrow → R, amount − EF − LF)
     Note over E: Settled
 ```

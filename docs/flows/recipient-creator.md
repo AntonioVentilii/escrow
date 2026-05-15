@@ -29,11 +29,11 @@ sequenceDiagram
     P->>L: icrc2_approve(E, amount + DC/2 + LF)
     P->>E: fund_deal(deal_id)
     E->>L: transfer_from(P → escrow subaccount)
-    Note over E: Funded — subaccount holds amount + DC; both signatures Empty
+    Note over E: Funded — subaccount holds amount + DC, both signatures Empty
 
     %% --- Two-signature tally (happy path) ---
     P->>E: sign_yes(deal_id)
-    Note over E: payer_signature = Yes; tally Pending → stays Funded
+    Note over E: payer_signature = Yes, tally Pending → stays Funded
     R->>E: sign_yes(deal_id)
     Note over E: BothYes tally → settle
     Note over E: (R can also call accept_deal — routes to sign_yes for bound deals)
