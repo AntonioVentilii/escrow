@@ -2,7 +2,7 @@
 
 A generic escrow engine on the [Internet Computer](https://internetcomputer.org/), built as a Rust canister.
 
-Payers lock tokens into deal-specific subaccounts; recipients claim them before a deadline or the funds are automatically refunded. Every deal is also exposed as an **ICRC-7 non-fungible token**, enabling standard wallets, explorers, and other canisters to discover and display deals without custom integration.
+Two flows on top of one engine. **Bound deals** between two known parties are settled via a two-party signature tally: each side records `Yes` or `No`, and the result drives `Settled` (both `Yes`), `Aborted` (both `No`), or auto-`Disputed` (mixed) — with a panel of curated arbitrators to resolve disputes. **Tips** to an unknown recipient are claimed via a bearer claim code, or refunded to the payer after expiry. Every deal is also exposed as an **ICRC-7 non-fungible token**, enabling standard wallets, explorers, and other canisters to discover and display deals without custom integration.
 
 ## Standards compliance
 
@@ -15,11 +15,13 @@ Payers lock tokens into deal-specific subaccounts; recipients claim them before 
 
 ## Use cases
 
-| Use case | Description                                                                                                     | Details            |
-| -------- | --------------------------------------------------------------------------------------------------------------- | ------------------ |
-| **Tips** | Send a tip via QR code or link — the recipient signs up and claims it, or the payer gets a refund after expiry. | [TIPS.md](TIPS.md) |
+| Use case            | Description                                                                                                                                                           | Details                                                                                                |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| **Tips**            | Send a tip via QR code or link — the recipient signs up and claims it, or the payer gets a refund after expiry.                                                       | [TIPS.md](TIPS.md)                                                                                     |
+| **Two-party deals** | Both parties known; payer funds, recipient signs `Yes` to release / `No` to abort. Mixed signatures auto-open a dispute. Silence at expiry defaults to release.       | [escrow README — Flows](src/escrow/README.md#flows)                                                    |
+| **Disputes**        | Either bound party can open a dispute (or one is auto-opened on a mixed tally). A randomly-weighted panel of curated arbitrators votes; majority decides the outcome. | [RFC-001](docs/rfcs/0001-dispute-resolution.md), [escrow README — Status](src/escrow/README.md#status) |
 
-More use cases (instalment payments, multi-party escrow, ...) are planned — see the [future expansion](src/escrow/README.md#future-expansion) section. Dispute resolution + arbitrators is the next major addition; the design is captured in [RFC-001](docs/rfcs/0001-dispute-resolution.md) (currently open for comment).
+More use cases (instalment payments, multi-party escrow, ...) are planned — see the [future expansion](src/escrow/README.md#future-expansion) section.
 
 ## Scalability
 

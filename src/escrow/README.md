@@ -1,6 +1,6 @@
 # Escrow Engine Canister
 
-An Internet Computer escrow canister implementing **tip and deal flows**: a payer funds a deal-specific ledger subaccount via ICRC-2, a recipient claims before expiry, and otherwise the payer is refunded. Each deal is also exposed as an **ICRC-7 non-fungible token**, making deals queryable via standard NFT interfaces.
+An Internet Computer escrow canister implementing **tip and deal flows**: a payer funds a deal-specific ledger subaccount via ICRC-2; for **two-party deals** both sides record a settlement signature (`Yes` / `No`) and the tally drives the outcome; for **tips** (unknown recipient) a claim code lets anyone claim before expiry, and otherwise the payer is refunded. Each deal is also exposed as an **ICRC-7 non-fungible token**, making deals queryable via standard NFT interfaces.
 
 ## Security model
 
@@ -13,14 +13,24 @@ Every deal is assigned a **cryptographically random 128-bit claim code** (32-cha
 - Recipient-bound deals do not require the claim code (the caller's principal is the auth).
 - The claim code is returned to the creator in `DealView` but is **never** exposed via `get_claimable_deal`.
 
-### Consent
+### Consent and settlement signatures
 
-Both parties to a deal must consent before funds can move:
+Two distinct mechanisms gate funds across the lifecycle:
+
+**Pre-funding consent** (`Consent` enum: `Pending` / `Accepted` / `Rejected`) — gates whether the deal can be funded at all:
 
 - The creator's consent is automatically set to `Accepted` at creation time.
 - For deals with a known counterparty, the counterparty must call `consent_deal` before funding can proceed.
 - For tips (unknown recipient), the recipient's consent is implicitly granted when they claim.
 - Either party can call `reject_deal` to permanently refuse, transitioning the deal to `Rejected`.
+
+**Post-funding settlement signatures** (`Signature` enum: `Empty` / `Yes` / `No`, bound deals only) — drive the terminal outcome of a `Funded` deal via a two-party tally:
+
+- Each bound party calls `sign_yes` or `sign_no` (latest-wins while `Funded`).
+- The tally fires on each call: both `Yes` → `Settled`; both `No` → `Aborted`; mixed → auto-`Disputed`; one still `Empty` → deal stays `Funded`.
+- At expiry the auto-YES rule fires (any `Empty` signature → `Yes`; explicit votes preserved), then the same tally runs.
+- `accept_deal` for bound deals routes through `sign_yes` for the recipient — calling it records the recipient's `Yes` and only settles when the payer also signs `Yes` (or expiry's auto-YES fires).
+- Tips have no signatures: they're claimed unilaterally with `accept_deal` + `claim_code`.
 
 ### Node provider visibility
 
@@ -48,16 +58,18 @@ Both parties to a deal must consent before funds can move:
 
 ### Escrow update methods
 
-| Method                          | Description                                                                                                                                                       |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create_deal(CreateDealArgs)`   | Create a new deal. Caller is assigned as payer or recipient based on the supplied args. Returns a `DealView` with the claim code.                                 |
-| `fund_deal(FundDealArgs)`       | Move tokens from payer to escrow subaccount via ICRC-2 `transfer_from`. Payer must have approved the canister first. Implicitly sets payer consent to `Accepted`. |
-| `accept_deal(AcceptDealArgs)`   | Recipient claims a funded deal before expiry. Requires `claim_code` for open deals. Binds the recipient if unset. Sets recipient consent to `Accepted`.           |
-| `reclaim_deal(ReclaimDealArgs)` | Payer reclaims funds from an expired, unclaimed deal.                                                                                                             |
-| `cancel_deal(CancelDealArgs)`   | Either party cancels an unfunded (Created) deal.                                                                                                                  |
-| `consent_deal(ConsentDealArgs)` | Explicitly consent to a deal's terms. Required for the counterparty before the payer can fund a deal with a known recipient.                                      |
-| `reject_deal(RejectDealArgs)`   | Reject a deal's terms. The deal transitions to `Rejected` (terminal).                                                                                             |
-| `process_expired_deals(limit)`  | Batch-refund up to `limit` expired funded deals. Idempotent. Skips deals in `Disputed` state.                                                                     |
+| Method                          | Description                                                                                                                                                                                                                                                               |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create_deal(CreateDealArgs)`   | Create a new deal. Caller is assigned as payer or recipient based on the supplied args. Returns a `DealView` with the claim code.                                                                                                                                         |
+| `fund_deal(FundDealArgs)`       | Move tokens from payer to escrow subaccount via ICRC-2 `transfer_from`. Payer must have approved the canister first. Implicitly sets payer consent to `Accepted`.                                                                                                         |
+| `accept_deal(AcceptDealArgs)`   | Tip: claim with `claim_code`, bind recipient, settle immediately. Bound deal: routes to `sign_yes` for the recipient — only settles when the payer also signs `Yes` (or expiry's auto-YES fires).                                                                         |
+| `sign_yes(FundDealArgs)`        | Bound payer or recipient records a `Yes` settlement signature. Triggers the tally: BothYes → `Settled`; one party still `Empty` → deal stays `Funded`; payer-`Yes` × recipient-`No` → auto-`Disputed`. Latest-wins while `Funded`. Rejects tip flows + post-expiry calls. |
+| `sign_no(FundDealArgs)`         | Bound payer or recipient records a `No` settlement signature. BothNo → `Aborted` (refund payer); one party still `Empty` → deal stays `Funded`; payer-`No` × recipient-`Yes` → auto-`Disputed`. Same caller / tip / expiry semantics as `sign_yes`.                       |
+| `reclaim_deal(ReclaimDealArgs)` | Tip: payer refund after expiry (legacy behaviour). Bound deal: routes through the expiry auto-YES tally — typically settles to recipient on silence, NOT refunds the payer.                                                                                               |
+| `cancel_deal(CancelDealArgs)`   | Either party cancels an unfunded (Created) deal.                                                                                                                                                                                                                          |
+| `consent_deal(ConsentDealArgs)` | Explicitly consent to a deal's terms. Required for the counterparty before the payer can fund a deal with a known recipient.                                                                                                                                              |
+| `reject_deal(RejectDealArgs)`   | Reject a deal's terms. The deal transitions to `Rejected` (terminal).                                                                                                                                                                                                     |
+| `process_expired_deals(limit)`  | Batch-dispatch up to `limit` expired funded deals. Tips refund to payer; bound deals run the auto-YES tally and settle / abort / open-dispute accordingly. Idempotent. Skips deals in `Disputed` state.                                                                   |
 
 ### Dispute & arbitrator methods
 
@@ -145,17 +157,24 @@ All controller-only.
 
 ### Status
 
-| Status               | Description                                                                                                                                           |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Created`            | Deal exists, possibly waiting for counterparty consent                                                                                                |
-| `Funded`             | Tokens locked in escrow                                                                                                                               |
-| `Settled`            | Funds released to recipient (happy path)                                                                                                              |
-| `Refunded`           | Funds returned to payer (expiry)                                                                                                                      |
-| `Cancelled`          | Creator or counterparty cancelled before funding                                                                                                      |
-| `Rejected`           | Counterparty refused the deal terms                                                                                                                   |
-| `Disputed`           | A dispute is open on the deal. Funds remain in the escrow subaccount; expiry sweep skips it.                                                          |
-| `ArbitratedSettled`  | Dispute resolved with a `ConcludedCorrectly` outcome (panel majority CC, or out-of-band withdrawal agreement). Funds released to recipient. Terminal. |
-| `ArbitratedRefunded` | Dispute resolved with an `IncorrectlyConcluded` outcome or no-quorum fallback. Funds refunded to payer. Terminal.                                     |
+| Status               | Description                                                                                                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Created`            | Deal exists, possibly waiting for counterparty consent.                                                                                                                              |
+| `Funded`             | Tokens locked in escrow. For bound deals, awaiting both parties' settlement signatures (or expiry's auto-YES tally).                                                                 |
+| `Settled`            | Funds released to recipient. Reached when both parties signed `Yes` (manually or via expiry's auto-YES rule), or when a tip was claimed via `accept_deal`. Terminal.                 |
+| `Refunded`           | Funds returned to payer. Reached on tip expiry (no claimer), or via the legacy manual `reclaim_deal` path on a tip. Terminal.                                                        |
+| `Aborted`            | Both parties signed `No` on a `Funded` bound deal — mutual agreement that the off-chain part didn't happen. Funds refunded to payer using the same fee math as `Refunded`. Terminal. |
+| `Cancelled`          | Creator or counterparty cancelled before funding. Terminal.                                                                                                                          |
+| `Rejected`           | Counterparty refused the deal terms before funding. Terminal.                                                                                                                        |
+| `Disputed`           | A dispute is open on the deal. Funds remain in the escrow subaccount; expiry sweep skips it.                                                                                         |
+| `ArbitratedSettled`  | Dispute resolved with a `ConcludedCorrectly` outcome (panel majority CC, or out-of-band withdrawal agreement). Funds released to recipient. Terminal.                                |
+| `ArbitratedRefunded` | Dispute resolved with an `IncorrectlyConcluded` outcome or no-quorum fallback. Funds refunded to payer. Terminal.                                                                    |
+
+`Aborted`, `Refunded`, and `ArbitratedRefunded` all return funds to
+the payer and share the same fee math, but the audit trail records
+WHY the deal didn't settle: mutual `No` signatures, expiry on a tip
+with no claimer, or a dispute that resolved against the recipient
+respectively.
 
 ### Consent
 
@@ -168,48 +187,65 @@ All controller-only.
 ### State machine
 
 ```
-Created ──[both consent]──▶ Created ──fund──▶ Funded ──accept──▶ Settled
-  │                           │                 │  │
-  │ reject                    │ cancel          │  │ open_dispute
-  ▼                           ▼                 │  ▼
-Rejected                  Cancelled             │  Disputed
-                                                │    ├─[majority CC]──▶ ArbitratedSettled
-                                                │    ├─[majority IC]──▶ ArbitratedRefunded
-                                                │    ├─[no quorum]────▶ ArbitratedRefunded
-                                                │    └─[withdrawn]────▶ ArbitratedSettled / ArbitratedRefunded
-                                                │ reclaim (after expiry, if not Disputed)
+Created ──[both consent]──▶ Created ──fund──▶ Funded ──[two-sig tally]──▶ Settled         (BothYes)
+  │                           │                 │  │                    ▶ Aborted         (BothNo)
+  │ reject                    │ cancel          │  │                    ▶ Disputed        (Mixed → auto-open)
+  ▼                           ▼                 │  │
+Rejected                  Cancelled             │  │ open_dispute       ▶ Disputed
+                                                │  │
+                                                │  ▼
+                                                │  Disputed
+                                                │    ├─[majority CC]────▶ ArbitratedSettled
+                                                │    ├─[majority IC]────▶ ArbitratedRefunded
+                                                │    ├─[no quorum]──────▶ ArbitratedRefunded
+                                                │    └─[withdrawn]──────▶ ArbitratedSettled / ArbitratedRefunded
+                                                │
+                                                │ EXPIRY (bound deal): auto-YES rule applied,
+                                                │   then re-tally → Settled / Aborted / Disputed
+                                                │
+                                                │ EXPIRY (tip, recipient = None) or manual
+                                                │ reclaim on tip:
                                                 ▼
                                             Refunded
 ```
 
-`Settled`, `Refunded`, `Cancelled`, `Rejected`, `ArbitratedSettled`, and `ArbitratedRefunded` are terminal states. `Disputed` is non-terminal — funds stay in escrow until the dispute resolves.
+`Settled`, `Refunded`, `Aborted`, `Cancelled`, `Rejected`, `ArbitratedSettled`, and `ArbitratedRefunded` are terminal states. `Disputed` is non-terminal — funds stay in escrow until the dispute resolves.
 
-> **Automatic refund:** A repeating timer (every 5 minutes) sweeps expired funded deals and refunds them automatically. The `reclaim_deal` endpoint serves as a manual fallback. Both paths are idempotent. The sweep skips deals in `Disputed` state.
+> **Two-signature tally:** For bound deals, settlement is driven by per-party signatures (`Yes` / `No`) recorded via `sign_yes` / `sign_no` (or via `accept_deal` for the recipient, which routes through `sign_yes`). The tally fires on each call: both `Yes` → `Settled`; both `No` → `Aborted`; mixed → auto-`Disputed`; one party still `Empty` → deal stays `Funded`.
+
+> **Auto-YES at expiry:** A repeating timer (every 5 minutes) sweeps expired funded deals via `process_expired_deals`. For tips it refunds the payer (legacy behaviour — silence on a tip means no taker). For bound deals it applies the auto-YES rule (any `Empty` signature → `Yes`; explicit votes preserved) and runs the same tally + dispatch as `sign_*`, so silence by default means "release to recipient". The `reclaim_deal` endpoint on bound deals routes through the same dispatcher, so a payer calling `reclaim_deal` after expiry on an unsigned bound deal will typically end up settling to the recipient, not refunding themselves. Both paths are idempotent. The sweep skips deals in `Disputed` state.
 
 > **Automatic dispute finalize:** A second repeating timer (every 5 minutes) auto-finalises disputes whose `voting_deadline_ns` has passed. Per-dispute errors are swallowed so a single failure (e.g. ledger temporarily unreachable) doesn't block the sweep — it gets retried on the next cycle. The two sweeps share the re-entrancy-guard pattern but use independent flags so they can interleave.
 
 ### Flows
 
-**Tip flow** (payer → unknown recipient):
+**Tip flow** (payer → unknown recipient): no signatures, claim-code based unilateral settle.
 
 1. Payer creates deal → `payer_consent = Accepted`
 2. Payer funds → `Funded`
 3. QR / link shared (contains `deal_id + claim_code`)
-4. Recipient claims with `claim_code` → `recipient_consent = Accepted`, `Settled`
+4. Recipient claims with `accept_deal(claim_code)` → `recipient_consent = Accepted`, `Settled`
+5. (Or: expiry hits with no claimer → `Refunded`.)
 
-**Two-party deal** (both parties known):
+**Two-party deal** (both parties known): two-signature tally drives the outcome.
 
 1. Creator creates deal → creator's consent `Accepted`, counterparty's `Pending`
 2. Counterparty calls `consent_deal` → both consents `Accepted`
-3. Payer funds → `Funded`
-4. Recipient accepts → `Settled`
+3. Payer funds → `Funded` (both signatures `Empty`)
+4. Each party records a settlement signature via `sign_yes` / `sign_no` (or recipient via `accept_deal`, which routes to `sign_yes`).
+5. The tally on each call decides the outcome:
+   - both `Yes` → `Settled` (recipient paid)
+   - both `No` → `Aborted` (payer refunded)
+   - mixed → auto-`Disputed` (panel arbitration)
+   - one still `Empty` → deal stays `Funded`; wait for the other party or expiry
+6. At expiry the auto-YES rule fires: `Empty` → `Yes`, explicit votes preserved, then re-tally.
 
-**Invoice flow** (recipient creates, payer pays):
+**Invoice flow** (recipient creates, payer pays): same as two-party deal, just with the recipient as creator.
 
 1. Recipient creates deal with `payer` specified → `recipient_consent = Accepted`
 2. Payer calls `consent_deal` → `payer_consent = Accepted`
 3. Payer funds → `Funded`
-4. Recipient accepts → `Settled`
+4. Same two-signature tally as above.
 
 ### Fee accounting
 
@@ -230,7 +266,7 @@ The min-amount check at `create_deal` rejects deals whose `amount` is too small 
 
 | Module                       | Responsibility                                                                                                                                                   |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types/deal.rs`              | Internal `Deal`, `DealStatus` (incl. `Disputed` / `ArbitratedSettled` / `ArbitratedRefunded`), `Consent`, `DealMetadata` types                                   |
+| `types/deal.rs`              | Internal `Deal`, `DealStatus` (incl. `Disputed` / `ArbitratedSettled` / `ArbitratedRefunded` / `Aborted`), `Consent`, `Signature`, `DealMetadata`, `DealFees`    |
 | `types/dispute.rs`           | Internal `Dispute`, `DisputeId`, `DisputePhase`, `Vote`, `Evidence`, `PanelMember`, `DisputeOutcome`, `DisputeConfig`                                            |
 | `types/arbitrator.rs`        | Internal `ArbitratorProfile`, `ArbitratorStatus`, `MIN_VOTES_FOR_SCORE`, `compute_score` helper                                                                  |
 | `types/ledger_types.rs`      | ICRC-1/ICRC-2 Account and transfer types                                                                                                                         |
@@ -248,10 +284,10 @@ The min-amount check at `create_deal` rejects deals whose `amount` is too small 
 | `api/arbitrators/results.rs` | Public arbitrator result types                                                                                                                                   |
 | `api/icrc7/api.rs`           | ICRC-7 NFT standard query/update endpoints + ICRC-10 supported standards                                                                                         |
 | `api/admin/api.rs`           | Controller-only admin endpoints (`config`, `update_config`, `admin_register_arbitrator`, `admin_set_arbitrator_status`)                                          |
-| `services/deals.rs`          | Core deal business logic (create, fund, accept, reclaim, cancel, consent, reject)                                                                                |
-| `services/disputes.rs`       | Dispute lifecycle (open, submit_evidence, cast_vote, finalize, withdraw, queries) + tally + panel selection + auto-finalize sweep                                |
+| `services/deals.rs`          | Core deal business logic (create, fund, accept, reclaim, cancel, consent, reject, sign) + shared `record_signature_and_dispatch` helper                          |
+| `services/disputes.rs`       | Dispute lifecycle (open, open_post_expiry, submit_evidence, cast_vote, finalize, withdraw, queries) + tally + panel selection + auto-finalize sweep              |
 | `services/arbitrators.rs`    | Arbitrator registry service (register / deregister / get / list)                                                                                                 |
-| `services/expiry.rs`         | Batch expired-deal refund processing (skips `Disputed`)                                                                                                          |
+| `services/expiry.rs`         | Expired-deal dispatcher: tip → refund payer; bound → auto-YES tally → settle / abort / open-dispute. Skips `Disputed`.                                           |
 | `services/housekeeping.rs`   | Two repeating timers: expiry auto-refund (every 5 min) + dispute auto-finalize (every 5 min) — independent re-entrancy guards                                    |
 | `services/icrc7.rs`          | ICRC-7 service logic (token metadata, ownership, pagination, transfer rejection)                                                                                 |
 | `memory.rs`                  | Thread-local storage (deals + disputes + arbitrators), atomic ID allocation, save/restore, processing locks                                                      |
@@ -315,7 +351,7 @@ The `Deal` struct intentionally stores only the **current state**, not a history
   - **Scalability**: the `Deal` struct stays fixed-size, which is critical for the `StableBTreeMap` migration (Phase 1). An inline `Vec<Transition>` would grow unboundedly with dispute back-and-forth.
   - **Standards compliance**: no custom storage format — the ICRC-3 log is interoperable with any IC tooling that supports the standard.
 
-Until ICRC-3 is implemented, the existing `updated_at_ns` / `updated_by` fields on `Deal` provide a lightweight last-modified record, and the `DealStatus` + `Consent` fields fully describe the current state. A temporary `BTreeMap<DealId, Vec<StateTransition>>` audit log can be added as an intermediate step if needed before the full ICRC-3 integration.
+Until ICRC-3 is implemented, the existing `updated_at_ns` / `updated_by` fields on `Deal`, plus the `payer_signature` / `recipient_signature` snapshot (which records each party's last vote), provide a lightweight last-modified record. The `DealStatus` + `Consent` + `Signature` fields together fully describe the current state. A temporary `BTreeMap<DealId, Vec<StateTransition>>` audit log can be added as an intermediate step if needed before the full ICRC-3 integration.
 
 ### Disputes and resolution (implemented)
 
@@ -352,15 +388,15 @@ See the [Scalability & limitations](#scalability--limitations) section for the f
 
 Each deal is exposed as a non-fungible token via the **ICRC-7** standard query interface. The canister natively implements all ICRC-7 query methods plus ICRC-10 supported-standards discovery. Ownership follows deal lifecycle: the payer owns the token until settlement, at which point the recipient becomes the owner.
 
-Direct `icrc7_transfer` calls are rejected — ownership transitions are managed exclusively through escrow operations (`accept_deal`, `reclaim_deal`, etc.).
+Direct `icrc7_transfer` calls are rejected — ownership transitions are managed exclusively through escrow operations (`accept_deal`, `sign_yes` / `sign_no`, `reclaim_deal`, etc.).
 
-| Deal concept                                            | ICRC-7 equivalent                                            |
-| ------------------------------------------------------- | ------------------------------------------------------------ |
-| `create_deal`                                           | `icrc7_mint` — mint a new NFT with deal metadata             |
-| `accept_deal`                                           | `icrc7_transfer` — transfer the NFT from payer to recipient  |
-| Terminal states (`Settled`, `Refunded`, `Cancelled`)    | `icrc7_burn` or metadata update marking the token as settled |
-| Deal details (amount, status, expiry, payer, recipient) | Token metadata fields (ICRC-16 value map)                    |
-| Deal history / audit trail                              | ICRC-3 transaction log (built into compliant ledgers)        |
+| Deal concept                                                       | ICRC-7 equivalent                                            |
+| ------------------------------------------------------------------ | ------------------------------------------------------------ |
+| `create_deal`                                                      | `icrc7_mint` — mint a new NFT with deal metadata             |
+| `accept_deal` (tip) / `sign_yes` (bound deal both-yes tally)       | `icrc7_transfer` — transfer the NFT from payer to recipient  |
+| Terminal states (`Settled`, `Refunded`, `Aborted`, `Cancelled`, …) | `icrc7_burn` or metadata update marking the token as settled |
+| Deal details (amount, status, expiry, payer, recipient, sigs)      | Token metadata fields (ICRC-16 value map)                    |
+| Deal history / audit trail                                         | ICRC-3 transaction log (built into compliant ledgers)        |
 
 **Next steps:** extracting the deal ledger into a dedicated canister and adding ICRC-3 transaction logging. See Phase 2 and Phase 3 in the [scaling roadmap](#scaling-roadmap).
 

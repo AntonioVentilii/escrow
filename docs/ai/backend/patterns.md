@@ -256,15 +256,38 @@ inline — go through the helper.
 Every `DealStatus` transition goes through a `validate_can_*` function.
 The current map (in `validation.rs`):
 
-| Function                    | From               | To                                                              |
-| --------------------------- | ------------------ | --------------------------------------------------------------- |
-| `validate_can_fund`         | `Created`          | `Funded`                                                        |
-| `validate_can_accept`       | `Funded`           | `Settled` (returns `Ok(true)` if already `Settled`)             |
-| `validate_can_reclaim`      | `Funded` + expired | `Refunded` (returns `Ok(true)` if already `Refunded`)           |
-| `validate_can_cancel`       | `Created`          | `Cancelled`                                                     |
-| `validate_can_consent`      | `Created`          | `Created` (consent flag flip; status unchanged)                 |
-| `validate_can_reject`       | `Created`          | `Rejected`                                                      |
-| `validate_can_open_dispute` | `Funded` + bound   | `Disputed` (returns `Ok(true)` if already `Disputed`) — RFC-001 |
+| Function                    | From                              | To                                                                                           |
+| --------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------- |
+| `validate_can_fund`         | `Created`                         | `Funded`                                                                                     |
+| `validate_can_accept`       | `Funded` (tip) / `Funded` (bound) | tip → `Settled`; bound → routes through sign-tally (records recipient `Yes`)                 |
+| `validate_can_reclaim`      | `Funded` + expired                | tip → `Refunded`; bound → routes through expiry auto-tally dispatcher                        |
+| `validate_can_cancel`       | `Created`                         | `Cancelled`                                                                                  |
+| `validate_can_consent`      | `Created`                         | `Created` (consent flag flip; status unchanged)                                              |
+| `validate_can_reject`       | `Created`                         | `Rejected`                                                                                   |
+| `validate_can_sign`         | `Funded` + bound + within expiry  | (records signature; tally then dispatches to `Settled` / `Aborted` / `Disputed` — see below) |
+| `validate_can_open_dispute` | `Funded` + bound                  | `Disputed` (returns `Ok(true)` if already `Disputed`) — RFC-001 + PR #41                     |
+
+`validate_can_open_dispute` takes an `allow_expired: bool` flag — `false` for direct callers
+(`open_dispute`), `true` for the system-only `disputes::open_post_expiry` path used by the
+expiry sweep when the auto-YES tally produces a `Mixed` outcome on an already-expired deal.
+
+The two-signature tally (driven by `validation::tally_signatures`) maps
+`(payer_signature, recipient_signature)` to a dispatch:
+
+| Tally                | Dispatch                                   | Resulting `DealStatus`                                     |
+| -------------------- | ------------------------------------------ | ---------------------------------------------------------- |
+| both `Yes`           | `services::deals::execute_accept`          | `Settled`                                                  |
+| both `No`            | `services::deals::execute_refund(Aborted)` | `Aborted` (new terminal; same fee math as `Refunded`)      |
+| mixed `Yes` / `No`   | `services::disputes::open`                 | `Disputed` (auto-opened; the latest signer is the opener)  |
+| at least one `Empty` | (no dispatch; deal stays `Funded`)         | `Funded` (signature recorded for next call / expiry sweep) |
+
+At expiry the housekeeping sweep (`services::expiry::process_expired`)
+applies `validation::apply_expiry_default_yes` first — any `Empty`
+signature is upgraded to `Yes` (silence = release), explicit votes
+preserved — then runs the same tally + dispatch table. Tip flows
+(`recipient = None`) bypass the tally entirely and fall back to the
+legacy "refund payer on expiry" behaviour since signatures don't apply
+without a bound counterparty.
 
 The dispute-side state then advances inside `services/disputes.rs`
 without further `validate_can_*` entries (phase / deadline gates live
