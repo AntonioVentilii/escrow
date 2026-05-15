@@ -1,0 +1,532 @@
+//! Integration tests for the money-flow on `accept_deal`,
+//! `reclaim_deal`, `process_expired_deals`, `consent_deal`,
+//! `reject_deal`, and the receiver-creator (3b) variant of
+//! `create_deal`, all driven against a real ICRC-1 / ICRC-2 ledger
+//! installed in pocket-ic.
+//!
+//! Asserts the RFC-002 two-sided-reserve invariants the unit tests
+//! cannot check in isolation:
+//!
+//!   - Receiver's `DC/2` is pulled from their wallet on `consent_deal` (3a) or atomically inside
+//!     `create_deal` (3b).
+//!   - Payer's `amount + DC/2` is pulled on `fund_deal`.
+//!   - On `Settled`, the recipient receives `amount − escrow_fee − ledger_fee + (DC/2 −
+//!     ledger_fee)` in one combined transfer; the payer recovers `DC/2 − ledger_fee` separately;
+//!     the deal subaccount retains exactly `escrow_fee`.
+//!   - On `Refunded`, the payer recovers `amount − escrow_fee − ledger_fee + (DC/2 − ledger_fee)`
+//!     combined and the recipient recovers `DC/2 − ledger_fee` separately.
+//!   - On `Rejected` after receiver consent, the operator retains `escrow_fee` out of the
+//!     receiver's deposited `DC/2`.
+
+use core::time::Duration;
+use std::sync::Arc;
+
+use candid::Principal;
+use escrow::{
+    api::deals::{
+        errors::EscrowError,
+        params::{
+            AcceptDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs, ReclaimDealArgs,
+            RejectDealArgs,
+        },
+        results::{
+            AcceptDealResult, ConsentDealResult, CreateDealResult, DealView, FundDealResult,
+            ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
+        },
+    },
+    types::deal::DealStatus,
+};
+use pocket_ic::PocketIc;
+
+use crate::utils::{
+    icrc_ledger::{IcrcLedger, IcrcLedgerBuilder},
+    pic_canister::{PicCanister, PicCanisterBuilder, PicCanisterTrait},
+};
+
+// ---------------------------------------------------------------------------
+// Test principals
+// ---------------------------------------------------------------------------
+
+fn payer() -> Principal {
+    Principal::from_slice(&[1])
+}
+
+fn recipient() -> Principal {
+    Principal::from_slice(&[2])
+}
+
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
+
+/// Spins up a fresh pocket-ic instance with both the escrow canister
+/// and the ICRC-1 ledger installed. Pre-funds both `payer` and
+/// `recipient` so each can cover their respective `DC/2` deposit +
+/// ledger fees under the RFC-002 two-sided flow.
+fn setup() -> (Arc<PocketIc>, PicCanister, IcrcLedger) {
+    let pic = Arc::new(PocketIc::new());
+    let escrow = PicCanisterBuilder::new("escrow").deploy_to(&pic);
+    let ledger = IcrcLedgerBuilder::new()
+        .with_initial_balance(payer(), 1_000_000_000_000)
+        .with_initial_balance(recipient(), 1_000_000_000_000)
+        .deploy_to(&pic);
+    (pic, escrow, ledger)
+}
+
+fn create_bound_deal_as(
+    escrow: &PicCanister,
+    creator: Principal,
+    ledger: &IcrcLedger,
+    amount: u128,
+    expires_at_ns: u64,
+) -> DealView {
+    let args = CreateDealArgs {
+        amount,
+        token_ledger: ledger.principal(),
+        expires_at_ns,
+        payer: Some(payer()),
+        recipient: Some(recipient()),
+        title: None,
+        note: None,
+        panel_size: None,
+    };
+    let result: CreateDealResult = escrow
+        .update(creator, "create_deal", (args,))
+        .expect("create_deal call");
+    match result {
+        CreateDealResult::Ok(view) => *view,
+        CreateDealResult::Err(e) => panic!("create_deal: {e:?}"),
+    }
+}
+
+fn try_create_bound_deal_as(
+    escrow: &PicCanister,
+    creator: Principal,
+    ledger: &IcrcLedger,
+    amount: u128,
+    expires_at_ns: u64,
+) -> CreateDealResult {
+    let args = CreateDealArgs {
+        amount,
+        token_ledger: ledger.principal(),
+        expires_at_ns,
+        payer: Some(payer()),
+        recipient: Some(recipient()),
+        title: None,
+        note: None,
+        panel_size: None,
+    };
+    escrow
+        .update(creator, "create_deal", (args,))
+        .expect("create_deal call")
+}
+
+/// Calls `consent_deal` from `caller`. The receiver path performs an
+/// ICRC-2 `transfer_from` of `DC/2`; callers must have approved the
+/// escrow canister beforehand.
+fn consent(escrow: &PicCanister, caller: Principal, deal_id: u64) {
+    let result: ConsentDealResult = escrow
+        .update(caller, "consent_deal", (ConsentDealArgs { deal_id },))
+        .expect("consent_deal call");
+    match result {
+        ConsentDealResult::Ok(_) => {}
+        ConsentDealResult::Err(e) => panic!("consent_deal: {e:?}"),
+    }
+}
+
+fn try_consent(escrow: &PicCanister, caller: Principal, deal_id: u64) -> ConsentDealResult {
+    escrow
+        .update(caller, "consent_deal", (ConsentDealArgs { deal_id },))
+        .expect("consent_deal call")
+}
+
+fn fund(escrow: &PicCanister, caller: Principal, deal_id: u64) -> DealView {
+    let result: FundDealResult = escrow
+        .update(caller, "fund_deal", (FundDealArgs { deal_id },))
+        .expect("fund_deal call");
+    match result {
+        FundDealResult::Ok(view) => *view,
+        FundDealResult::Err(e) => panic!("fund_deal: {e:?}"),
+    }
+}
+
+fn accept(escrow: &PicCanister, caller: Principal, deal_id: u64) -> DealView {
+    let args = AcceptDealArgs {
+        deal_id,
+        claim_code: None,
+    };
+    let result: AcceptDealResult = escrow
+        .update(caller, "accept_deal", (args,))
+        .expect("accept_deal call");
+    match result {
+        AcceptDealResult::Ok(view) => *view,
+        AcceptDealResult::Err(e) => panic!("accept_deal: {e:?}"),
+    }
+}
+
+fn reclaim(escrow: &PicCanister, caller: Principal, deal_id: u64) -> DealView {
+    let result: ReclaimDealResult = escrow
+        .update(caller, "reclaim_deal", (ReclaimDealArgs { deal_id },))
+        .expect("reclaim_deal call");
+    match result {
+        ReclaimDealResult::Ok(view) => *view,
+        ReclaimDealResult::Err(e) => panic!("reclaim_deal: {e:?}"),
+    }
+}
+
+fn reject(escrow: &PicCanister, caller: Principal, deal_id: u64) -> DealView {
+    let result: RejectDealResult = escrow
+        .update(caller, "reject_deal", (RejectDealArgs { deal_id },))
+        .expect("reject_deal call");
+    match result {
+        RejectDealResult::Ok(view) => *view,
+        RejectDealResult::Err(e) => panic!("reject_deal: {e:?}"),
+    }
+}
+
+fn process_expired(escrow: &PicCanister, caller: Principal, limit: u32) -> Vec<u64> {
+    let result: ProcessExpiredDealsResult = escrow
+        .update(caller, "process_expired_deals", (limit,))
+        .expect("process_expired_deals call");
+    match result {
+        ProcessExpiredDealsResult::Ok(ids) => *ids,
+        ProcessExpiredDealsResult::Err(e) => panic!("process_expired_deals: {e:?}"),
+    }
+}
+
+/// Returns a nanosecond timestamp comfortably in the future relative
+/// to pocket-ic's deterministic clock at fresh-canister time.
+fn far_future(pic: &PocketIc) -> u64 {
+    let now_ns = pic.get_time().as_nanos_since_unix_epoch();
+    let bump = u64::try_from(Duration::from_hours(1).as_nanos()).expect("1h fits in u64 ns");
+    now_ns + bump
+}
+
+/// One-minute expiry — close enough to advance past in the test loop.
+fn short_expiry(pic: &PocketIc) -> u64 {
+    let now_ns = pic.get_time().as_nanos_since_unix_epoch();
+    let bump = u64::try_from(Duration::from_mins(1).as_nanos()).expect("1m fits in u64 ns");
+    now_ns + bump
+}
+
+// ---------------------------------------------------------------------------
+// 3a happy path: payer-creator → receiver consent → fund → accept
+// ---------------------------------------------------------------------------
+
+#[test]
+fn accept_deal_3a_settles_with_two_sided_reserve_math() {
+    let (pic, escrow, ledger) = setup();
+    let amount: u128 = 1_000_000_000;
+    let lf = ledger.fee;
+    let expires_at_ns = far_future(&pic);
+
+    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, expires_at_ns);
+    let escrow_fee = deal.fees.escrow_fee;
+    let dc_half = deal.fees.dispute_reserve_per_party;
+    let subaccount = deal.escrow_subaccount.clone();
+
+    // Receiver approves + consents → DC/2 lands in the deal subaccount.
+    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
+    consent(&escrow, recipient(), deal.id);
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount.clone()),
+        dc_half,
+        "subaccount holds the receiver's reserve after consent",
+    );
+
+    // Payer approves `amount + DC/2 + ledger_fee` (so the canister can
+    // pull `amount + DC/2` plus burn one LF on the transfer_from).
+    ledger.approve(payer(), escrow.canister_id(), amount + dc_half + lf);
+
+    let payer_balance_pre_fund = ledger.balance_of_owner(payer());
+    let funded = fund(&escrow, payer(), deal.id);
+    assert_eq!(funded.status, DealStatus::Funded);
+
+    // Payer wallet loses `amount + DC/2 + ledger_fee` on the
+    // transfer_from (amount + reserve transferred, plus 1 LF burned).
+    assert_eq!(
+        payer_balance_pre_fund - ledger.balance_of_owner(payer()),
+        amount + dc_half + lf,
+        "payer wallet debited amount + DC/2 + LF on fund",
+    );
+
+    // Subaccount now holds `amount + DC` (DC/2 from each side).
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount.clone()),
+        amount + 2 * dc_half,
+        "subaccount holds amount + DC after both parties deposited",
+    );
+
+    let recipient_pre = ledger.balance_of_owner(recipient());
+    let payer_pre = ledger.balance_of_owner(payer());
+    let settled = accept(&escrow, recipient(), deal.id);
+    assert_eq!(settled.status, DealStatus::Settled);
+
+    // Recipient gets one combined transfer worth
+    // `amount − EF + DC/2 − LF` (settlement + reserve refund, minus
+    // the single LF burned on the outbound transfer).
+    let recipient_received = ledger.balance_of_owner(recipient()) - recipient_pre;
+    assert_eq!(
+        recipient_received,
+        amount - escrow_fee + dc_half - lf,
+        "recipient nets amount − EF + DC/2 − LF on settle",
+    );
+
+    // Payer receives their `DC/2 − LF` reserve refund separately.
+    let payer_received = ledger.balance_of_owner(payer()) - payer_pre;
+    assert_eq!(
+        payer_received,
+        dc_half - lf,
+        "payer recovers DC/2 − LF on settle",
+    );
+
+    // Subaccount retains exactly EF.
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
+        escrow_fee,
+        "subaccount retains exactly EF after settle",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 3b happy path: receiver-creator deposits DC/2 atomically with create
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_deal_3b_receiver_creator_deposits_reserve_atomically() {
+    let (pic, escrow, ledger) = setup();
+    let amount: u128 = 1_000_000_000;
+    let lf = ledger.fee;
+
+    // Receiver must approve BEFORE create_deal — that's the gesture
+    // that authorises the create-time `transfer_from`. We don't know
+    // the deal's `DC/2` until after create, but the receiver can
+    // approve a worst-case headroom matching the canister's
+    // `compute_arbitration_fee` of `amount`.
+    let worst_case_reserve = amount * 5 / 100 / 2 + lf; // 5% bps / 2
+    ledger.approve(recipient(), escrow.canister_id(), worst_case_reserve + 1);
+
+    let recipient_pre = ledger.balance_of_owner(recipient());
+    let deal = create_bound_deal_as(&escrow, recipient(), &ledger, amount, far_future(&pic));
+    let dc_half = deal.fees.dispute_reserve_per_party;
+    let subaccount = deal.escrow_subaccount.clone();
+
+    // Receiver's wallet debited DC/2 + LF (the transfer_from fee).
+    assert_eq!(
+        recipient_pre - ledger.balance_of_owner(recipient()),
+        dc_half + lf,
+        "receiver-creator wallet debited DC/2 + LF on create",
+    );
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
+        dc_half,
+        "subaccount holds receiver's reserve immediately after create",
+    );
+    // Receiver's consent was auto-set to Accepted by resolve_parties.
+    // Deal is in `Created` ready for the payer to fund.
+    assert_eq!(deal.status, DealStatus::Created);
+}
+
+#[test]
+fn create_deal_3b_returns_dispute_reserve_required_without_approval() {
+    let (pic, escrow, ledger) = setup();
+    // Recipient does NOT approve. create_deal should fail and the
+    // partially-inserted deal should be rolled forward to Cancelled.
+    let result = try_create_bound_deal_as(
+        &escrow,
+        recipient(),
+        &ledger,
+        1_000_000_000,
+        far_future(&pic),
+    );
+    match result {
+        CreateDealResult::Err(EscrowError::DisputeReserveRequired) => {}
+        other => panic!("expected DisputeReserveRequired, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 3a reclaim path: expiry → both parties get their reserves back
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reclaim_deal_refunds_both_halves_after_expiry() {
+    let (pic, escrow, ledger) = setup();
+    let amount: u128 = 1_000_000_000;
+    let lf = ledger.fee;
+    let expires_at_ns = short_expiry(&pic);
+
+    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, expires_at_ns);
+    let escrow_fee = deal.fees.escrow_fee;
+    let dc_half = deal.fees.dispute_reserve_per_party;
+    let subaccount = deal.escrow_subaccount.clone();
+
+    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
+    consent(&escrow, recipient(), deal.id);
+    ledger.approve(payer(), escrow.canister_id(), amount + dc_half + lf);
+    fund(&escrow, payer(), deal.id);
+
+    pic.advance_time(Duration::from_mins(2));
+    pic.tick();
+
+    let payer_pre = ledger.balance_of_owner(payer());
+    let recipient_pre = ledger.balance_of_owner(recipient());
+
+    let refunded = reclaim(&escrow, payer(), deal.id);
+    assert_eq!(refunded.status, DealStatus::Refunded);
+
+    // Payer recovers `amount − EF + DC/2 − LF` in one combined refund.
+    assert_eq!(
+        ledger.balance_of_owner(payer()) - payer_pre,
+        amount - escrow_fee + dc_half - lf,
+        "payer recovers amount − EF + DC/2 − LF on reclaim",
+    );
+    // Recipient recovers `DC/2 − LF`.
+    assert_eq!(
+        ledger.balance_of_owner(recipient()) - recipient_pre,
+        dc_half - lf,
+        "recipient recovers DC/2 − LF on reclaim",
+    );
+    // Subaccount retains exactly EF.
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
+        escrow_fee,
+        "subaccount retains exactly EF after reclaim",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Auto-refund via process_expired_deals
+// ---------------------------------------------------------------------------
+
+#[test]
+fn process_expired_deals_auto_refunds_both_halves() {
+    let (pic, escrow, ledger) = setup();
+    let amount: u128 = 1_000_000_000;
+    let lf = ledger.fee;
+    let expires_at_ns = short_expiry(&pic);
+
+    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, expires_at_ns);
+    let escrow_fee = deal.fees.escrow_fee;
+    let dc_half = deal.fees.dispute_reserve_per_party;
+    let subaccount = deal.escrow_subaccount.clone();
+
+    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
+    consent(&escrow, recipient(), deal.id);
+    ledger.approve(payer(), escrow.canister_id(), amount + dc_half + lf);
+    fund(&escrow, payer(), deal.id);
+
+    pic.advance_time(Duration::from_mins(2));
+    pic.tick();
+
+    let payer_pre = ledger.balance_of_owner(payer());
+    let recipient_pre = ledger.balance_of_owner(recipient());
+
+    let processed = process_expired(&escrow, payer(), 10);
+    assert_eq!(processed, vec![deal.id]);
+
+    assert_eq!(
+        ledger.balance_of_owner(payer()) - payer_pre,
+        amount - escrow_fee + dc_half - lf,
+        "auto-refund mirrors manual reclaim for payer",
+    );
+    assert_eq!(
+        ledger.balance_of_owner(recipient()) - recipient_pre,
+        dc_half - lf,
+        "auto-refund mirrors manual reclaim for recipient",
+    );
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
+        escrow_fee,
+        "subaccount retains exactly EF after auto-refund",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reject path: receiver consents (deposits DC/2) then rejects
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reject_after_receiver_consent_refunds_minus_ef() {
+    let (pic, escrow, ledger) = setup();
+    let amount: u128 = 1_000_000_000;
+    let lf = ledger.fee;
+
+    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, far_future(&pic));
+    let escrow_fee = deal.fees.escrow_fee;
+    let dc_half = deal.fees.dispute_reserve_per_party;
+    let subaccount = deal.escrow_subaccount.clone();
+
+    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
+    consent(&escrow, recipient(), deal.id);
+
+    let recipient_pre = ledger.balance_of_owner(recipient());
+
+    let rejected = reject(&escrow, recipient(), deal.id);
+    assert_eq!(rejected.status, DealStatus::Rejected);
+
+    // Receiver gets back `DC/2 − EF − LF` — the operator takes EF
+    // out of the deposited reserve.
+    assert_eq!(
+        ledger.balance_of_owner(recipient()) - recipient_pre,
+        dc_half - escrow_fee - lf,
+        "receiver recovers DC/2 − EF − LF on reject after consent",
+    );
+    // Subaccount retains EF (operator's cut from the rejector's
+    // deposit).
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
+        escrow_fee,
+        "subaccount retains EF after reject",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reject path: no reserve deposited → free state flip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reject_before_any_deposit_is_free() {
+    let (pic, escrow, ledger) = setup();
+    let deal = create_bound_deal_as(&escrow, payer(), &ledger, 1_000_000_000, far_future(&pic));
+    let subaccount = deal.escrow_subaccount.clone();
+
+    // No consent, no fund — subaccount is empty.
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount.clone()),
+        0,
+    );
+
+    let recipient_pre = ledger.balance_of_owner(recipient());
+    let payer_pre = ledger.balance_of_owner(payer());
+
+    let rejected = reject(&escrow, recipient(), deal.id);
+    assert_eq!(rejected.status, DealStatus::Rejected);
+
+    // No money moved on either side.
+    assert_eq!(ledger.balance_of_owner(recipient()), recipient_pre);
+    assert_eq!(ledger.balance_of_owner(payer()), payer_pre);
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
+        0,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// consent_deal returns DisputeReserveRequired without approval
+// ---------------------------------------------------------------------------
+
+#[test]
+fn consent_deal_without_approval_returns_dispute_reserve_required() {
+    let (pic, escrow, ledger) = setup();
+    let deal = create_bound_deal_as(&escrow, payer(), &ledger, 1_000_000_000, far_future(&pic));
+
+    // Receiver has balance (per the setup) but never approved the
+    // escrow canister — `icrc2_transfer_from` rejects on missing
+    // allowance, which we map to `DisputeReserveRequired`.
+    let result = try_consent(&escrow, recipient(), deal.id);
+    match result {
+        ConsentDealResult::Err(EscrowError::DisputeReserveRequired) => {}
+        other => panic!("expected DisputeReserveRequired, got {other:?}"),
+    }
+}

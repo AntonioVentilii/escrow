@@ -4,9 +4,8 @@ use crate::{
     api::deals::errors::EscrowError,
     ledger,
     memory::{release_lock, try_acquire_lock, with_deal, with_deals},
-    services::deals::payout_after_fees,
     types::{
-        deal::{DealId, DealStatus},
+        deal::{DealFees, DealId, DealStatus},
         ledger_types::Account,
     },
 };
@@ -46,7 +45,7 @@ pub async fn process_expired(limit: u32) -> Result<Vec<DealId>, EscrowError> {
 }
 
 async fn try_refund_deal(deal_id: DealId) -> Result<(), EscrowError> {
-    let (ledger_id, subaccount, payer, amount, fees) = with_deal(deal_id, |deal| {
+    let (ledger_id, subaccount, payer, recipient, amount, fees) = with_deal(deal_id, |deal| {
         if deal.status != DealStatus::Funded {
             return Err(EscrowError::AlreadyFinalised);
         }
@@ -55,25 +54,45 @@ async fn try_refund_deal(deal_id: DealId) -> Result<(), EscrowError> {
             deal.token_ledger,
             deal.escrow_subaccount.clone(),
             payer,
+            deal.recipient,
             deal.amount,
             deal.fees.clone(),
         ))
     })
     .ok_or(EscrowError::NotFound)??;
 
-    let payer_account = Account {
-        owner: payer,
-        subaccount: None,
-    };
-
-    // Auto-refund is symmetric with manual `reclaim_deal` —
-    // escrow keeps `escrow_fee`, refund covers `amount - EF - LF`.
-    // The `fees` snapshot is cloned out of the deal so we don't hold
-    // a borrow over the await.
+    // Auto-refund mirrors `execute_reclaim`'s fan-out:
+    //   - Payer: `amount − EF − LF + (DC/2 − LF)` combined.
+    //   - Recipient: `DC/2 − LF` separately.
+    // `EF` stays in the deal subaccount as the operator's share.
     let ledger_fee = ledger::fee(ledger_id).await?;
-    let refund = payout_after_fees(amount, &fees, ledger_fee);
+    let (payer_refund, recipient_refund) = refund_amounts(amount, &fees, ledger_fee);
 
-    let block_index = ledger::transfer(ledger_id, Some(subaccount), payer_account, refund).await?;
+    let refund_tx = ledger::transfer(
+        ledger_id,
+        Some(subaccount.clone()),
+        Account {
+            owner: payer,
+            subaccount: None,
+        },
+        payer_refund,
+    )
+    .await?;
+
+    if recipient_refund > 0 {
+        if let Some(recipient) = recipient {
+            ledger::transfer(
+                ledger_id,
+                Some(subaccount),
+                Account {
+                    owner: recipient,
+                    subaccount: None,
+                },
+                recipient_refund,
+            )
+            .await?;
+        }
+    }
 
     let now = time();
     let canister = canister_self();
@@ -81,11 +100,25 @@ async fn try_refund_deal(deal_id: DealId) -> Result<(), EscrowError> {
         if deal.status == DealStatus::Funded {
             deal.status = DealStatus::Refunded;
             deal.refunded_at_ns = Some(now);
-            deal.refund_tx = Some(block_index);
+            deal.refund_tx = Some(refund_tx);
             deal.updated_at_ns = Some(now);
             deal.updated_by = Some(canister);
         }
     });
 
     Ok(())
+}
+
+/// Returns `(payer_refund, recipient_reserve_refund)` for a deal
+/// being auto-refunded by the housekeeping sweep. Mirrors
+/// `services::deals::execute_reclaim`'s split so manual and
+/// automatic refunds agree on the math.
+fn refund_amounts(amount: u128, fees: &DealFees, ledger_fee: u128) -> (u128, u128) {
+    let reserve = fees.dispute_reserve_per_party;
+    let payer_refund = amount
+        .saturating_sub(fees.escrow_fee)
+        .saturating_add(reserve)
+        .saturating_sub(ledger_fee);
+    let recipient_reserve_refund = reserve.saturating_sub(ledger_fee);
+    (payer_refund, recipient_reserve_refund)
 }
