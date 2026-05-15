@@ -28,7 +28,8 @@ sequenceDiagram
 
     D->>E: open_dispute(deal_id)
     E->>E: select N arbitrators (eligible × score-weighted, raw_rand)
-    Note over E: Disputed (Evidence phase)<br/>opener's signature stamped to No if Empty
+    Note over E: Disputed — Evidence phase
+    Note over E: opener's signature stamped to No if Empty
 
     %% --- Evidence window (default 3 days) ---
     par Both sides may submit evidence

@@ -19,23 +19,24 @@ sequenceDiagram
     R->>E: create_deal({ payer: P, recipient: R, amount, expiry })
     E->>L: transfer_from(R → escrow subaccount)
     E-->>R: deal_id (R consent = Accepted, P consent = Pending)
-    Note over E: Created<br/>(R reserve already in subaccount)
+    Note over E: Created — R reserve already in subaccount
 
     %% --- Payer consent (state flip only, no money) ---
     P->>E: consent_deal(deal_id)
-    Note over E: Created (P consent = Accepted)
+    Note over E: Still Created — P consent Accepted
 
     %% --- Payer fund ---
     P->>L: icrc2_approve(E, amount + DC/2 + LF)
     P->>E: fund_deal(deal_id)
     E->>L: transfer_from(P → escrow subaccount)
-    Note over E: Funded<br/>(subaccount holds amount + DC; both signatures Empty)
+    Note over E: Funded — subaccount holds amount + DC; both signatures Empty
 
     %% --- Two-signature tally (happy path) ---
     P->>E: sign_yes(deal_id)
     Note over E: payer_signature = Yes; tally Pending → stays Funded
     R->>E: sign_yes(deal_id)
-    Note over E: BothYes tally → settle<br/>(R can also use accept_deal — routes to sign_yes for bound deals)
+    Note over E: BothYes tally → settle
+    Note over E: (R can also call accept_deal — routes to sign_yes for bound deals)
     E->>L: transfer(escrow → R, amount − EF + DC/2 − LF)
     E->>L: transfer(escrow → P, DC/2 − LF)
     Note over E: Settled
