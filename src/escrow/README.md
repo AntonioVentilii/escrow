@@ -217,8 +217,6 @@ Every deal locks a [`DealFees`](./src/types/deal.rs) snapshot at `create_deal` t
 
 On every terminal-state transition where funds leave the escrow subaccount, the recipient receives `amount − escrow_fee − ledger_fee`. The `escrow_fee` stays in the per-deal subaccount as the operator's share (a sweeper / treasury is out of scope for now). The `ledger_fee` is debited by the ledger itself.
 
-For legacy deals (`fees = None` on stable state, created before the fee snapshot was introduced), the same outgoing transfers deduct only the ledger fee — no service fee. This is also the bug-fix path for those deals: previously they tried to send the full `amount` from a subaccount holding only `amount`, which failed with `InsufficientFunds`. They now settle correctly (recipient gets `amount − ledger_fee`).
-
 | Field on `DealFees`         | What it locks                                                                                                                                     |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `escrow_fee`                | Service fee charged on every terminal state. Default `20_000` e8s (= `2 × ICP_LEDGER_FEE`). Admin-tunable via `Config.escrow_fee`.                |
@@ -237,7 +235,7 @@ The min-amount check at `create_deal` rejects deals whose `amount` is too small 
 | `types/arbitrator.rs`        | Internal `ArbitratorProfile`, `ArbitratorStatus`, `MIN_VOTES_FOR_SCORE`, `compute_score` helper                                                                  |
 | `types/ledger_types.rs`      | ICRC-1/ICRC-2 Account and transfer types                                                                                                                         |
 | `types/icrc7.rs`             | ICRC-7/ICRC-16 `Value` type, ownership helpers, metadata builders                                                                                                |
-| `types/state.rs`             | `Config` (incl. `dispute_config: Option<DisputeConfig>`), `StableState` for persistence                                                                          |
+| `types/state.rs`             | `Config` (incl. `dispute_config: DisputeConfig` + `escrow_fee: u128`), `StableState` for persistence                                                             |
 | `api/deals/api.rs`           | Thin deal endpoint layer (delegates to services)                                                                                                                 |
 | `api/deals/params.rs`        | Public argument structs (`CreateDealArgs`, `AcceptDealArgs`, …)                                                                                                  |
 | `api/deals/results.rs`       | Public view structs (`DealView` (incl. `dispute: Option<DisputeId>`), `ClaimableDealView`)                                                                       |
@@ -331,7 +329,7 @@ Dispute resolution is fully implemented:
 - A second housekeeping timer auto-finalises disputes whose voting deadline has passed.
 - The expiry sweep skips `Disputed` deals so a deal mid-arbitration cannot be auto-refunded out from under the panel.
 - `compute_reliability_for` and `count_active_deals_for` treat the new arbitrated terminals symmetrically with their unilateral counterparts.
-- All knobs (`panel_size`, `min_panel_size`, `max_panel_size`, `evidence_window_ns`, `voting_window_ns`, `arbitration_fee_bps`, `arbitration_min_fee`, `withdraw_fee_pct`, `min_arbitrator_score`) live on `Config::dispute_config: Option<DisputeConfig>` and are admin-tunable via `update_config`.
+- All knobs (`panel_size`, `min_panel_size`, `max_panel_size`, `evidence_window_ns`, `voting_window_ns`, `arbitration_fee_bps`, `arbitration_min_fee`, `withdraw_fee_pct`, `min_arbitrator_score`) live on `Config::dispute_config: DisputeConfig` and are admin-tunable via `update_config`.
 - **Per-deal panel-size override:** the deal creator can pin `CreateDealArgs.panel_size: Option<u32>` to lock a specific panel size into the deal terms, bounded by `[DisputeConfig.min_panel_size, DisputeConfig.max_panel_size]`. `None` falls back to the canister default at `open_dispute` time. The locked value persists across subsequent `update_config` changes — admin can't retroactively grow or shrink panels for existing deals. Out-of-range or even values return `EscrowError::PanelSizeOutOfRange { min, max, got }` carrying the offending value alongside the active range.
 
 ### Multi-asset / multi-ledger

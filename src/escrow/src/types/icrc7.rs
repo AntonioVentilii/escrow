@@ -182,10 +182,6 @@ pub fn deal_to_metadata(deal: &Deal) -> Vec<(String, Value)> {
         ));
     }
 
-    if let Some(ref sym) = deal.token_symbol {
-        meta.push(("escrow:token_symbol".to_owned(), Value::Text(sym.clone())));
-    }
-
     if let Some(funded) = deal.funded_at_ns {
         meta.push((
             "escrow:funded_at_ns".to_owned(),
@@ -269,7 +265,6 @@ mod tests {
             payer,
             recipient,
             token_ledger: test_principal(99),
-            token_symbol: None,
             amount: 1000,
             created_at_ns: 100,
             created_by: payer.unwrap_or(test_principal(1)),
@@ -502,7 +497,6 @@ mod tests {
         assert!(!keys.contains(&"escrow:funded_at_ns"));
         assert!(!keys.contains(&"escrow:settled_at_ns"));
         assert!(!keys.contains(&"escrow:refunded_at_ns"));
-        assert!(!keys.contains(&"escrow:token_symbol"));
         assert!(!keys.contains(&"escrow:title"));
         assert!(!keys.contains(&"escrow:note"));
     }

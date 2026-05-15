@@ -79,7 +79,6 @@ mod tests {
             payer: Some(creator),
             recipient: Some(test_principal(250)),
             token_ledger: test_principal(99),
-            token_symbol: None,
             amount: 1000,
             created_at_ns: 100,
             created_by: creator,

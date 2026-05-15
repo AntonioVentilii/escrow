@@ -86,9 +86,15 @@ Rust types via `ic-cdk`'s `export_candid!` macro at the bottom of
 - `post_upgrade` restores via `memory::restore_state()` and **must**
   re-arm the housekeeping timer (`services::housekeeping::start_expiry_sweep()`).
   Forgetting this is a silent bug — the timer dies on upgrade.
-- `Deal` is `Deserialize` from a fixed-shape Candid record. New fields
-  must be added as `Option<T>` for backward-compatible
-  deserialisation.
+- `Deal` is `Deserialize` from a fixed-shape Candid record. While the
+  canister is in active development (pre-v0.1.0) the staging instance
+  is reinstalled from scratch on every deploy and carries no
+  production-meaningful state, so new fields land as required (not
+  `Option<T>`-wrapped) and any pre-existing stable snapshot that
+  lacks them fails to deserialise on `post_upgrade` by design.
+  Once the canister reaches v1.0 and accumulates real deals, this
+  stance flips: subsequent additions go in as `Option<T>` for
+  backward-compatible deserialisation. See RFC-002 § Migration.
 
 ## Local development
 
