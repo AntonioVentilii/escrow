@@ -36,7 +36,7 @@ stateDiagram-v2
     [*] --> Created: create_deal
     Created --> Funded: fund_deal
     Funded --> Settled: accept_deal(claim_code)
-    Funded --> Refunded: expiry → housekeeping sweep<br/>OR manual reclaim_deal(P)
+    Funded --> Refunded: expiry sweep OR manual reclaim_deal(P)
 ```
 
 ## Endpoints

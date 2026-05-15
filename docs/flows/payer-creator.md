@@ -30,8 +30,8 @@ sequenceDiagram
     Note over E: Funded<br/>(subaccount holds amount + DC; both signatures Empty)
 
     %% --- Two-signature tally (happy path: both Yes) ---
-    R->>E: sign_yes(deal_id)<br/>(or accept_deal — same effect)
-    Note over E: recipient_signature = Yes; tally Pending → stays Funded
+    R->>E: sign_yes(deal_id)
+    Note over E: recipient_signature = Yes; tally Pending → stays Funded<br/>(R can also use accept_deal — routes to sign_yes for bound deals)
     P->>E: sign_yes(deal_id)
     Note over E: BothYes tally → settle
     E->>L: transfer(escrow → R, amount − EF + DC/2 − LF)

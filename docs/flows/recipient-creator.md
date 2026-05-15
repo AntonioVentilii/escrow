@@ -34,8 +34,8 @@ sequenceDiagram
     %% --- Two-signature tally (happy path) ---
     P->>E: sign_yes(deal_id)
     Note over E: payer_signature = Yes; tally Pending → stays Funded
-    R->>E: sign_yes(deal_id)<br/>(or accept_deal — same effect)
-    Note over E: BothYes tally → settle
+    R->>E: sign_yes(deal_id)
+    Note over E: BothYes tally → settle<br/>(R can also use accept_deal — routes to sign_yes for bound deals)
     E->>L: transfer(escrow → R, amount − EF + DC/2 − LF)
     E->>L: transfer(escrow → P, DC/2 − LF)
     Note over E: Settled
