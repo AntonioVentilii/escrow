@@ -106,10 +106,3 @@ pub struct ListMyDealsArgs {
     /// Maximum number of deals to return. Defaults to `50`.
     pub limit: Option<u64>,
 }
-
-// `sign_yes` and `sign_no` reuse `FundDealArgs` (just `deal_id`) —
-// the verb is encoded in the endpoint name, no per-call payload
-// needed. This matches the existing `verb + deal_id` convention
-// used by `fund_deal`, `accept_deal`, `reclaim_deal`, `cancel_deal`,
-// `reject_deal`, `consent_deal`, and `open_dispute`, and makes
-// "sign with empty vote" unrepresentable at the Candid boundary.
