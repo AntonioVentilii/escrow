@@ -296,23 +296,35 @@ pub async fn consent(
 
     // Payer consent is still a pure state flip — the payer's actual
     // commitment is `fund_deal`, which pulls `amount + DC/2` and
-    // implicitly sets `payer_consent = Accepted`.
+    // implicitly sets `payer_consent = Accepted`. Idempotent: a
+    // repeated payer consent is a no-op.
     if is_payer {
-        with_deal(deal_id, |d| {
-            d.payer_consent = Consent::Accepted;
-            d.updated_at_ns = Some(now);
-            d.updated_by = Some(caller);
-        });
+        if !matches!(deal.payer_consent, Consent::Accepted) {
+            with_deal(deal_id, |d| {
+                d.payer_consent = Consent::Accepted;
+                d.updated_at_ns = Some(now);
+                d.updated_by = Some(caller);
+            });
+        }
         return load_deal(deal_id)
             .map(|d| DealView::from(&d))
             .ok_or(EscrowError::NotFound);
     }
 
-    // Receiver consent: the receiver deposits their `DC/2` reserve
-    // into the deal subaccount via `icrc2_transfer_from`. Receiver
-    // must have approved the canister beforehand for at least
-    // `DC/2 + ledger_fee`. Idempotent on the canister side via the
-    // processing lock.
+    // Receiver consent is idempotent at the canister boundary:
+    // a repeated call by an already-consented receiver short-circuits
+    // and returns the current view without invoking the ledger.
+    // Without this guard a wallet that left a generous allowance
+    // open after the first consent could be drained by accidental
+    // (UI retry) or malicious repeated calls — each invocation
+    // would otherwise pull another `DC/2` via `icrc2_transfer_from`.
+    if matches!(deal.recipient_consent, Consent::Accepted) {
+        return Ok(DealView::from(&deal));
+    }
+
+    // Receiver consent: deposit `DC/2` into the deal subaccount via
+    // `icrc2_transfer_from`. Receiver must have approved the canister
+    // beforehand for at least `DC/2 + ledger_fee`.
     try_acquire_lock(deal_id)?;
     let result = execute_receiver_consent(deal_id, &deal, caller, now).await;
     release_lock(deal_id);

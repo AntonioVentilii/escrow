@@ -558,6 +558,52 @@ fn reject_before_any_deposit_is_free() {
 }
 
 // ---------------------------------------------------------------------------
+// consent_deal is idempotent — a second call from an
+// already-consented receiver does NOT pull another `DC/2`, even
+// when the receiver's approval is still open.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn consent_deal_is_idempotent_for_already_consented_receiver() {
+    let (pic, escrow, ledger) = setup();
+    let amount: u128 = 1_000_000_000;
+    let lf = ledger.fee;
+
+    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, far_future(&pic));
+    let dc_half = deal.fees.dispute_reserve_per_party;
+    let subaccount = deal.escrow_subaccount.clone();
+
+    // Approve generously — twice the DC/2 so a second pull WOULD
+    // succeed at the ledger level if the canister tried.
+    ledger.approve(recipient(), escrow.canister_id(), (dc_half + lf) * 2);
+
+    let recipient_pre_consent = ledger.balance_of_owner(recipient());
+    consent(&escrow, recipient(), deal.id);
+    let recipient_after_first = ledger.balance_of_owner(recipient());
+    let subaccount_after_first =
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount.clone());
+
+    // First consent moved DC/2 + LF out of the receiver and DC/2
+    // into the subaccount.
+    assert_eq!(recipient_pre_consent - recipient_after_first, dc_half + lf);
+    assert_eq!(subaccount_after_first, dc_half);
+
+    // Second consent: should be a no-op (no ledger calls).
+    consent(&escrow, recipient(), deal.id);
+    let recipient_after_second = ledger.balance_of_owner(recipient());
+    let subaccount_after_second = ledger.balance_of_subaccount(escrow.canister_id(), subaccount);
+
+    assert_eq!(
+        recipient_after_second, recipient_after_first,
+        "second consent must not pull another DC/2 from the receiver",
+    );
+    assert_eq!(
+        subaccount_after_second, subaccount_after_first,
+        "subaccount must not double-credit on a redundant consent",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // consent_deal returns DisputeReserveRequired without approval
 // ---------------------------------------------------------------------------
 
