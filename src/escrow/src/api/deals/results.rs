@@ -106,9 +106,9 @@ pub struct DealView {
     /// fee`).
     pub fees: DealFees,
     /// Payer's settlement signature on a `Funded` bound deal —
-    /// `Empty` until the payer calls `sign_deal`. Tip flows
-    /// (recipient unbound) always carry `Empty`. See [`Signature`]
-    /// for tally semantics.
+    /// `Empty` until the payer calls `sign_yes` / `sign_no`. Tip
+    /// flows (recipient unbound) always carry `Empty`. See
+    /// [`Signature`] for tally semantics.
     pub payer_signature: Signature,
     /// Recipient's settlement signature; mirrors
     /// [`Self::payer_signature`].

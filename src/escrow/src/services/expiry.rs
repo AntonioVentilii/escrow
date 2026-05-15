@@ -55,23 +55,11 @@ pub async fn process_expired(limit: u32) -> Result<Vec<DealId>, EscrowError> {
     Ok(processed)
 }
 
-/// External entry point for `services::deals::reclaim` to dispatch
-/// a single expired bound deal through the auto-YES tally without
-/// going through the full sweep loop. Wraps
-/// [`dispatch_one_expired`] so the callers can stay decoupled from
-/// the per-deal lock management (which is internal to the inner
-/// dispatcher and the executors it calls).
-pub(crate) async fn dispatch_one_expired_external(
-    deal_id: DealId,
-    now: u64,
-) -> Result<(), EscrowError> {
-    dispatch_one_expired(deal_id, now).await
-}
-
 /// Inspects a single expired `Funded` deal and routes it to the
 /// terminal flow dictated by its signatures (bound deal) or directly
-/// to refund (tip).
-async fn dispatch_one_expired(deal_id: DealId, now: u64) -> Result<(), EscrowError> {
+/// to refund (tip). Used by the sweep loop above and by
+/// `services::deals::reclaim` for the bound-deal post-expiry path.
+pub(crate) async fn dispatch_one_expired(deal_id: DealId, now: u64) -> Result<(), EscrowError> {
     let deal = get_deal(deal_id).ok_or(EscrowError::NotFound)?;
 
     // Concurrent flip after the snapshot was taken — nothing to do.
@@ -95,10 +83,12 @@ async fn dispatch_one_expired(deal_id: DealId, now: u64) -> Result<(), EscrowErr
     // Bound deal: apply auto-YES + dispatch. The settle / abort
     // branches call the private `execute_*` helpers directly under
     // a freshly-acquired per-deal lock — going through the public
-    // `accept` / `abort` would re-validate `validate_can_accept` /
-    // `validate_can_abort`, both of which reject expired deals.
-    // The expiry sweep IS the canonical post-expiry dispatcher and
-    // must bypass those validators.
+    // `deals::accept` would re-validate `validate_can_accept`, which
+    // rejects expired deals. The expiry sweep IS the canonical
+    // post-expiry dispatcher and must bypass that validator. (There
+    // is no symmetric `deals::abort` public entry — abort is only
+    // ever a consequence of mutual `No`, dispatched here from the
+    // tally rather than as a standalone caller-facing primitive.)
     //
     // Mixed dispatches via `disputes::open_post_expiry`, which
     // already takes `allow_expired = true` and acquires its own

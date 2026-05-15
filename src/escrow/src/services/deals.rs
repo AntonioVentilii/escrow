@@ -335,7 +335,7 @@ pub async fn reclaim(
     // Tips (recipient unbound) keep the legacy unilateral refund
     // since signatures don't apply to tip flows.
     if deal.recipient.is_some() {
-        super::expiry::dispatch_one_expired_external(deal_id, now).await?;
+        super::expiry::dispatch_one_expired(deal_id, now).await?;
         return load_deal(deal_id)
             .map(|d| DealView::from(&d))
             .ok_or(EscrowError::NotFound);
@@ -437,8 +437,11 @@ pub async fn reject(caller: Principal, deal_id: DealId, now: u64) -> Result<Deal
 /// different vote overwrites; once the tally fires the next sign
 /// hits `InvalidState`.
 ///
-/// `vote` must be [`Signature::Yes`] or [`Signature::No`]. Passing
-/// [`Signature::Empty`] is rejected at the api layer.
+/// `vote` must be [`Signature::Yes`] or [`Signature::No`]. The
+/// public api wrappers (`sign_yes` / `sign_no`) inject the vote, so
+/// `Empty` is unreachable from the Candid boundary; passing `Empty`
+/// here from internal code would record an `Empty` signature and
+/// always tally to `Pending` (no-op).
 pub async fn sign(
     caller: Principal,
     deal_id: DealId,

@@ -284,12 +284,12 @@ fn accept_deal_3a_settles_with_two_sided_reserve_math() {
     let recipient_pre = ledger.balance_of_owner(recipient());
     let payer_pre = ledger.balance_of_owner(payer());
 
-    // New two-signature flow: recipient calling `accept_deal` is
-    // equivalent to `sign_deal(recipient, Yes)`. Without the
-    // payer's matching `Yes` the deal does NOT settle yet — the
-    // recipient's signature is recorded and the deal stays
-    // `Funded`. The payer must also sign `Yes` to trigger the
-    // BothYes tally.
+    // New two-signature flow: recipient calling `accept_deal` for
+    // a bound deal is equivalent to `sign_yes` from the recipient.
+    // Without the payer's matching `Yes` the deal does NOT settle
+    // yet — the recipient's signature is recorded and the deal
+    // stays `Funded`. The payer must also call `sign_yes` to
+    // trigger the BothYes tally.
     let after_recipient_sign = accept(&escrow, recipient(), deal.id);
     assert_eq!(
         after_recipient_sign.status,

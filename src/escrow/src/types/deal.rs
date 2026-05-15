@@ -160,8 +160,8 @@ pub struct Deal {
     pub fees: DealFees,
     /// Payer's settlement signature. Defaults to [`Signature::Empty`]
     /// at `Funded` time and stays `Empty` until the payer calls
-    /// `sign_deal`. Together with `recipient_signature` it drives the
-    /// settlement tally — see [`Signature`] and
+    /// `sign_yes` / `sign_no`. Together with `recipient_signature` it
+    /// drives the settlement tally — see [`Signature`] and
     /// `services::deals::tally_signatures`.
     pub payer_signature: Signature,
     /// Recipient's settlement signature. Mirrors

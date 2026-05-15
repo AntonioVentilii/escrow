@@ -330,9 +330,9 @@ type DealView = record {
 	// participants; never exposed in the public claimable view.
 	claim_code : opt text;
 	// Payer's settlement signature on a `Funded` bound deal —
-	// `Empty` until the payer calls `sign_deal`. Tip flows
-	// (recipient unbound) always carry `Empty`. See [`Signature`]
-	// for tally semantics.
+	// `Empty` until the payer calls `sign_yes` / `sign_no`. Tip
+	// flows (recipient unbound) always carry `Empty`. See
+	// [`Signature`] for tally semantics.
 	payer_signature : Signature;
 	// Identifier of the attached dispute, if any. `Some(_)` while a
 	// dispute is open or after it has resolved (audit-trail link to
