@@ -25,7 +25,7 @@ use crate::{
     },
     types::{
         arbitrator::{ArbitratorProfile, ArbitratorStatus},
-        deal::{Deal, DealId, DealStatus},
+        deal::{Deal, DealFees, DealId, DealStatus},
         dispute::{
             Dispute, DisputeConfig, DisputeId, DisputeOutcome, DisputePhase, Evidence, PanelMember,
             Vote,
@@ -40,10 +40,36 @@ use crate::{
 ///
 /// Saturating arithmetic — overflow on huge amounts is clamped to
 /// `u128::MAX` rather than panicking.
+///
+/// Used at `create_deal` time inside
+/// `services::deals::compute_deal_fees` to build the per-deal
+/// snapshot. Dispute-resolution paths read the snapshotted value
+/// via [`arbitration_fee_from_snapshot`] instead of recomputing
+/// from a live `DisputeConfig`.
 #[must_use]
 pub fn compute_arbitration_fee(amount: u128, cfg: &DisputeConfig) -> u128 {
     let bps_fee = amount.saturating_mul(u128::from(cfg.arbitration_fee_bps)) / 10_000;
     bps_fee.max(cfg.arbitration_min_fee)
+}
+
+/// Returns the full arbitration fee (the panel pool) recovered from
+/// a deal's snapshotted [`DealFees`].
+///
+/// Both halves of the dispute reserve are deposited at consent /
+/// fund / create-3b time so the subaccount holds the full panel
+/// pool by the time the deal reaches `Funded`. This helper is the
+/// single source of truth for the dispute service —
+/// `open_dispute_async`'s headroom check and `open_locked`'s
+/// `Dispute.arbitration_fee` persistence both call this so they
+/// can never diverge. Reading from the snapshot (instead of
+/// recomputing via `compute_arbitration_fee` against the live
+/// `DisputeConfig`) is what makes RFC-002's "deal terms are a
+/// contract at create time" promise enforceable: a controller-side
+/// `update_config` between create and dispute open cannot rewrite
+/// the dispute economics for in-flight deals.
+#[must_use]
+pub fn arbitration_fee_from_snapshot(fees: &DealFees) -> u128 {
+    fees.dispute_reserve_per_party.saturating_mul(2)
 }
 
 /// Returns the eligible arbitrator pool for a dispute on `deal`, with
@@ -178,13 +204,13 @@ pub async fn open(
     // contract from create time — admin can't retroactively grow
     // or shrink panels for existing deals via `update_config`.
     //
-    // Arbitration fee: read from `deal.fees.dispute_reserve_per_party`
-    // (the per-party half captured at `create_deal` time) doubled to
-    // get the full panel pool. Same source as the snapshot
-    // — a mid-flight `update_config` to `arbitration_fee_bps` /
+    // Arbitration fee: read from the deal's fees snapshot via the
+    // shared helper so the headroom check here and the persisted
+    // `Dispute.arbitration_fee` in `open_locked` cannot diverge.
+    // A mid-flight `update_config` to `arbitration_fee_bps` /
     // `arbitration_min_fee` does NOT change the economics of this
     // dispute.
-    let fee = deal.fees.dispute_reserve_per_party.saturating_mul(2);
+    let fee = arbitration_fee_from_snapshot(&deal.fees);
     let eligible_preview = eligible_arbitrators(&deal, &cfg);
     let needed = deal.panel_size.unwrap_or(cfg.panel_size);
     let have = u32::try_from(eligible_preview.len()).unwrap_or(u32::MAX);
@@ -290,10 +316,9 @@ async fn open_locked(
     // Persist the snapshotted dispute fee on the `Dispute` record
     // so downstream finalize / withdraw paths can keep reading
     // `dispute.arbitration_fee` without having to re-derive from
-    // the deal's snapshot every time. Read from
-    // `deal.fees.dispute_reserve_per_party * 2` so this dispute
-    // sees the same economics the deal locked in at `create_deal`.
-    let arbitration_fee = deal.fees.dispute_reserve_per_party.saturating_mul(2);
+    // the deal's snapshot every time. Same helper as the headroom
+    // check above so the values cannot diverge.
+    let arbitration_fee = arbitration_fee_from_snapshot(&deal.fees);
     let evidence_deadline_ns = now_ns.saturating_add(cfg.evidence_window_ns);
     let voting_deadline_ns = evidence_deadline_ns.saturating_add(cfg.voting_window_ns);
 
@@ -1195,8 +1220,8 @@ mod tests {
     use candid::Principal;
 
     use super::{
-        compute_arbitration_fee, eligible_arbitrators, get, get_public, list_for_caller,
-        load_dispute_config, select_panel,
+        arbitration_fee_from_snapshot, compute_arbitration_fee, eligible_arbitrators, get,
+        get_public, list_for_caller, load_dispute_config, select_panel,
     };
     use crate::{
         api::{deals::errors::EscrowError, disputes::params::ListMyDisputesArgs},
@@ -1274,43 +1299,55 @@ mod tests {
     }
 
     #[test]
-    fn dispute_economics_read_from_snapshot_not_live_config() {
-        // The dispute service now reads the arbitration fee from
-        // `deal.fees.dispute_reserve_per_party * 2` (captured at
-        // `create_deal` time) instead of recomputing from a live
-        // `DisputeConfig` at `open_dispute` time. This test
-        // demonstrates the snapshot-vs-live divergence: a deal whose
-        // snapshot pins a specific reserve survives an
-        // `update_config` that would otherwise change the fee.
-        let snapshotted_fee = DealFees {
+    fn arbitration_fee_from_snapshot_doubles_per_party_reserve() {
+        // The shared helper used by `open_dispute_async` and
+        // `open_locked` simply doubles the snapshotted per-party
+        // reserve. `2 * dispute_reserve_per_party` is the full panel
+        // pool by RFC-002 construction.
+        let fees = DealFees {
+            escrow_fee: 20_000,
+            dispute_reserve_per_party: 30_000,
+            withdraw_fee_pct: 25,
+            ledger_fee_at_create: 10_000,
+        };
+        assert_eq!(arbitration_fee_from_snapshot(&fees), 60_000);
+    }
+
+    #[test]
+    fn arbitration_fee_helper_pins_value_against_live_config_drift() {
+        // A deal whose fees were snapshotted at create time survives
+        // a subsequent `update_config` that would otherwise change
+        // the dispute economics. This is the property that keeps
+        // RFC-002's "deal terms are a contract at create time"
+        // promise enforceable: as long as the dispute service reads
+        // the helper (which both `open_dispute_async` and
+        // `open_locked` do), they cannot drift back to the live
+        // config and silently rewrite the panel pool for in-flight
+        // deals.
+        let snapshot = DealFees {
             escrow_fee: 20_000,
             // Captured at create time when DC was 60_000 → DC/2 = 30_000.
             dispute_reserve_per_party: 30_000,
             withdraw_fee_pct: 25,
             ledger_fee_at_create: 10_000,
         };
-        // Admin then bumps the fee policy after the deal was created.
+        // Admin bumps the fee policy AFTER the deal was created.
         let live_cfg_after_update = DisputeConfig {
             arbitration_fee_bps: 10_000,
             arbitration_min_fee: 0,
             ..DisputeConfig::default()
         };
 
-        let snapshot_fee = snapshotted_fee.dispute_reserve_per_party.saturating_mul(2);
-        let live_fee = compute_arbitration_fee(1_000_000, &live_cfg_after_update);
+        let from_snapshot = arbitration_fee_from_snapshot(&snapshot);
+        let from_live_cfg = compute_arbitration_fee(1_000_000, &live_cfg_after_update);
 
-        // Snapshot pins 60_000 regardless of the live config (which
-        // would charge 1_000_000 at 100% bps). The dispute service
-        // uses `snapshot_fee`; the deal's economics are immune to
-        // mid-flight `update_config` calls.
-        assert_eq!(snapshot_fee, 60_000);
-        assert_eq!(live_fee, 1_000_000);
-        assert_ne!(snapshot_fee, live_fee);
-
-        // Same property for the reduced-fee withdraw path.
-        let snapshot_withdraw_pct = snapshotted_fee.withdraw_fee_pct;
-        let live_withdraw_pct = 90;
-        assert_ne!(snapshot_withdraw_pct, live_withdraw_pct);
+        // The snapshot pins 60_000. A live recompute against the
+        // post-update config would have charged 1_000_000 (100% bps).
+        // Since the dispute service reads via the helper, the live
+        // recompute is never observed.
+        assert_eq!(from_snapshot, 60_000);
+        assert_eq!(from_live_cfg, 1_000_000);
+        assert_ne!(from_snapshot, from_live_cfg);
     }
 
     #[test]
