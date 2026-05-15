@@ -219,7 +219,9 @@ Rejected                  Cancelled             │  │ open_dispute       ▶ 
 
 ### Flows
 
-**Tip flow** (payer → unknown recipient): no signatures, claim-code based unilateral settle.
+> **Visual reference:** every flow below has a sequence + state diagram in [`docs/flows/`](../../docs/flows/) — start there if you want a picture.
+
+**Tip flow** (payer → unknown recipient): no signatures, claim-code based unilateral settle. Visual: [`docs/flows/tip.md`](../../docs/flows/tip.md).
 
 1. Payer creates deal → `payer_consent = Accepted`
 2. Payer funds → `Funded`
@@ -227,7 +229,7 @@ Rejected                  Cancelled             │  │ open_dispute       ▶ 
 4. Recipient claims with `accept_deal(claim_code)` → `recipient_consent = Accepted`, `Settled`
 5. (Or: expiry hits with no claimer → `Refunded`.)
 
-**Two-party deal** (both parties known): two-signature tally drives the outcome.
+**Two-party deal** (both parties known): two-signature tally drives the outcome. Visual: [`docs/flows/payer-creator.md`](../../docs/flows/payer-creator.md).
 
 1. Creator creates deal → creator's consent `Accepted`, counterparty's `Pending`
 2. Counterparty calls `consent_deal` → both consents `Accepted`
@@ -240,7 +242,7 @@ Rejected                  Cancelled             │  │ open_dispute       ▶ 
    - one still `Empty` → deal stays `Funded`; wait for the other party or expiry
 6. At expiry the auto-YES rule fires: `Empty` → `Yes`, explicit votes preserved, then re-tally.
 
-**Invoice flow** (recipient creates, payer pays): same as two-party deal, just with the recipient as creator.
+**Invoice flow** (recipient creates, payer pays): same as two-party deal, just with the recipient as creator. Visual: [`docs/flows/recipient-creator.md`](../../docs/flows/recipient-creator.md).
 
 1. Recipient creates deal with `payer` specified → `recipient_consent = Accepted`
 2. Payer calls `consent_deal` → `payer_consent = Accepted`

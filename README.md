@@ -15,13 +15,16 @@ Two flows on top of one engine. **Bound deals** between two known parties are se
 
 ## Use cases
 
-| Use case            | Description                                                                                                                                                           | Details                                                                                                |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| **Tips**            | Send a tip via QR code or link — the recipient signs up and claims it, or the payer gets a refund after expiry.                                                       | [TIPS.md](TIPS.md)                                                                                     |
-| **Two-party deals** | Both parties known; payer funds, recipient signs `Yes` to release / `No` to abort. Mixed signatures auto-open a dispute. Silence at expiry defaults to release.       | [escrow README — Flows](src/escrow/README.md#flows)                                                    |
-| **Disputes**        | Either bound party can open a dispute (or one is auto-opened on a mixed tally). A randomly-weighted panel of curated arbitrators votes; majority decides the outcome. | [RFC-001](docs/rfcs/0001-dispute-resolution.md), [escrow README — Status](src/escrow/README.md#status) |
+Each row links to a visual flow doc with sequence + state diagrams.
 
-More use cases (instalment payments, multi-party escrow, ...) are planned — see the [future expansion](src/escrow/README.md#future-expansion) section.
+| Use case                             | Description                                                                                                                                                         | Visual flow                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **Tip**                              | Payer locks tokens for an unknown recipient; anyone with the bearer claim code can claim before expiry, otherwise the payer gets a refund.                          | [`docs/flows/tip.md`](docs/flows/tip.md)                             |
+| **Payer-creator deal (3a)**          | Payer creates a bound deal with a known recipient. Recipient consents (deposits dispute reserve), payer funds, both parties sign at settlement (`Yes` / `No`).      | [`docs/flows/payer-creator.md`](docs/flows/payer-creator.md)         |
+| **Recipient-creator deal (3b)**      | Recipient creates an invoice for a known payer (deposits the dispute reserve atomically). Payer consents and funds; both parties sign at settlement.                | [`docs/flows/recipient-creator.md`](docs/flows/recipient-creator.md) |
+| **Dispute** (overlay on bound deals) | Either bound party can open a dispute (manually, via mixed sign-tally, or via expiry's auto-YES rule). Random arbitrator panel votes; majority decides the outcome. | [`docs/flows/dispute.md`](docs/flows/dispute.md)                     |
+
+Index + glossary: [`docs/flows/README.md`](docs/flows/README.md). Long-form security model + frontend integration for the tip flow: [`TIPS.md`](TIPS.md). Future use cases (instalment payments, multi-party escrow, ...) are tracked in the [future expansion](src/escrow/README.md#future-expansion) section.
 
 ## Scalability
 

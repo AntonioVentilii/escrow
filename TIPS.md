@@ -1,3 +1,5 @@
+> **Looking for the visual flow?** [`docs/flows/tip.md`](docs/flows/tip.md) has a compact sequence + state diagram for tips. The full set of flows (tip / payer-creator / recipient-creator / dispute) lives under [`docs/flows/`](docs/flows/). This file keeps the long-form security model + frontend integration notes for the tip flow specifically.
+
 ## Tip flow (MVP)
 
 The tip flow is a simple **YES/YES escrow flow**:
@@ -100,77 +102,12 @@ sequenceDiagram
 
 ---
 
-# Two-party deal flow
+# Other flows
 
-```mermaid
-sequenceDiagram
-    participant A as Party A (Creator)
-    participant F as Frontend
-    participant E as Escrow Canister
-    participant L as Token Ledger
-    participant B as Party B (Counterparty)
+The two-party deal and dispute flows used to live here as standalone Mermaid diagrams. They've moved into the dedicated visual-flow docs so they stay in sync with the canister behaviour:
 
-    %% --- CREATE ---
-    A->>F: Create deal with B as counterparty
-    F->>E: create_deal(amount, expiry, payer=A, recipient=B)
-    E-->>F: deal_id (A consent = Accepted, B consent = Pending)
+- [`docs/flows/payer-creator.md`](docs/flows/payer-creator.md) — payer creates a bound deal with a known recipient (former "Two-party deal flow").
+- [`docs/flows/recipient-creator.md`](docs/flows/recipient-creator.md) — recipient creates an invoice for a known payer (atomic dispute reserve at create time).
+- [`docs/flows/dispute.md`](docs/flows/dispute.md) — open / evidence / vote / finalize / out-of-band withdraw.
 
-    %% --- CONSENT ---
-    B->>F: View deal details
-    F->>E: get_deal(deal_id)
-    B->>F: Accept deal terms
-    F->>E: consent_deal(deal_id)
-    E-->>F: B consent = Accepted
-
-    %% --- FUNDING ---
-    A->>L: approve(E, amount)
-    F->>E: fund_deal(deal_id)
-    E->>L: transfer_from(A -> escrow_subaccount)
-    E-->>F: status = FUNDED
-
-    %% --- SETTLEMENT ---
-    B->>F: Claim deal
-    F->>E: accept_deal(deal_id)
-    E->>L: transfer(escrow_subaccount -> B)
-    E-->>F: status = SETTLED
-```
-
----
-
-# Flowchart
-
-```mermaid
-flowchart TD
-    A[Creator opens deal flow in frontend] --> B[Create deal in Escrow canister]
-    B --> C[Escrow returns deal_id, claim_code, and expiry]
-    C --> D{Is counterparty known?}
-
-    D -- Yes --> E[Counterparty consents via consent_deal]
-    D -- No --> F[Payer approves token spend via ICRC-2]
-
-    E --> F
-    F --> G[Escrow canister transfer_from payer into deal subaccount]
-    G --> H[Deal status = Funded]
-
-    H --> I[Frontend shows QR code / share link with deal_id + claim_code]
-    I --> J[Recipient opens link or scans QR]
-
-    J --> K{Recipient already has an account?}
-    K -- Yes --> L[Recipient authenticates]
-    K -- No --> M[Recipient signs up / creates account]
-    M --> L
-
-    L --> N[Recipient claims / accepts deal with claim_code]
-    N --> O[Escrow binds recipient principal + sets consent = Accepted]
-    O --> P[Escrow transfers funds to recipient]
-    P --> Q[Deal status = Settled]
-
-    H --> R{Expiry reached before claim?}
-    R -- No --> J
-    R -- Yes --> S{Refund mechanism}
-    S -- Automatic --> U[Canister detects expiry via timer]
-    S -- Manual --> T[Payer calls reclaim]
-    T --> V[Escrow refunds payer]
-    U --> V
-    V --> W[Deal status = Refunded]
-```
+The **post-funding** behaviour for bound deals is no longer "recipient unilaterally calls `accept_deal` and the deal settles". It's now a two-party signature tally: each side calls `sign_yes` / `sign_no` and the outcome is decided by the combined result (both `Yes` → `Settled`, both `No` → `Aborted`, mixed → auto-`Disputed`). At expiry, any `Empty` signature defaults to `Yes` (silence = release). See the visual flows for the diagrams.
