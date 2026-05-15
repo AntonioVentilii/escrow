@@ -334,7 +334,7 @@ Dispute resolution is fully implemented:
 
 ### Multi-asset / multi-ledger
 
-The `token_ledger` field is already per-deal. `ledger.rs` provides a small abstraction layer around ICRC calls; extending it to multiple ledgers requires no structural change. Fee handling can be added to `TransferArg` construction.
+The per-deal settlement currency is captured by an `Asset` enum (`src/types/asset.rs`) — today carrying only `Asset::Icrc(Principal)` for ICRC-1/-2 ledgers, but with the variant shape ready to absorb future settlement domains (EVM ERC-20 / native EVM, Solana SPL, …) as backward-compatible Candid variant additions. `ledger.rs` provides a small abstraction layer around ICRC calls; service code calls `asset.as_icrc()?` to dispatch to it. Adding a new variant is a typed-error-returning extension at every existing site (`EscrowError::UnsupportedAsset`) plus a new ledger-helper module — no structural change to the storage / state-machine.
 
 ### Scheduled / instalment payments
 

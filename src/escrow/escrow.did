@@ -107,6 +107,16 @@ type ArbitratorProfile = record {
 // an `admin_register_arbitrator` call on a `Deregistered` profile
 // reactivates it (idempotent).
 type ArbitratorStatus = variant { Deregistered; Active; Suspended };
+// A settlement asset accepted by the escrow canister.
+//
+// Always interrogate via the typed accessors (e.g. [`Asset::as_icrc`])
+// rather than pattern-matching directly — this keeps service code
+// resilient to future variant additions.
+type Asset = variant {
+	// An ICRC-1 / ICRC-2 token identified by its ledger
+	// [`Principal`] on the Internet Computer.
+	Icrc : principal
+};
 // Arguments for cancelling an unfunded deal.
 type CancelDealArgs = record {
 	// Identifier of the deal to cancel.
@@ -129,12 +139,13 @@ type ClaimableDealView = record {
 	status : DealStatus;
 	// Optional short title.
 	title : opt text;
+	// Settlement asset for this deal. Today always
+	// [`Asset::Icrc`].
+	asset : Asset;
 	// Optional note or message.
 	note : opt text;
 	// Escrowed token amount.
 	amount : nat;
-	// Principal of the ICRC token ledger canister.
-	token_ledger : principal;
 	// Nanosecond UTC timestamp after which the deal expires.
 	expires_at_ns : nat64;
 	// Whether a recipient principal has already been bound to this deal.
@@ -164,6 +175,12 @@ type Consent = variant { Rejected; Accepted; Pending };
 type CreateDealArgs = record {
 	// Optional short title displayed on claim pages.
 	title : opt text;
+	// Settlement asset for this deal. Today the canister only
+	// handles [`Asset::Icrc`] — clients should pass
+	// `Asset::Icrc(<ledger principal>)`. The variant exists so
+	// future settlement domains (EVM, Solana, …) can be added
+	// without renaming this field.
+	asset : Asset;
 	// Optional per-deal arbitrator panel size. If `Some(n)`, any
 	// dispute opened on this deal will use `n` arbitrators regardless
 	// of subsequent `DisputeConfig.panel_size` changes — the deal
@@ -182,10 +199,9 @@ type CreateDealArgs = record {
 	// Optional payer principal. If `None`, defaults to the caller when the
 	// caller is not the recipient.
 	payer : opt principal;
-	// Token amount to escrow (must be > 0).
+	// Token amount to escrow (must be > 0). Denominated in the
+	// base units of the deal's [`Asset`] (e.g. e8s for ICP).
 	amount : nat;
-	// Principal of the ICRC-1/ICRC-2 token ledger canister.
-	token_ledger : principal;
 	// Nanosecond UTC timestamp after which the deal expires and becomes reclaimable.
 	expires_at_ns : nat64
 };
@@ -260,6 +276,10 @@ type DealView = record {
 	funded_at_ns : opt nat64;
 	// Principal who last updated the deal.
 	updated_by : opt principal;
+	// Settlement asset for this deal. Today always
+	// [`Asset::Icrc`]; the enum exists so future settlement
+	// domains can be added without renaming this field.
+	asset : Asset;
 	// Per-deal arbitrator panel size override chosen by the creator
 	// at `create_deal` time. `Some(n)` locks `n` arbitrators for
 	// any dispute on this deal; `None` means "use whatever
@@ -306,8 +326,6 @@ type DealView = record {
 	payer : opt principal;
 	// Escrowed token amount.
 	amount : nat;
-	// Principal of the ICRC token ledger canister.
-	token_ledger : principal;
 	// Nanosecond UTC timestamp after which the deal expires.
 	expires_at_ns : nat64
 };
@@ -528,6 +546,18 @@ type EscrowError = variant {
 	};
 	// An accept was attempted after the deal's expiry deadline.
 	Expired;
+	// The supplied `Asset` is not handled by the canister. Today
+	// this is unreachable: `Asset` only carries the `Icrc` variant
+	// and every code path that consumes an asset expects ICRC. The
+	// variant exists so future settlement domains (EVM ERC-20,
+	// native EVM, Solana SPL, …) added to `Asset` can surface a
+	// typed rejection at the boundary without bypassing the state
+	// machine — `Asset::as_icrc()` returns this variant for any
+	// non-ICRC asset, which means an integration that has its own
+	// `Asset` variant but lands a request against an ICRC-only
+	// service path gets a structured error instead of a silent
+	// mis-dispatch.
+	UnsupportedAsset;
 	// `open_dispute` was called on a deal whose `amount` cannot cover
 	// the configured arbitration fee plus the per-arbitrator ICRC-1
 	// ledger fees. Tiny deals are not disputable.
@@ -910,8 +940,11 @@ service : () -> {
 	// Returns per-token metadata for each requested token ID.
 	//
 	// Each deal's metadata includes `icrc7:name`, `escrow:status`,
-	// `escrow:payer`, `escrow:amount`, `escrow:token_ledger`, and other
-	// deal-specific fields. Unknown IDs produce `None` in the result vector.
+	// `escrow:payer`, `escrow:amount`, `escrow:asset_kind`,
+	// `escrow:asset`, and other deal-specific fields. ICRC deals
+	// additionally surface the bare ledger principal under the
+	// legacy `escrow:token_ledger` key for indexer back-compat.
+	// Unknown IDs produce `None` in the result vector.
 	icrc7_token_metadata : (vec nat) -> (
 		vec opt vec record { text; Value }
 	) query;

@@ -36,7 +36,7 @@ use escrow::{
             ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
         },
     },
-    types::deal::DealStatus,
+    types::{asset::Asset, deal::DealStatus},
 };
 use pocket_ic::PocketIc;
 
@@ -84,7 +84,7 @@ fn create_bound_deal_as(
 ) -> DealView {
     let args = CreateDealArgs {
         amount,
-        token_ledger: ledger.principal(),
+        asset: Asset::Icrc(ledger.principal()),
         expires_at_ns,
         payer: Some(payer()),
         recipient: Some(recipient()),
@@ -110,7 +110,7 @@ fn try_create_bound_deal_as(
 ) -> CreateDealResult {
     let args = CreateDealArgs {
         amount,
-        token_ledger: ledger.principal(),
+        asset: Asset::Icrc(ledger.principal()),
         expires_at_ns,
         payer: Some(payer()),
         recipient: Some(recipient()),

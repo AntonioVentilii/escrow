@@ -287,7 +287,7 @@ pub struct IcrcLedger {
 
 impl IcrcLedger {
     /// The ledger's `Principal` — the canister id callers pass to
-    /// `create_deal({ token_ledger: ledger.principal() })`.
+    /// `create_deal({ asset: Asset::Icrc(ledger.principal()) })`.
     pub fn principal(&self) -> Principal {
         self.canister_id
     }

@@ -138,6 +138,39 @@ When you write a new state-changing flow, add an integration test
 that calls it **twice** and asserts the second call is a no-op (same
 status, same `_at_ns` fields).
 
+## Settlement asset abstraction (`types/asset.rs`)
+
+Every deal records its settlement currency as an `Asset` enum, **not**
+a bare `Principal`. Today the enum carries a single variant —
+`Asset::Icrc(Principal)` — but the shape is what makes future
+settlement domains (EVM ERC-20, native EVM, Solana SPL, …) a Candid
+**variant addition** instead of a breaking field rename on every
+public type.
+
+The contract:
+
+- **Public Candid surface** (`Deal`, `CreateDealArgs`, `DealView`, `ClaimableDealView`) carries
+  `asset: Asset`. Never reintroduce a `token_ledger: Principal` field at this layer.
+- **Service code** that needs the underlying ICRC ledger principal goes through
+  `asset.as_icrc()?`. This returns `Result<Principal, EscrowError::UnsupportedAsset>` — today
+  always `Ok` (only one variant exists) but the explicit `?` is what makes adding a new variant
+  later land as a typed rejection at every existing call site instead of a silent
+  mis-dispatch.
+- **`ledger.rs`** is still ICRC-only. When a non-ICRC variant lands, add a new helper module per
+  domain (e.g. `evm.rs`) and dispatch from the service via a `match deal.asset { Asset::Icrc(_)
+=> ledger::transfer(...).await?, Asset::Erc20(_) => evm::transfer(...).await?, … }`.
+- **ICRC-7 metadata** exposes both the new structured keys (`escrow:asset_kind`, `escrow:asset`)
+  and — for ICRC deals only — the legacy `escrow:token_ledger` key, so off-chain indexers built
+  against the pre-asset interface keep working.
+
+**Don't** pattern-match `Asset::Icrc(...)` directly outside the
+asset-dispatch layer (`as_icrc()` / `kind()`). When a second variant
+lands you want compiler errors at every dispatch site, not silent
+fallthroughs. The one place we currently DO pattern-match (the
+`escrow:token_ledger` legacy metadata key) carries an `#[expect(
+irrefutable_let_patterns)]` so the lint will fire as soon as a second
+variant exists, forcing a deliberate revisit.
+
 ## ICRC ledger calls
 
 `ledger.rs` is the single owner of `ic_cdk::call::Call`. The pattern:

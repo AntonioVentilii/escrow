@@ -121,4 +121,16 @@ pub enum EscrowError {
     ///   and a downstream `got` value of `4` (even, in-range) is distinguishable from `got = 11`
     ///   (out-of-range) without re-checking the inputs.
     PanelSizeOutOfRange { min: u32, max: u32, got: u32 },
+    /// The supplied `Asset` is not handled by the canister. Today
+    /// this is unreachable: `Asset` only carries the `Icrc` variant
+    /// and every code path that consumes an asset expects ICRC. The
+    /// variant exists so future settlement domains (EVM ERC-20,
+    /// native EVM, Solana SPL, …) added to `Asset` can surface a
+    /// typed rejection at the boundary without bypassing the state
+    /// machine — `Asset::as_icrc()` returns this variant for any
+    /// non-ICRC asset, which means an integration that has its own
+    /// `Asset` variant but lands a request against an ICRC-only
+    /// service path gets a structured error instead of a silent
+    /// mis-dispatch.
+    UnsupportedAsset,
 }

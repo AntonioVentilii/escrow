@@ -1,4 +1,5 @@
 pub mod arbitrator;
+pub mod asset;
 pub mod deal;
 pub mod dispute;
 pub mod icrc7;

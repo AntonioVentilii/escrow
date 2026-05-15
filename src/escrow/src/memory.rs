@@ -312,7 +312,10 @@ mod tests {
     use candid::Principal;
 
     use super::{get_deal, insert_new_deal, release_lock, try_acquire_lock, with_deal, with_deals};
-    use crate::types::deal::{Consent, Deal, DealFees, DealStatus};
+    use crate::types::{
+        asset::Asset,
+        deal::{Consent, Deal, DealFees, DealStatus},
+    };
 
     fn test_principal(id: u8) -> Principal {
         Principal::from_slice(&[id])
@@ -323,7 +326,7 @@ mod tests {
             id: deal_id,
             payer: Some(test_principal(1)),
             recipient: None,
-            token_ledger: test_principal(99),
+            asset: Asset::Icrc(test_principal(99)),
             amount: 1000,
             created_at_ns: 100,
             created_by: test_principal(1),
@@ -383,7 +386,7 @@ mod tests {
             id: 999_999_999,
             payer: Some(test_principal(1)),
             recipient: None,
-            token_ledger: test_principal(99),
+            asset: Asset::Icrc(test_principal(99)),
             amount: 1000,
             created_at_ns: 100,
             created_by: test_principal(1),
