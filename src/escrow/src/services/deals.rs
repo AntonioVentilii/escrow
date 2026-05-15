@@ -178,46 +178,90 @@ pub async fn create(
     // `DC/2` reserve is pulled atomically with the deal creation.
     // On failure the deal is rolled forward to `Cancelled` so we
     // don't leak a `Created` deal that nobody can resolve.
+    //
+    // The processing lock is acquired around the `transfer_from`
+    // await to serialise this create-time deposit against any
+    // concurrent `consent_deal` call from the receiver — without
+    // it a racing consent could trigger a second `DC/2` deposit on
+    // the just-created deal before the first one resolved. The
+    // post-PR-#34 idempotency guard in `consent_deal` would catch
+    // most cases, but the lock makes the invariant explicit and
+    // mirrors the pattern used by every other ICRC-2 path
+    // (`execute_fund`, `execute_receiver_consent`).
     let caller_is_receiver_only = recipient == Some(caller) && payer != Some(caller);
     if caller_is_receiver_only && deal.fees.dispute_reserve_per_party > 0 {
-        let escrow_account = Account {
-            owner: canister_self(),
-            subaccount: Some(deal.escrow_subaccount.clone()),
-        };
-        let receiver_account = Account {
-            owner: caller,
-            subaccount: None,
-        };
-        let deposit = ledger::transfer_from(
-            args.token_ledger,
-            receiver_account,
-            escrow_account,
-            deal.fees.dispute_reserve_per_party,
-        )
-        .await;
-        if deposit.is_ok() {
-            // `recipient_consent` is already `Accepted` from
-            // `resolve_parties` because the caller is the recipient;
-            // just bump the audit timestamps.
-            with_deal(deal.id, |d| {
-                d.updated_at_ns = Some(now);
-                d.updated_by = Some(caller);
-            });
-        } else {
-            // Roll the half-formed deal forward to `Cancelled` so it
-            // doesn't sit around as a stuck `Created` record.
-            with_deal(deal.id, |d| {
-                d.status = DealStatus::Cancelled;
-                d.updated_at_ns = Some(now);
-                d.updated_by = Some(caller);
-            });
-            return Err(EscrowError::DisputeReserveRequired);
+        // Lock acquisition is best-effort: in practice it always
+        // succeeds because we just allocated `deal.id` so no other
+        // call can hold the lock yet. A failure here is treated as
+        // "skip the deposit"; the deal stays `Created` and the
+        // receiver can retry via `consent_deal`.
+        if try_acquire_lock(deal.id).is_ok() {
+            let result = execute_create_time_receiver_deposit(
+                deal.id,
+                &deal,
+                caller,
+                args.token_ledger,
+                now,
+            )
+            .await;
+            release_lock(deal.id);
+            result?;
         }
     }
 
     load_deal(deal.id)
         .map(|d| DealView::from(&d))
         .ok_or(EscrowError::NotFound)
+}
+
+/// Pulls the receiver's `DC/2` reserve under the per-deal lock for
+/// the 3b receiver-creator flow. Same shape as
+/// `execute_receiver_consent` but inlined into `create_deal` so the
+/// deposit is observable atomically with the creation: on success the
+/// deal is `Created` with `recipient_consent = Accepted` and the
+/// reserve is in the subaccount; on failure the deal is flipped to
+/// `Cancelled` so it doesn't sit as a stuck `Created` record.
+async fn execute_create_time_receiver_deposit(
+    deal_id: DealId,
+    deal: &Deal,
+    caller: Principal,
+    token_ledger: Principal,
+    now: u64,
+) -> Result<(), EscrowError> {
+    let escrow_account = Account {
+        owner: canister_self(),
+        subaccount: Some(deal.escrow_subaccount.clone()),
+    };
+    let receiver_account = Account {
+        owner: caller,
+        subaccount: None,
+    };
+    let deposit = ledger::transfer_from(
+        token_ledger,
+        receiver_account,
+        escrow_account,
+        deal.fees.dispute_reserve_per_party,
+    )
+    .await;
+    if deposit.is_err() {
+        // Roll the half-formed deal forward to `Cancelled` so it
+        // doesn't sit around as a stuck `Created` record.
+        with_deal(deal_id, |d| {
+            d.status = DealStatus::Cancelled;
+            d.updated_at_ns = Some(now);
+            d.updated_by = Some(caller);
+        });
+        return Err(EscrowError::DisputeReserveRequired);
+    }
+
+    // `recipient_consent` is already `Accepted` from `resolve_parties`
+    // because the caller is the recipient; just bump the audit
+    // timestamps so the create-time deposit is observable.
+    with_deal(deal_id, |d| {
+        d.updated_at_ns = Some(now);
+        d.updated_by = Some(caller);
+    });
+    Ok(())
 }
 
 pub async fn fund(caller: Principal, deal_id: DealId) -> Result<DealView, EscrowError> {
