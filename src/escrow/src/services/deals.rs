@@ -650,10 +650,17 @@ async fn execute_reclaim(
 ///   - The receiver MAY have deposited `DC/2` (iff `recipient_consent == Accepted` for a 3a flow,
 ///     OR the receiver is the deal creator in a 3b flow).
 ///
-/// If a reserve is on hand the operator's `EF` is retained as the
-/// service fee; the rejector (or whichever party deposited) bears
-/// the cost. If no reserve was deposited the operation is a pure
-/// state flip with no ledger calls.
+/// The receiver gets back their full deposited reserve minus one
+/// outgoing ledger fee (`DC/2 − LF`). The operator does NOT take
+/// `escrow_fee` on a pre-funding termination — `cancel_deal` /
+/// `reject_deal` are callable by either party, so charging `EF`
+/// to whatever's in the subaccount would unfairly penalise the
+/// non-rejecting side (e.g. payer cancels a `Created` deal where
+/// the receiver had already deposited their `DC/2` per RFC-002 §
+/// Q5). The operator's revenue model fires only on post-funding
+/// terminal states (`Settled`, `Refunded`, `ArbitratedX`); pre-
+/// funding terminations are a wash with the operator absorbing
+/// the single outgoing ledger fee.
 async fn execute_terminate(
     deal_id: DealId,
     deal: &Deal,
@@ -667,9 +674,19 @@ async fn execute_terminate(
     if receiver_deposited && reserve > 0 {
         if let Some(recipient) = deal.recipient {
             let ledger_fee = ledger::fee(deal.token_ledger).await?;
-            let refund = reserve
-                .saturating_sub(deal.fees.escrow_fee)
-                .saturating_sub(ledger_fee);
+            // `checked_sub` so a pathological `reserve < ledger_fee`
+            // configuration surfaces explicitly instead of silently
+            // confiscating the receiver's deposit. In production
+            // this branch is unreachable — `validate_min_amount`
+            // at create time guarantees `DC/2 > 0` and the live
+            // `ledger_fee` is bounded by the snapshotted
+            // `ledger_fee_at_create` in normal operation.
+            let refund = reserve.checked_sub(ledger_fee).ok_or_else(|| {
+                EscrowError::ValidationError(format!(
+                    "reserve ({reserve}) too small to cover ledger_fee ({ledger_fee}); \
+                     refund would underflow",
+                ))
+            })?;
             if refund > 0 {
                 ledger::transfer(
                     deal.token_ledger,

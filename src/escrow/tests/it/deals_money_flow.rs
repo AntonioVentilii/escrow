@@ -15,8 +15,10 @@
 //!     the deal subaccount retains exactly `escrow_fee`.
 //!   - On `Refunded`, the payer recovers `amount − escrow_fee − ledger_fee + (DC/2 − ledger_fee)`
 //!     combined and the recipient recovers `DC/2 − ledger_fee` separately.
-//!   - On `Rejected` after receiver consent, the operator retains `escrow_fee` out of the
-//!     receiver's deposited `DC/2`.
+//!   - On `Rejected` (or `Cancelled`) after receiver consent, the receiver's deposited `DC/2` is
+//!     refunded minus one outgoing ledger fee. The operator does NOT charge `escrow_fee` on
+//!     pre-funding terminations (RFC-002 § Q5) — both parties can trigger the cancel/reject so
+//!     charging the side that happens to have a deposit would unfairly penalise the non-rejector.
 
 use core::time::Duration;
 use std::sync::Arc;
@@ -447,13 +449,12 @@ fn process_expired_deals_auto_refunds_both_halves() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn reject_after_receiver_consent_refunds_minus_ef() {
+fn reject_after_receiver_consent_refunds_minus_ledger_fee() {
     let (pic, escrow, ledger) = setup();
     let amount: u128 = 1_000_000_000;
     let lf = ledger.fee;
 
     let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, far_future(&pic));
-    let escrow_fee = deal.fees.escrow_fee;
     let dc_half = deal.fees.dispute_reserve_per_party;
     let subaccount = deal.escrow_subaccount.clone();
 
@@ -465,19 +466,63 @@ fn reject_after_receiver_consent_refunds_minus_ef() {
     let rejected = reject(&escrow, recipient(), deal.id);
     assert_eq!(rejected.status, DealStatus::Rejected);
 
-    // Receiver gets back `DC/2 − EF − LF` — the operator takes EF
-    // out of the deposited reserve.
+    // Receiver gets back `DC/2 − LF`. The operator does NOT charge
+    // `escrow_fee` on a pre-funding termination — `cancel_deal` /
+    // `reject_deal` are callable by either party so charging `EF`
+    // would unfairly penalise the non-rejector side. The operator
+    // earns only on post-funding terminals (Settled / Refunded /
+    // ArbitratedX); pre-funding terminations cost the operator one
+    // outgoing ledger fee.
     assert_eq!(
         ledger.balance_of_owner(recipient()) - recipient_pre,
-        dc_half - escrow_fee - lf,
-        "receiver recovers DC/2 − EF − LF on reject after consent",
+        dc_half - lf,
+        "receiver recovers DC/2 − LF on reject after consent",
     );
-    // Subaccount retains EF (operator's cut from the rejector's
-    // deposit).
+    // Subaccount empty after the refund (LF burned by ledger).
     assert_eq!(
         ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
-        escrow_fee,
-        "subaccount retains EF after reject",
+        0,
+        "subaccount empty after reject (no EF charged on pre-funding terminal)",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-party reject: payer rejects after receiver consented
+// (RFC-002 § Q5: the non-rejector's deposit is refunded in full
+// minus the outgoing LF; the rejecting party does not get to
+// confiscate the other side's reserve).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reject_by_payer_does_not_confiscate_receiver_deposit() {
+    let (pic, escrow, ledger) = setup();
+    let amount: u128 = 1_000_000_000;
+    let lf = ledger.fee;
+
+    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, far_future(&pic));
+    let dc_half = deal.fees.dispute_reserve_per_party;
+    let subaccount = deal.escrow_subaccount.clone();
+
+    // Receiver consents (deposits DC/2 into the subaccount).
+    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
+    consent(&escrow, recipient(), deal.id);
+
+    let recipient_pre = ledger.balance_of_owner(recipient());
+
+    // Payer is the rejector — but the receiver's reserve must still
+    // come back to the receiver minus only the outbound LF.
+    let rejected = reject(&escrow, payer(), deal.id);
+    assert_eq!(rejected.status, DealStatus::Rejected);
+
+    assert_eq!(
+        ledger.balance_of_owner(recipient()) - recipient_pre,
+        dc_half - lf,
+        "receiver recovers DC/2 − LF when payer rejects (no EF confiscation)",
+    );
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
+        0,
+        "subaccount empty after cross-party reject",
     );
 }
 
