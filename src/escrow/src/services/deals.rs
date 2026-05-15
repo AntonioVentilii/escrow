@@ -708,6 +708,27 @@ pub(crate) async fn execute_accept(
     deal: &Deal,
     recipient: Principal,
 ) -> Result<DealView, EscrowError> {
+    // Defensive: re-check the deal's status under the per-deal lock
+    // that the caller is expected to be holding. The `deal`
+    // snapshot may be stale if the caller acquired the lock AFTER
+    // its own `load_deal` (e.g. the sign dispatcher releases its
+    // brief sig-write lock and re-acquires for the executor; the
+    // expiry sweep snapshots before locking; the legacy
+    // `accept` validates pre-lock). Without this guard the ledger
+    // fan-out below would fire against the stale `amount` /
+    // `fees` even though another caller already finalised the
+    // deal — at best the ledger rejects on insufficient subaccount
+    // balance, at worst it surfaces a confusing error to a caller
+    // whose intent ("settle this deal") is already satisfied.
+    // Idempotent return on a non-`Funded` status is the same shape
+    // as `validate_can_accept(Settled) → Ok(true)` upstream.
+    let still_funded = with_deal(deal_id, |d| d.status == DealStatus::Funded).unwrap_or(false);
+    if !still_funded {
+        return load_deal(deal_id)
+            .map(|d| DealView::from(&d))
+            .ok_or(EscrowError::NotFound);
+    }
+
     with_deal(deal_id, |d| {
         if d.recipient.is_none() {
             d.recipient = Some(recipient);
@@ -805,6 +826,19 @@ pub(crate) async fn execute_refund(
     now_ns: u64,
     target_status: DealStatus,
 ) -> Result<DealView, EscrowError> {
+    // Defensive: re-check status under the per-deal lock the caller
+    // is expected to be holding — same rationale as `execute_accept`.
+    // Without this guard a stale `deal` snapshot reaching here
+    // (sign dispatcher's release-then-reacquire pattern, or the
+    // expiry sweep's snapshot-before-lock) would fire the ledger
+    // fan-out against a deal that another caller already finalised.
+    let still_funded = with_deal(deal_id, |d| d.status == DealStatus::Funded).unwrap_or(false);
+    if !still_funded {
+        return load_deal(deal_id)
+            .map(|d| DealView::from(&d))
+            .ok_or(EscrowError::NotFound);
+    }
+
     let payer = deal.payer.ok_or(EscrowError::PayerNotSet)?;
     let token_ledger = deal.asset.as_icrc()?;
     let ledger_fee = ledger::fee(token_ledger).await?;
