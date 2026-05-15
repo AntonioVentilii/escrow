@@ -260,19 +260,27 @@ Accepted`. (Step is optional; `fund_deal` auto-sets the consent.)
 
 ### Terminal states + fee accounting
 
-| Terminal state                       | Recipient receives                                   | Payer receives                          | Receiver reserve refund                                          | Escrow operator keeps                     |
-| ------------------------------------ | ---------------------------------------------------- | --------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------- |
-| `Settled`                            | `A − EF − ledger_fee` (combined with reserve refund) | `DC/2 − ledger_fee`                     | included in recipient transfer                                   | `EF`                                      |
-| `Refunded` (expiry / `reclaim_deal`) | —                                                    | `A + DC/2 − EF − ledger_fee` (combined) | `DC/2 − ledger_fee`                                              | `EF`                                      |
-| `Cancelled` (before fund)            | —                                                    | — (nothing in escrow if no consent yet) | `DC/2 − ledger_fee` if receiver had consented                    | `EF` if receiver had consented, else `0`  |
-| `Rejected`                           | —                                                    | (payer hadn't funded yet)               | `DC/2 − ledger_fee` if rejector is receiver and they'd consented | `EF` if any reserve was on hand, else `0` |
-| `ArbitratedSettled`                  | `A − DC − EF − ledger_fee`                           | reserved for the dispute panel          | —                                                                | `EF` + arbitrator panel gets `DC`         |
-| `ArbitratedRefunded`                 | reserved for the dispute panel                       | `A − DC − EF − ledger_fee`              | —                                                                | `EF` + arbitrator panel gets `DC`         |
+| Terminal state                       | Recipient receives                                   | Payer receives                          | Receiver reserve refund                       | Escrow operator keeps                            |
+| ------------------------------------ | ---------------------------------------------------- | --------------------------------------- | --------------------------------------------- | ------------------------------------------------ |
+| `Settled`                            | `A − EF − ledger_fee` (combined with reserve refund) | `DC/2 − ledger_fee`                     | included in recipient transfer                | `EF`                                             |
+| `Refunded` (expiry / `reclaim_deal`) | —                                                    | `A + DC/2 − EF − ledger_fee` (combined) | `DC/2 − ledger_fee`                           | `EF`                                             |
+| `Cancelled` (before fund)            | —                                                    | — (nothing in escrow if no consent yet) | `DC/2 − ledger_fee` if receiver had consented | `0` (operator absorbs the outgoing `ledger_fee`) |
+| `Rejected`                           | —                                                    | (payer hadn't funded yet)               | `DC/2 − ledger_fee` if receiver had consented | `0` (operator absorbs the outgoing `ledger_fee`) |
+| `ArbitratedSettled`                  | `A − DC − EF − ledger_fee`                           | reserved for the dispute panel          | —                                             | `EF` + arbitrator panel gets `DC`                |
+| `ArbitratedRefunded`                 | reserved for the dispute panel                       | `A − DC − EF − ledger_fee`              | —                                             | `EF` + arbitrator panel gets `DC`                |
 
-> **Note:** in `Cancelled` / `Rejected` cases where the rejector
-> already had their `DC/2` on deposit, they still get it back
-> (minus `ledger_fee`). The "no penalty above EF" rule is
-> per [Q2](#q2-penalty-vs-escrow-fee).
+> **Note:** `Cancelled` and `Rejected` are pre-funding terminations
+> and are callable by either party (`validate_can_cancel` /
+> `validate_can_reject` accept both payer and recipient). The
+> operator therefore does NOT charge `EF` on these paths — doing
+> so would unfairly penalise the non-rejecting side when the other
+> party initiates termination after a `DC/2` deposit (RFC-002 §
+> Q5). The operator's revenue model fires only on post-funding
+> terminals (`Settled` / `Refunded` / `ArbitratedX`), where `EF` is
+> deducted from the much-larger `amount` flowing through the
+> subaccount. Pre-funding terminations cost the operator one
+> outbound ledger fee (paid out of the canister's cycles balance
+> via the receiver's `DC/2` refund transfer).
 
 ## Proposed Candid surface
 
