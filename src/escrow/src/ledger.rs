@@ -77,6 +77,24 @@ pub async fn transfer(
     }
 }
 
+/// Queries `icrc1_balance_of(account)` on `ledger`. Returns the
+/// token balance of the requested account on that ledger.
+///
+/// Used by `services::admin::treasury_balance` to surface the
+/// canister-owned treasury subaccount's balance to controllers.
+pub async fn balance_of(ledger: Principal, account: Account) -> Result<u128, EscrowError> {
+    let response = Call::unbounded_wait(ledger, "icrc1_balance_of")
+        .with_args(&(account,))
+        .await
+        .map_err(|e| EscrowError::LedgerError(format!("{e:?}")))?;
+
+    let (balance,): (Nat,) = response
+        .candid_tuple()
+        .map_err(|e| EscrowError::LedgerError(format!("icrc1_balance_of decode failed: {e:?}")))?;
+
+    nat_to_u128(&balance)
+}
+
 /// Queries `icrc1_fee` on `ledger`. Returns the per-transfer fee
 /// (in token units) the ledger will charge on subsequent
 /// `icrc1_transfer` / `icrc2_transfer_from` calls.

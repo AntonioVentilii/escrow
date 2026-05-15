@@ -1355,6 +1355,7 @@ mod tests {
             dispute_reserve_per_party: 30_000,
             withdraw_fee_pct: 25,
             ledger_fee_at_create: 10_000,
+            creation_fee: 20_000,
         };
         assert_eq!(arbitration_fee_from_snapshot(&fees), 60_000);
     }
@@ -1376,6 +1377,7 @@ mod tests {
             dispute_reserve_per_party: 30_000,
             withdraw_fee_pct: 25,
             ledger_fee_at_create: 10_000,
+            creation_fee: 20_000,
         };
         // Admin bumps the fee policy AFTER the deal was created.
         let live_cfg_after_update = DisputeConfig {

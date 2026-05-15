@@ -1,6 +1,6 @@
 use candid::{CandidType, Deserialize, Principal};
 
-use crate::types::arbitrator::ArbitratorStatus;
+use crate::types::{arbitrator::ArbitratorStatus, asset::Asset, ledger_types::Account};
 
 /// Arguments for `admin_register_arbitrator`.
 ///
@@ -36,4 +36,34 @@ pub struct AdminRegisterArbitratorArgs {
 pub struct AdminSetArbitratorStatusArgs {
     pub principal: Principal,
     pub status: ArbitratorStatus,
+}
+
+/// Arguments for `admin_treasury_balance` — the controller-only
+/// query that returns how much of `asset` is currently sitting in
+/// the canister's treasury subaccount (where every deal's
+/// `creation_fee` accumulates). One asset per call so the
+/// controller can iterate ledgers explicitly.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct AdminTreasuryBalanceArgs {
+    /// Settlement asset to query. Today only [`Asset::Icrc`]; the
+    /// query reaches the underlying ledger via
+    /// [`crate::ledger::balance_of`].
+    pub asset: Asset,
+}
+
+/// Arguments for `admin_treasury_withdraw` — the controller-only
+/// drain endpoint. Pulls `amount` of `asset` from the treasury
+/// subaccount and `icrc1_transfer`s it to `to`. Caller is
+/// responsible for sizing `amount` against the live treasury
+/// balance (`admin_treasury_balance`); under-funded withdrawals
+/// surface as `EscrowError::TransferFailed` from the ledger.
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct AdminTreasuryWithdrawArgs {
+    pub asset: Asset,
+    /// Destination account. Typically a controller's own account
+    /// or a downstream treasury / ops wallet.
+    pub to: Account,
+    /// Amount to transfer in `asset`'s base units. Must be
+    /// `> ledger_fee` (the ledger burns one fee per transfer).
+    pub amount: u128,
 }

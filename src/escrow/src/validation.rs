@@ -1560,6 +1560,7 @@ mod tests {
             dispute_reserve_per_party,
             withdraw_fee_pct: 25,
             ledger_fee_at_create: 10_000,
+            creation_fee: 20_000,
         }
     }
 

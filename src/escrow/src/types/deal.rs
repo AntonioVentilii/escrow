@@ -111,6 +111,17 @@ pub struct DealFees {
     /// ledger later changes its fee. Operator absorbs any drift
     /// between create-time and runtime fees out of `escrow_fee`.
     pub ledger_fee_at_create: u128,
+
+    /// Anti-spam creation fee in the deal's token. Pulled from the
+    /// creator at `create_deal` time and routed to the canister's
+    /// controller-controlled treasury subaccount
+    /// (`subaccounts::TREASURY_SUBACCOUNT`). Always forfeited —
+    /// never refunded on any terminal — so a creator who spams
+    /// deals at counterparties they know will reject still pays
+    /// the per-deal stamp. Snapshot of `Config.creation_fee` at
+    /// create time. Set to `0` for tip flows (no bound counterparty
+    /// to spam, so no deterrent needed).
+    pub creation_fee: u128,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]

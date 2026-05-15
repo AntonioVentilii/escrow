@@ -45,6 +45,33 @@ type AdminSetArbitratorStatusArgs = record {
 	status : ArbitratorStatus;
 	"principal" : principal
 };
+// Arguments for `admin_treasury_balance` — the controller-only
+// query that returns how much of `asset` is currently sitting in
+// the canister's treasury subaccount (where every deal's
+// `creation_fee` accumulates). One asset per call so the
+// controller can iterate ledgers explicitly.
+type AdminTreasuryBalanceArgs = record {
+	// Settlement asset to query. Today only [`Asset::Icrc`]; the
+	// query reaches the underlying ledger via
+	// [`crate::ledger::balance_of`].
+	asset : Asset
+};
+type AdminTreasuryBalanceResult = variant { Ok : nat; Err : EscrowError };
+// Arguments for `admin_treasury_withdraw` — the controller-only
+// drain endpoint. Pulls `amount` of `asset` from the treasury
+// subaccount and `icrc1_transfer`s it to `to`. Caller is
+// responsible for sizing `amount` against the live treasury
+// balance (`admin_treasury_balance`); under-funded withdrawals
+// surface as `EscrowError::TransferFailed` from the ledger.
+type AdminTreasuryWithdrawArgs = record {
+	// Destination account. Typically a controller's own account
+	// or a downstream treasury / ops wallet.
+	to : Account;
+	asset : Asset;
+	// Amount to transfer in `asset`'s base units. Must be
+	// `> ledger_fee` (the ledger burns one fee per transfer).
+	amount : nat
+};
 // Public profile of a registered arbitrator.
 //
 // Score-related fields follow these rules:
@@ -159,6 +186,16 @@ type Config = record {
 	// time; subsequent `update_config` changes do not retroactively
 	// alter in-flight deals.
 	escrow_fee : nat;
+	// Per-deal anti-spam creation fee. Pulled from the creator at
+	// `create_deal` time on bound deals (recipient is `Some`) and
+	// routed to the canister's treasury subaccount. Tips
+	// (`recipient = None`) skip it entirely — there's no
+	// counterparty to spam-harass. Defaults to
+	// [`DEFAULT_CREATION_FEE`]. Snapshotted into each
+	// `Deal.fees.creation_fee` at create time; subsequent
+	// `update_config` changes do not retroactively alter
+	// in-flight deals.
+	creation_fee : nat;
 	// Admin-tunable dispute parameters. Fallback is whole-struct
 	// (`update_config` replaces the entire `DisputeConfig` — there
 	// is no per-field "leave unchanged" merge mechanism).
@@ -223,6 +260,16 @@ type DealFees = record {
 	// `ArbitratedSettled`, `ArbitratedRefunded`). Snapshot of
 	// `Config.escrow_fee` at `create_deal` time.
 	escrow_fee : nat;
+	// Anti-spam creation fee in the deal's token. Pulled from the
+	// creator at `create_deal` time and routed to the canister's
+	// controller-controlled treasury subaccount
+	// (`subaccounts::TREASURY_SUBACCOUNT`). Always forfeited —
+	// never refunded on any terminal — so a creator who spams
+	// deals at counterparties they know will reject still pays
+	// the per-deal stamp. Snapshot of `Config.creation_fee` at
+	// create time. Set to `0` for tip flows (no bound counterparty
+	// to spam, so no deterrent needed).
+	creation_fee : nat;
 	// Reduced-fee percentage the arbitrator panel receives when
 	// the parties resolve out-of-band via `withdraw_dispute`.
 	// Snapshot of `DisputeConfig.withdraw_fee_pct` at create time.
@@ -477,6 +524,15 @@ type EscrowError = variant {
 	AmountBelowMinimum : record { min : nat };
 	// The payer principal is not set for this deal.
 	PayerNotSet;
+	// The creator has not approved the escrow canister to pull
+	// the per-deal `creation_fee`, OR the ledger
+	// `icrc2_transfer_from` failed at create time. Returned by
+	// `create_deal` for any bound deal (recipient is `Some`). The
+	// half-formed deal is rolled forward to `Cancelled` so it
+	// doesn't sit as a stuck `Created` record. Tip flows
+	// (`recipient = None`) skip the `creation_fee` entirely and
+	// never emit this variant.
+	CreationFeeRequired;
 	// The requested deal does not exist.
 	NotFound;
 	// The arbitrator is `Suspended` or `Deregistered`.
@@ -832,6 +888,29 @@ service : () -> {
 	// registered as an arbitrator.
 	admin_set_arbitrator_status : (AdminSetArbitratorStatusArgs) -> (
 		AdminRegisterArbitratorResult
+	);
+	// Returns the live `icrc1_balance_of` of the canister-owned
+	// treasury subaccount for the requested asset. Every bound deal's
+	// `creation_fee` accumulates here and stays until a controller
+	// drains it via `admin_treasury_withdraw`.
+	//
+	// This method is gated to canister controllers — the treasury
+	// balance is operationally sensitive (it reveals total accumulated
+	// anti-spam fees across all deals).
+	admin_treasury_balance : (AdminTreasuryBalanceArgs) -> (
+		AdminTreasuryBalanceResult
+	);
+	// Drains `amount` of `asset` from the treasury subaccount to
+	// `to` via `icrc1_transfer`. Returns the ledger block index on
+	// success.
+	//
+	// Caller is responsible for sizing `amount` against the live
+	// treasury balance — under-funded withdrawals surface as
+	// `EscrowError::TransferFailed` from the ledger.
+	//
+	// This method is gated to canister controllers.
+	admin_treasury_withdraw : (AdminTreasuryWithdrawArgs) -> (
+		AdminTreasuryBalanceResult
 	);
 	// Cancels a deal that has not yet been funded.
 	//

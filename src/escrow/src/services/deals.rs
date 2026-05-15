@@ -36,6 +36,15 @@ pub fn load_escrow_fee() -> u128 {
     CONFIG.with(|c| c.borrow().escrow_fee)
 }
 
+/// Returns the currently-configured anti-spam creation fee. Caller
+/// is responsible for zeroing this for tip flows (no bound
+/// counterparty to spam). Defaults sourced from
+/// [`crate::types::state::Config::default`].
+#[must_use]
+pub fn load_creation_fee() -> u128 {
+    CONFIG.with(|c| c.borrow().creation_fee)
+}
+
 /// Computes the per-deal fee snapshot from the current configs +
 /// the deal's `amount` + the ledger's live fee. The returned
 /// [`DealFees`] is stored verbatim on the new deal so subsequent
@@ -48,10 +57,16 @@ pub fn load_escrow_fee() -> u128 {
 /// the full cost is odd, so the panel can always be paid in full
 /// at finalize time. The (at-most-one-unit) overage on odd fees
 /// stays in the deal subaccount and accrues to the operator.
+///
+/// `creation_fee` is passed in by the caller so tip flows can
+/// zero it out — there's no bound counterparty to spam, so no
+/// deterrent applies. Bound deals pass through the live
+/// `Config.creation_fee` snapshot.
 #[must_use]
 pub fn compute_deal_fees(
     amount: u128,
     escrow_fee: u128,
+    creation_fee: u128,
     dispute_cfg: &DisputeConfig,
     ledger_fee: u128,
 ) -> DealFees {
@@ -61,6 +76,7 @@ pub fn compute_deal_fees(
         dispute_reserve_per_party: full_dispute_cost.div_ceil(2),
         withdraw_fee_pct: dispute_cfg.withdraw_fee_pct,
         ledger_fee_at_create: ledger_fee,
+        creation_fee,
     }
 }
 
@@ -119,7 +135,22 @@ pub async fn create(
     let token_ledger = args.asset.as_icrc()?;
     let escrow_fee = load_escrow_fee();
     let ledger_fee = ledger::fee(token_ledger).await?;
-    let fees = compute_deal_fees(args.amount, escrow_fee, &dispute_cfg, ledger_fee);
+    // Tips (no bound recipient) skip the anti-spam creation_fee —
+    // there's no counterparty to harass with spam invitations.
+    // Bound deals pay the snapshotted Config.creation_fee per
+    // [`DEFAULT_CREATION_FEE`].
+    let creation_fee = if args.recipient.is_some() {
+        load_creation_fee()
+    } else {
+        0
+    };
+    let fees = compute_deal_fees(
+        args.amount,
+        escrow_fee,
+        creation_fee,
+        &dispute_cfg,
+        ledger_fee,
+    );
     // For the min-amount floor we use the panel size that will
     // actually be in effect: the deal's locked override if
     // `Some(_)`, otherwise the current canister default.
@@ -1188,6 +1219,7 @@ mod tests {
             *c.borrow_mut() = Config {
                 dispute_config: DisputeConfig::default(),
                 escrow_fee: 123_456,
+                ..Config::default()
             };
         });
         assert_eq!(load_escrow_fee(), 123_456);
@@ -1202,11 +1234,12 @@ mod tests {
         // amount = 1_000_000, default DisputeConfig: fee_bps=500 (5%),
         // min_fee=0 → full DC = 50_000, half = 25_000.
         let cfg = DisputeConfig::default();
-        let fees = compute_deal_fees(1_000_000, 20_000, &cfg, 10_000);
+        let fees = compute_deal_fees(1_000_000, 20_000, 20_000, &cfg, 10_000);
         assert_eq!(fees.escrow_fee, 20_000);
         assert_eq!(fees.dispute_reserve_per_party, 25_000);
         assert_eq!(fees.withdraw_fee_pct, cfg.withdraw_fee_pct);
         assert_eq!(fees.ledger_fee_at_create, 10_000);
+        assert_eq!(fees.creation_fee, 20_000);
     }
 
     #[test]
@@ -1218,8 +1251,17 @@ mod tests {
             arbitration_min_fee: 10_000,
             ..DisputeConfig::default()
         };
-        let fees = compute_deal_fees(1_000, 20_000, &cfg, 10_000);
+        let fees = compute_deal_fees(1_000, 20_000, 20_000, &cfg, 10_000);
         assert_eq!(fees.dispute_reserve_per_party, 5_000);
+    }
+
+    #[test]
+    fn compute_deal_fees_zero_creation_fee_preserved() {
+        // Tip flow path passes 0 for creation_fee (no spam
+        // counterparty to deter). Snapshot must reflect that.
+        let cfg = DisputeConfig::default();
+        let fees = compute_deal_fees(1_000_000, 20_000, 0, &cfg, 10_000);
+        assert_eq!(fees.creation_fee, 0);
     }
 
     #[test]
@@ -1229,6 +1271,7 @@ mod tests {
             dispute_reserve_per_party: 5_000,
             withdraw_fee_pct: 25,
             ledger_fee_at_create: 10_000,
+            creation_fee: 20_000,
         };
         // amount = 1_000_000, EF=20_000, live_LF=10_000 → 970_000.
         assert_eq!(payout_after_fees(1_000_000, &fees, 10_000), 970_000);
@@ -1241,6 +1284,7 @@ mod tests {
             dispute_reserve_per_party: 0,
             withdraw_fee_pct: 25,
             ledger_fee_at_create: 10_000,
+            creation_fee: 0,
         };
         // amount < EF + LF → saturating_sub clamps to 0.
         assert_eq!(payout_after_fees(500_000, &fees, 10_000), 0);

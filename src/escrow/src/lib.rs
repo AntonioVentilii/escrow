@@ -4,9 +4,13 @@ use ic_cdk::{export_candid, init, post_upgrade, pre_upgrade};
 use crate::{
     api::{
         admin::{
-            params::{AdminRegisterArbitratorArgs, AdminSetArbitratorStatusArgs},
+            params::{
+                AdminRegisterArbitratorArgs, AdminSetArbitratorStatusArgs,
+                AdminTreasuryBalanceArgs, AdminTreasuryWithdrawArgs,
+            },
             results::{
-                AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult, UpdateConfigResult,
+                AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult,
+                AdminTreasuryBalanceResult, AdminTreasuryWithdrawResult, UpdateConfigResult,
             },
         },
         arbitrators::{params::ListArbitratorsArgs, results::DeregisterArbitratorResult},

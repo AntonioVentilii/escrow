@@ -17,6 +17,14 @@ use super::{
 /// override before deals on that token can be created.
 pub const DEFAULT_ESCROW_FEE: u128 = 20_000;
 
+/// Default anti-spam creation fee, in token base units. Same scale
+/// as [`DEFAULT_ESCROW_FEE`] — symbolic deterrent calibrated to
+/// `2 × ICP_LEDGER_FEE`. Pulled from the creator at `create_deal`
+/// time on bound deals, routed to the controller-controlled
+/// treasury subaccount, and never refunded. Tips don't pay this
+/// (no bound counterparty to spam).
+pub const DEFAULT_CREATION_FEE: u128 = 20_000;
+
 /// Global configuration for the Escrow canister.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct Config {
@@ -30,6 +38,16 @@ pub struct Config {
     /// time; subsequent `update_config` changes do not retroactively
     /// alter in-flight deals.
     pub escrow_fee: u128,
+    /// Per-deal anti-spam creation fee. Pulled from the creator at
+    /// `create_deal` time on bound deals (recipient is `Some`) and
+    /// routed to the canister's treasury subaccount. Tips
+    /// (`recipient = None`) skip it entirely — there's no
+    /// counterparty to spam-harass. Defaults to
+    /// [`DEFAULT_CREATION_FEE`]. Snapshotted into each
+    /// `Deal.fees.creation_fee` at create time; subsequent
+    /// `update_config` changes do not retroactively alter
+    /// in-flight deals.
+    pub creation_fee: u128,
 }
 
 impl Config {
@@ -40,6 +58,7 @@ impl Config {
         Self {
             dispute_config: DisputeConfig::const_default(),
             escrow_fee: DEFAULT_ESCROW_FEE,
+            creation_fee: DEFAULT_CREATION_FEE,
         }
     }
 }
