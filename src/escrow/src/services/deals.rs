@@ -113,8 +113,9 @@ pub async fn create(
     // audit + the min-amount check, but every subsequent transfer
     // re-queries it — the operator absorbs any drift between
     // create-time and runtime fees out of `escrow_fee`. A failure
-    // to reach the ledger aborts the create (no stuck deals);
-    // callers must pass an `Asset::Icrc(<real ledger principal>)`.
+    // to reach the ledger aborts the create (no stuck deals); the
+    // `args.asset` ICRC variant must therefore wrap a real ICRC-1
+    // canister principal.
     let token_ledger = args.asset.as_icrc()?;
     let escrow_fee = load_escrow_fee();
     let ledger_fee = ledger::fee(token_ledger).await?;

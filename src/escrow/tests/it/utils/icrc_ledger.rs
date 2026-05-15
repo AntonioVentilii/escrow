@@ -286,8 +286,10 @@ pub struct IcrcLedger {
 }
 
 impl IcrcLedger {
-    /// The ledger's `Principal` — the canister id callers pass to
-    /// `create_deal({ asset: Asset::Icrc(ledger.principal()) })`.
+    /// The ledger's `Principal` — the canister id Rust integration
+    /// tests wrap into `Asset::Icrc(ledger.principal())` when
+    /// building a `CreateDealArgs`. At the Candid boundary the
+    /// equivalent value is `asset = variant { Icrc = <ledger principal> }`.
     pub fn principal(&self) -> Principal {
         self.canister_id
     }

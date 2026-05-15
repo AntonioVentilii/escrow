@@ -65,9 +65,12 @@ impl Asset {
     }
 
     /// Returns a stable short identifier for the asset's domain
-    /// (e.g. `"Icrc"`). Used in ICRC-7 token metadata so off-chain
-    /// indexers can dispatch on the asset family without parsing
-    /// the full Candid value.
+    /// (e.g. `"Icrc"`). Surfaced in ICRC-7 token metadata under
+    /// the `escrow:asset_kind` key so off-chain indexers can
+    /// dispatch on the asset family without parsing the full
+    /// `Display`-encoded `escrow:asset` string (which mixes the
+    /// kind tag with a variant-specific payload, e.g.
+    /// `"ICRC-<principal>"`).
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {

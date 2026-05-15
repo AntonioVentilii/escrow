@@ -257,6 +257,19 @@ pub fn release_lock(deal_id: DealId) {
 }
 
 // --- Stable storage ---
+//
+// `save_state` / `restore_state` round-trip the entire `StableState`
+// blob through `storage::stable_save` / `storage::stable_restore`.
+// Candid encoding handles forward-compatible *variant* additions,
+// but record-field renames or removals on `Deal` (or any nested
+// struct) are NOT upgrade-safe — `stable_restore` will trap on any
+// state that was saved with the prior schema. The project is
+// pre-1.0 and matches PR #39's "strip dev-mode backward-compat
+// scaffolding" stance: schema breaks are landed without migration
+// shims and re-deployed via `dfx deploy --mode reinstall`. If a
+// future change needs to preserve in-flight state across an
+// upgrade, add a versioned `StableState` enum and a per-version
+// migration here.
 
 pub fn save_state() {
     let config: Config = CONFIG.with(|c| c.borrow().clone());
