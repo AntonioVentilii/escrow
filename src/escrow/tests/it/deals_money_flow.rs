@@ -29,7 +29,7 @@ use escrow::{
         errors::EscrowError,
         params::{
             AcceptDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs, ReclaimDealArgs,
-            RejectDealArgs, SignDealArgs,
+            RejectDealArgs,
         },
         results::{
             AcceptDealResult, ConsentDealResult, CreateDealResult, DealView, FundDealResult,
@@ -200,14 +200,21 @@ fn process_expired(escrow: &PicCanister, caller: Principal, limit: u32) -> Vec<u
     }
 }
 
-fn sign(escrow: &PicCanister, caller: Principal, deal_id: u64, vote: Signature) -> DealView {
-    let args = SignDealArgs { deal_id, vote };
+/// Calls either `sign_yes` or `sign_no` depending on `vote`. Both
+/// take the same `FundDealArgs` payload — the verb is encoded in
+/// the endpoint name.
+fn sign(escrow: &PicCanister, caller: Principal, deal_id: u64, vote: &Signature) -> DealView {
+    let method = match vote {
+        Signature::Yes => "sign_yes",
+        Signature::No => "sign_no",
+        Signature::Empty => panic!("sign helper: Empty is not a callable vote"),
+    };
     let result: SignDealResult = escrow
-        .update(caller, "sign_deal", (args,))
-        .expect("sign_deal call");
+        .update(caller, method, (FundDealArgs { deal_id },))
+        .unwrap_or_else(|e| panic!("{method} call: {e:?}"));
     match result {
         SignDealResult::Ok(view) => *view,
-        SignDealResult::Err(e) => panic!("sign_deal: {e:?}"),
+        SignDealResult::Err(e) => panic!("{method}: {e:?}"),
     }
 }
 
@@ -300,7 +307,7 @@ fn accept_deal_3a_settles_with_two_sided_reserve_math() {
         "payer hasn't signed yet",
     );
 
-    let settled = sign(&escrow, payer(), deal.id, Signature::Yes);
+    let settled = sign(&escrow, payer(), deal.id, &Signature::Yes);
     assert_eq!(
         settled.status,
         DealStatus::Settled,
@@ -524,11 +531,11 @@ fn sign_both_no_aborts_with_refund_money_flow() {
     // fee logic changes for the new terminal). Payer recovers
     // `amount − EF + DC/2 − LF`, recipient recovers `DC/2 − LF`,
     // subaccount retains EF.
-    let after_payer = sign(&escrow, payer(), deal.id, Signature::No);
+    let after_payer = sign(&escrow, payer(), deal.id, &Signature::No);
     assert_eq!(after_payer.status, DealStatus::Funded);
     assert_eq!(after_payer.payer_signature, Signature::No);
 
-    let aborted = sign(&escrow, recipient(), deal.id, Signature::No);
+    let aborted = sign(&escrow, recipient(), deal.id, &Signature::No);
     assert_eq!(
         aborted.status,
         DealStatus::Aborted,
@@ -567,7 +574,7 @@ fn sign_mixed_auto_opens_dispute() {
     fund(&escrow, payer(), deal.id);
 
     // Recipient signs Yes; deal stays Funded (Pending tally).
-    let after_recipient = sign(&escrow, recipient(), deal.id, Signature::Yes);
+    let after_recipient = sign(&escrow, recipient(), deal.id, &Signature::Yes);
     assert_eq!(after_recipient.status, DealStatus::Funded);
 
     // Payer signs No → Mixed tally → auto-open dispute. The deal
@@ -578,15 +585,8 @@ fn sign_mixed_auto_opens_dispute() {
     // the caller can retry by signing again or registering
     // arbitrators and calling `open_dispute` explicitly.
     let result: SignDealResult = escrow
-        .update(
-            payer(),
-            "sign_deal",
-            (SignDealArgs {
-                deal_id: deal.id,
-                vote: Signature::No,
-            },),
-        )
-        .expect("sign_deal call");
+        .update(payer(), "sign_no", (FundDealArgs { deal_id: deal.id },))
+        .expect("sign_no call");
     match result {
         SignDealResult::Err(EscrowError::InsufficientArbitrators { need, have }) => {
             assert!(have < need, "want < need, got need={need} have={have}");

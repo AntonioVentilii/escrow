@@ -1,9 +1,6 @@
 use candid::{CandidType, Deserialize, Principal};
 
-use crate::types::{
-    asset::Asset,
-    deal::{DealId, Signature},
-};
+use crate::types::{asset::Asset, deal::DealId};
 
 /// Arguments for creating a new deal.
 ///
@@ -110,32 +107,9 @@ pub struct ListMyDealsArgs {
     pub limit: Option<u64>,
 }
 
-/// Arguments for `sign_deal` — recording a settlement signature on
-/// a `Funded` bound deal.
-///
-/// Caller must be the bound payer or recipient. `vote` must be
-/// [`Signature::Yes`] or [`Signature::No`]; passing
-/// [`Signature::Empty`] is rejected with `ValidationError`. Signing
-/// triggers a tally:
-///
-/// - both `Yes` → settle (release to recipient).
-/// - both `No` → abort (refund to payer; new `Aborted` terminal).
-/// - mixed → auto-open a dispute (panel arbitration).
-/// - one signature still `Empty` → no-op; deal stays `Funded`.
-///
-/// While the deal is still `Funded`, the latest call wins —
-/// re-signing overwrites the previous vote. Once the tally fires
-/// the deal moves out of `Funded` and subsequent signs return
-/// `InvalidState`.
-///
-/// Tip flows (`recipient = None`) reject with
-/// `DisputeRequiresBoundRecipient` — signing has no meaning
-/// without a bound counterparty. Use `accept_deal` (with the
-/// claim code) to claim a tip.
-#[derive(CandidType, Deserialize, Clone, Debug)]
-pub struct SignDealArgs {
-    /// Identifier of the deal to sign.
-    pub deal_id: DealId,
-    /// The caller's settlement vote. Must be `Yes` or `No`.
-    pub vote: Signature,
-}
+// `sign_yes` and `sign_no` reuse `FundDealArgs` (just `deal_id`) —
+// the verb is encoded in the endpoint name, no per-call payload
+// needed. This matches the existing `verb + deal_id` convention
+// used by `fund_deal`, `accept_deal`, `reclaim_deal`, `cancel_deal`,
+// `reject_deal`, `consent_deal`, and `open_dispute`, and makes
+// "sign with empty vote" unrepresentable at the Candid boundary.

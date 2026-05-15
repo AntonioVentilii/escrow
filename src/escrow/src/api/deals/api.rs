@@ -2,10 +2,9 @@ use ic_cdk::api::{msg_caller, time};
 use ic_cdk_macros::{query, update};
 
 use super::{
-    errors::EscrowError,
     params::{
         AcceptDealArgs, CancelDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs,
-        ListMyDealsArgs, ReclaimDealArgs, RejectDealArgs, SignDealArgs,
+        ListMyDealsArgs, ReclaimDealArgs, RejectDealArgs,
     },
     results::{
         AcceptDealResult, CancelDealResult, ConsentDealResult, CreateDealResult, DealView,
@@ -124,33 +123,46 @@ pub async fn reject_deal(RejectDealArgs { deal_id }: RejectDealArgs) -> RejectDe
         .into()
 }
 
-/// Records the caller's settlement signature on a `Funded` bound
-/// deal and dispatches the resulting two-party tally:
+/// Records the caller's `Yes` settlement signature on a `Funded`
+/// bound deal and dispatches the resulting two-party tally:
 ///
-/// - both `Yes` → settle (release to recipient).
-/// - both `No` → abort (refund to payer; new `Aborted` terminal).
-/// - mixed (one `Yes`, one `No`) → auto-open a dispute.
-/// - one signature still `Empty` → no-op; deal stays `Funded`.
+/// - other party also `Yes` → settle (release to recipient).
+/// - other party `No` → auto-open a dispute.
+/// - other party still `Empty` → no-op; deal stays `Funded` with the new signature recorded.
 ///
 /// Caller must be the bound payer or recipient. Tip flows
-/// (`recipient = None`) reject with `DisputeRequiresBoundRecipient`.
-/// `vote` must be `Yes` or `No` — `Empty` is rejected with
-/// `ValidationError`. While the deal is still `Funded`, re-signing
-/// overwrites the previous vote (latest-wins).
+/// (`recipient = None`) reject with `DisputeRequiresBoundRecipient`
+/// — use `accept_deal` (with the claim code) to claim a tip.
+/// While the deal is still `Funded`, re-signing overwrites the
+/// previous vote (latest-wins). At expiry the auto-YES rule (run by
+/// the housekeeping sweep) upgrades any unsigned party to `Yes`
+/// automatically; calling `sign_yes` after expiry returns `Expired`
+/// to make the transition explicit.
 ///
-/// At expiry the auto-YES rule (run by the housekeeping sweep)
-/// upgrades any unsigned party to `Yes` automatically; calling
-/// `sign_deal` after expiry returns `Expired` to make the
-/// transition explicit.
+/// Paired with [`sign_no`] — split into two endpoints (instead of
+/// a single `sign_deal(vote)`) to match the canister's
+/// `verb + deal_id` convention used by every other deal-action
+/// endpoint, and to make "sign with empty vote" unrepresentable
+/// at the Candid boundary.
 #[update(guard = "caller_is_not_anonymous")]
-pub async fn sign_deal(SignDealArgs { deal_id, vote }: SignDealArgs) -> SignDealResult {
-    if matches!(vote, Signature::Empty) {
-        return Err(EscrowError::ValidationError(
-            "vote must be Yes or No (Empty is the default and cannot be submitted)".to_owned(),
-        ))
-        .into();
-    }
-    services::deals::sign(msg_caller(), deal_id, vote, time())
+pub async fn sign_yes(FundDealArgs { deal_id }: FundDealArgs) -> SignDealResult {
+    services::deals::sign(msg_caller(), deal_id, Signature::Yes, time())
+        .await
+        .into()
+}
+
+/// Records the caller's `No` settlement signature on a `Funded`
+/// bound deal and dispatches the resulting two-party tally:
+///
+/// - other party also `No` → abort (refund to payer; new `Aborted` terminal).
+/// - other party `Yes` → auto-open a dispute.
+/// - other party still `Empty` → no-op; deal stays `Funded` with the new signature recorded.
+///
+/// Same caller / tip / re-sign / post-expiry semantics as
+/// [`sign_yes`].
+#[update(guard = "caller_is_not_anonymous")]
+pub async fn sign_no(FundDealArgs { deal_id }: FundDealArgs) -> SignDealResult {
+    services::deals::sign(msg_caller(), deal_id, Signature::No, time())
         .await
         .into()
 }

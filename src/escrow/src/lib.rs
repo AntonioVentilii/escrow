@@ -13,7 +13,7 @@ use crate::{
         deals::{
             params::{
                 AcceptDealArgs, CancelDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs,
-                ListMyDealsArgs, ReclaimDealArgs, RejectDealArgs, SignDealArgs,
+                ListMyDealsArgs, ReclaimDealArgs, RejectDealArgs,
             },
             results::{
                 AcceptDealResult, CancelDealResult, ConsentDealResult, CreateDealResult, DealView,
