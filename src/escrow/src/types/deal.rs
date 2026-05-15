@@ -26,6 +26,15 @@ pub enum DealStatus {
     /// out-of-band on an IC outcome, OR the panel reached no quorum.
     /// Funds refunded to payer. Distinct from `Refunded`. Terminal.
     ArbitratedRefunded,
+    /// Both parties signed `No` on a `Funded` bound deal — mutual
+    /// agreement that the off-chain part of the deal did NOT happen.
+    /// Funds returned to the payer using the same fee math as
+    /// `Refunded` (`escrow_fee` retained, `ledger_fee` burned per
+    /// transfer); the per-party dispute reserves are returned to
+    /// each side. Distinct from `Refunded` (expiry-driven) and
+    /// `ArbitratedRefunded` (dispute-driven) so the audit trail
+    /// records WHY the deal didn't settle. Terminal.
+    Aborted,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -33,6 +42,27 @@ pub enum Consent {
     Pending,
     Accepted,
     Rejected,
+}
+
+/// Per-party feedback signature recorded on a `Funded` bound deal.
+/// Drives the settlement tally (see `services::deals::tally_signatures`).
+///
+/// - `Empty`: no decision yet. Default for both parties when the deal becomes `Funded`. At expiry,
+///   any `Empty` signature is treated as `Yes` for tally purposes (silence = release).
+/// - `Yes`: the party affirms the deal completed correctly off-chain. Both parties on `Yes` →
+///   `Settled` (release to recipient).
+/// - `No`: the party affirms the deal did NOT complete correctly. Both parties on `No` → `Aborted`
+///   (refund to payer). Mixed `Yes`/`No` → auto-`Disputed` (panel arbitration).
+///
+/// Tip flows (`recipient = None`) never carry signatures: the tip
+/// model has no bound counterparty to sign for, and signing endpoints
+/// reject tip deals with `DisputeRequiresBoundRecipient`.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub enum Signature {
+    #[default]
+    Empty,
+    Yes,
+    No,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -128,4 +158,13 @@ pub struct Deal {
     pub panel_size: Option<u32>,
     /// Fee snapshot taken at `create_deal` time. See [`DealFees`].
     pub fees: DealFees,
+    /// Payer's settlement signature. Defaults to [`Signature::Empty`]
+    /// at `Funded` time and stays `Empty` until the payer calls
+    /// `sign_deal`. Together with `recipient_signature` it drives the
+    /// settlement tally — see [`Signature`] and
+    /// `services::deals::tally_signatures`.
+    pub payer_signature: Signature,
+    /// Recipient's settlement signature. Mirrors
+    /// [`Self::payer_signature`].
+    pub recipient_signature: Signature,
 }

@@ -29,14 +29,18 @@ use escrow::{
         errors::EscrowError,
         params::{
             AcceptDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs, ReclaimDealArgs,
-            RejectDealArgs,
+            RejectDealArgs, SignDealArgs,
         },
         results::{
             AcceptDealResult, ConsentDealResult, CreateDealResult, DealView, FundDealResult,
-            ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
+            GetDealResult, ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
+            SignDealResult,
         },
     },
-    types::{asset::Asset, deal::DealStatus},
+    types::{
+        asset::Asset,
+        deal::{DealStatus, Signature},
+    },
 };
 use pocket_ic::PocketIc;
 
@@ -196,6 +200,17 @@ fn process_expired(escrow: &PicCanister, caller: Principal, limit: u32) -> Vec<u
     }
 }
 
+fn sign(escrow: &PicCanister, caller: Principal, deal_id: u64, vote: Signature) -> DealView {
+    let args = SignDealArgs { deal_id, vote };
+    let result: SignDealResult = escrow
+        .update(caller, "sign_deal", (args,))
+        .expect("sign_deal call");
+    match result {
+        SignDealResult::Ok(view) => *view,
+        SignDealResult::Err(e) => panic!("sign_deal: {e:?}"),
+    }
+}
+
 /// Returns a nanosecond timestamp comfortably in the future relative
 /// to pocket-ic's deterministic clock at fresh-canister time.
 fn far_future(pic: &PocketIc) -> u64 {
@@ -261,8 +276,36 @@ fn accept_deal_3a_settles_with_two_sided_reserve_math() {
 
     let recipient_pre = ledger.balance_of_owner(recipient());
     let payer_pre = ledger.balance_of_owner(payer());
-    let settled = accept(&escrow, recipient(), deal.id);
-    assert_eq!(settled.status, DealStatus::Settled);
+
+    // New two-signature flow: recipient calling `accept_deal` is
+    // equivalent to `sign_deal(recipient, Yes)`. Without the
+    // payer's matching `Yes` the deal does NOT settle yet — the
+    // recipient's signature is recorded and the deal stays
+    // `Funded`. The payer must also sign `Yes` to trigger the
+    // BothYes tally.
+    let after_recipient_sign = accept(&escrow, recipient(), deal.id);
+    assert_eq!(
+        after_recipient_sign.status,
+        DealStatus::Funded,
+        "deal stays Funded until both parties sign Yes",
+    );
+    assert_eq!(
+        after_recipient_sign.recipient_signature,
+        Signature::Yes,
+        "recipient's Yes recorded by accept_deal",
+    );
+    assert_eq!(
+        after_recipient_sign.payer_signature,
+        Signature::Empty,
+        "payer hasn't signed yet",
+    );
+
+    let settled = sign(&escrow, payer(), deal.id, Signature::Yes);
+    assert_eq!(
+        settled.status,
+        DealStatus::Settled,
+        "BothYes tally settles the deal",
+    );
 
     // Recipient gets one combined transfer worth
     // `amount − EF + DC/2 − LF` (settlement + reserve refund, minus
@@ -348,11 +391,16 @@ fn create_deal_3b_returns_dispute_reserve_required_without_approval() {
 }
 
 // ---------------------------------------------------------------------------
-// 3a reclaim path: expiry → both parties get their reserves back
+// Auto-YES expiry: bound deals where neither party signed default to
+// `Yes` for both parties at expiry → settle to recipient (silence =
+// release). Both `reclaim_deal` (manual, payer-initiated) and the
+// `process_expired_deals` housekeeping sweep dispatch through the
+// same `services::expiry::dispatch_one_expired` path so they produce
+// identical settlement money flow.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn reclaim_deal_refunds_both_halves_after_expiry() {
+fn reclaim_deal_auto_settles_bound_deal_when_both_silent_at_expiry() {
     let (pic, escrow, ledger) = setup();
     let amount: u128 = 1_000_000_000;
     let lf = ledger.fee;
@@ -374,35 +422,37 @@ fn reclaim_deal_refunds_both_halves_after_expiry() {
     let payer_pre = ledger.balance_of_owner(payer());
     let recipient_pre = ledger.balance_of_owner(recipient());
 
-    let refunded = reclaim(&escrow, payer(), deal.id);
-    assert_eq!(refunded.status, DealStatus::Refunded);
+    // Manual reclaim by the payer on a bound deal AFTER expiry now
+    // routes through the expiry auto-tally dispatcher. With both
+    // signatures `Empty`, the auto-YES rule upgrades both to `Yes`,
+    // tally is BothYes → settle to recipient. The payer does NOT
+    // get a refund — this is the diagram's "silence = release"
+    // behaviour, opposite to the legacy `reclaim → Refunded`.
+    let settled = reclaim(&escrow, payer(), deal.id);
+    assert_eq!(settled.status, DealStatus::Settled);
 
-    // Payer recovers `amount − EF + DC/2 − LF` in one combined refund.
-    assert_eq!(
-        ledger.balance_of_owner(payer()) - payer_pre,
-        amount - escrow_fee + dc_half - lf,
-        "payer recovers amount − EF + DC/2 − LF on reclaim",
-    );
-    // Recipient recovers `DC/2 − LF`.
+    // Recipient gets `amount − EF + DC/2 − LF`.
     assert_eq!(
         ledger.balance_of_owner(recipient()) - recipient_pre,
+        amount - escrow_fee + dc_half - lf,
+        "recipient nets amount − EF + DC/2 − LF on auto-YES settle at expiry",
+    );
+    // Payer gets back only their `DC/2 − LF` reserve.
+    assert_eq!(
+        ledger.balance_of_owner(payer()) - payer_pre,
         dc_half - lf,
-        "recipient recovers DC/2 − LF on reclaim",
+        "payer recovers only DC/2 − LF on auto-YES settle at expiry",
     );
     // Subaccount retains exactly EF.
     assert_eq!(
         ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
         escrow_fee,
-        "subaccount retains exactly EF after reclaim",
+        "subaccount retains exactly EF after auto-YES settle",
     );
 }
 
-// ---------------------------------------------------------------------------
-// Auto-refund via process_expired_deals
-// ---------------------------------------------------------------------------
-
 #[test]
-fn process_expired_deals_auto_refunds_both_halves() {
+fn process_expired_deals_auto_settles_bound_deal_when_both_silent_at_expiry() {
     let (pic, escrow, ledger) = setup();
     let amount: u128 = 1_000_000_000;
     let lf = ledger.fee;
@@ -427,21 +477,139 @@ fn process_expired_deals_auto_refunds_both_halves() {
     let processed = process_expired(&escrow, payer(), 10);
     assert_eq!(processed, vec![deal.id]);
 
-    assert_eq!(
-        ledger.balance_of_owner(payer()) - payer_pre,
-        amount - escrow_fee + dc_half - lf,
-        "auto-refund mirrors manual reclaim for payer",
-    );
+    // Same money flow as the manual reclaim path — both go through
+    // `services::expiry::dispatch_one_expired`.
     assert_eq!(
         ledger.balance_of_owner(recipient()) - recipient_pre,
+        amount - escrow_fee + dc_half - lf,
+        "housekeeping sweep settles to recipient under auto-YES",
+    );
+    assert_eq!(
+        ledger.balance_of_owner(payer()) - payer_pre,
         dc_half - lf,
-        "auto-refund mirrors manual reclaim for recipient",
+        "payer recovers only DC/2 − LF on auto-YES settle",
     );
     assert_eq!(
         ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
         escrow_fee,
-        "subaccount retains exactly EF after auto-refund",
+        "subaccount retains exactly EF after auto-YES settle",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Two-signature tally — happy paths (pre-expiry, mutual decision)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sign_both_no_aborts_with_refund_money_flow() {
+    let (pic, escrow, ledger) = setup();
+    let amount: u128 = 1_000_000_000;
+    let lf = ledger.fee;
+
+    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, far_future(&pic));
+    let escrow_fee = deal.fees.escrow_fee;
+    let dc_half = deal.fees.dispute_reserve_per_party;
+    let subaccount = deal.escrow_subaccount.clone();
+
+    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
+    consent(&escrow, recipient(), deal.id);
+    ledger.approve(payer(), escrow.canister_id(), amount + dc_half + lf);
+    fund(&escrow, payer(), deal.id);
+
+    let payer_pre = ledger.balance_of_owner(payer());
+    let recipient_pre = ledger.balance_of_owner(recipient());
+
+    // Both parties explicitly sign `No` → BothNo tally → Aborted.
+    // Fee math is identical to `Refunded` (project constraint: no
+    // fee logic changes for the new terminal). Payer recovers
+    // `amount − EF + DC/2 − LF`, recipient recovers `DC/2 − LF`,
+    // subaccount retains EF.
+    let after_payer = sign(&escrow, payer(), deal.id, Signature::No);
+    assert_eq!(after_payer.status, DealStatus::Funded);
+    assert_eq!(after_payer.payer_signature, Signature::No);
+
+    let aborted = sign(&escrow, recipient(), deal.id, Signature::No);
+    assert_eq!(
+        aborted.status,
+        DealStatus::Aborted,
+        "BothNo tally aborts the deal (new terminal status)",
+    );
+
+    assert_eq!(
+        ledger.balance_of_owner(payer()) - payer_pre,
+        amount - escrow_fee + dc_half - lf,
+        "payer recovers amount − EF + DC/2 − LF on Aborted (mirrors Refunded)",
+    );
+    assert_eq!(
+        ledger.balance_of_owner(recipient()) - recipient_pre,
+        dc_half - lf,
+        "recipient recovers DC/2 − LF on Aborted",
+    );
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
+        escrow_fee,
+        "subaccount retains exactly EF after Aborted",
+    );
+}
+
+#[test]
+fn sign_mixed_auto_opens_dispute() {
+    let (pic, escrow, ledger) = setup();
+    let amount: u128 = 1_000_000_000;
+    let lf = ledger.fee;
+
+    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, far_future(&pic));
+    let dc_half = deal.fees.dispute_reserve_per_party;
+
+    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
+    consent(&escrow, recipient(), deal.id);
+    ledger.approve(payer(), escrow.canister_id(), amount + dc_half + lf);
+    fund(&escrow, payer(), deal.id);
+
+    // Recipient signs Yes; deal stays Funded (Pending tally).
+    let after_recipient = sign(&escrow, recipient(), deal.id, Signature::Yes);
+    assert_eq!(after_recipient.status, DealStatus::Funded);
+
+    // Payer signs No → Mixed tally → auto-open dispute. The deal
+    // would land in `Disputed` if the eligible-arbitrator pool is
+    // non-empty; with no arbitrators registered in this test
+    // setup, the auto-open returns `InsufficientArbitrators` and
+    // the deal stays `Funded` with both signatures recorded —
+    // the caller can retry by signing again or registering
+    // arbitrators and calling `open_dispute` explicitly.
+    let result: SignDealResult = escrow
+        .update(
+            payer(),
+            "sign_deal",
+            (SignDealArgs {
+                deal_id: deal.id,
+                vote: Signature::No,
+            },),
+        )
+        .expect("sign_deal call");
+    match result {
+        SignDealResult::Err(EscrowError::InsufficientArbitrators { need, have }) => {
+            assert!(have < need, "want < need, got need={need} have={have}");
+            // Signature was still recorded under Phase 1 of sign().
+            let view = get_deal_view(&escrow, payer(), deal.id);
+            assert_eq!(view.payer_signature, Signature::No);
+            assert_eq!(view.recipient_signature, Signature::Yes);
+            assert_eq!(view.status, DealStatus::Funded);
+        }
+        other => panic!(
+            "expected InsufficientArbitrators (no arbitrators registered in this test); got {other:?}"
+        ),
+    }
+}
+
+fn get_deal_view(escrow: &PicCanister, caller: Principal, deal_id: u64) -> DealView {
+    let result: GetDealResult = escrow
+        .query(caller, "get_deal", (deal_id,))
+        .expect("get_deal call");
+    match result {
+        GetDealResult::Ok(view) => *view,
+        GetDealResult::Err(e) => panic!("get_deal: {e:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------

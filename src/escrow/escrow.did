@@ -264,6 +264,15 @@ type DealStatus = variant {
 	Funded;
 	Cancelled;
 	Created;
+	// Both parties signed `No` on a `Funded` bound deal — mutual
+	// agreement that the off-chain part of the deal did NOT happen.
+	// Funds returned to the payer using the same fee math as
+	// `Refunded` (`escrow_fee` retained, `ledger_fee` burned per
+	// transfer); the per-party dispute reserves are returned to
+	// each side. Distinct from `Refunded` (expiry-driven) and
+	// `ArbitratedRefunded` (dispute-driven) so the audit trail
+	// records WHY the deal didn't settle. Terminal.
+	Aborted;
 	Settled
 };
 // Full deal view returned to authorised participants (payer or recipient).
@@ -312,11 +321,19 @@ type DealView = record {
 	created_by : principal;
 	// Payer's consent to the deal terms.
 	payer_consent : Consent;
+	// Recipient's settlement signature; mirrors
+	// [`Self::payer_signature`].
+	recipient_signature : Signature;
 	// Nanosecond UTC timestamp when the deal was created.
 	created_at_ns : nat64;
 	// Claim code for sharing via QR / link. Only visible to authorised
 	// participants; never exposed in the public claimable view.
 	claim_code : opt text;
+	// Payer's settlement signature on a `Funded` bound deal —
+	// `Empty` until the payer calls `sign_deal`. Tip flows
+	// (recipient unbound) always carry `Empty`. See [`Signature`]
+	// for tally semantics.
+	payer_signature : Signature;
 	// Identifier of the attached dispute, if any. `Some(_)` while a
 	// dispute is open or after it has resolved (audit-trail link to
 	// the `Dispute` record); `None` for deals that never went into
@@ -708,6 +725,48 @@ type ReliabilityView = record {
 	// Deals that ended positively (Settled or Refunded).
 	positive : nat32
 };
+// Arguments for `sign_deal` — recording a settlement signature on
+// a `Funded` bound deal.
+//
+// Caller must be the bound payer or recipient. `vote` must be
+// [`Signature::Yes`] or [`Signature::No`]; passing
+// [`Signature::Empty`] is rejected with `ValidationError`. Signing
+// triggers a tally:
+//
+// - both `Yes` → settle (release to recipient).
+// - both `No` → abort (refund to payer; new `Aborted` terminal).
+// - mixed → auto-open a dispute (panel arbitration).
+// - one signature still `Empty` → no-op; deal stays `Funded`.
+//
+// While the deal is still `Funded`, the latest call wins —
+// re-signing overwrites the previous vote. Once the tally fires
+// the deal moves out of `Funded` and subsequent signs return
+// `InvalidState`.
+//
+// Tip flows (`recipient = None`) reject with
+// `DisputeRequiresBoundRecipient` — signing has no meaning
+// without a bound counterparty. Use `accept_deal` (with the
+// claim code) to claim a tip.
+type SignDealArgs = record {
+	// The caller's settlement vote. Must be `Yes` or `No`.
+	vote : Signature;
+	// Identifier of the deal to sign.
+	deal_id : nat64
+};
+// Per-party feedback signature recorded on a `Funded` bound deal.
+// Drives the settlement tally (see `services::deals::tally_signatures`).
+//
+// - `Empty`: no decision yet. Default for both parties when the deal becomes `Funded`. At expiry,
+// any `Empty` signature is treated as `Yes` for tally purposes (silence = release).
+// - `Yes`: the party affirms the deal completed correctly off-chain. Both parties on `Yes` →
+// `Settled` (release to recipient).
+// - `No`: the party affirms the deal did NOT complete correctly. Both parties on `No` → `Aborted`
+// (refund to payer). Mixed `Yes`/`No` → auto-`Disputed` (panel arbitration).
+//
+// Tip flows (`recipient = None`) never carry signatures: the tip
+// model has no bound counterparty to sign for, and signing endpoints
+// reject tip deals with `DisputeRequiresBoundRecipient`.
+type Signature = variant { No; Yes; Empty };
 // Arguments for `submit_evidence`.
 //
 // At least one of `note` / `(artefact_url + artefact_sha256)`
@@ -1002,6 +1061,25 @@ service : () -> {
 	// deposited are refunded; the operator retains its `escrow_fee`
 	// share when a reserve was on hand.
 	reject_deal : (FundDealArgs) -> (GetDealResult);
+	// Records the caller's settlement signature on a `Funded` bound
+	// deal and dispatches the resulting two-party tally:
+	//
+	// - both `Yes` → settle (release to recipient).
+	// - both `No` → abort (refund to payer; new `Aborted` terminal).
+	// - mixed (one `Yes`, one `No`) → auto-open a dispute.
+	// - one signature still `Empty` → no-op; deal stays `Funded`.
+	//
+	// Caller must be the bound payer or recipient. Tip flows
+	// (`recipient = None`) reject with `DisputeRequiresBoundRecipient`.
+	// `vote` must be `Yes` or `No` — `Empty` is rejected with
+	// `ValidationError`. While the deal is still `Funded`, re-signing
+	// overwrites the previous vote (latest-wins).
+	//
+	// At expiry the auto-YES rule (run by the housekeeping sweep)
+	// upgrades any unsigned party to `Yes` automatically; calling
+	// `sign_deal` after expiry returns `Expired` to make the
+	// transition explicit.
+	sign_deal : (SignDealArgs) -> (GetDealResult);
 	// Submits a piece of evidence on a dispute. Caller must be a party
 	// of the parent deal or an arbitrator on the panel. Allowed during
 	// the `Evidence` phase only.

@@ -17,7 +17,7 @@ use crate::{
     },
     subaccounts::derive_deal_subaccount,
     types::{
-        deal::{Consent, Deal, DealFees, DealId, DealMetadata, DealStatus},
+        deal::{Consent, Deal, DealFees, DealId, DealMetadata, DealStatus, Signature},
         dispute::DisputeConfig,
         ledger_types::Account,
     },
@@ -164,6 +164,8 @@ pub async fn create(
         dispute: None,
         panel_size: args.panel_size,
         fees,
+        payer_signature: Signature::Empty,
+        recipient_signature: Signature::Empty,
     });
 
     // RFC-002 Case 3b: receiver-creator path. When the caller is
@@ -279,6 +281,22 @@ pub async fn accept(
         return Ok(DealView::from(&deal));
     }
 
+    // Bound deals route through the two-signature tally: accepting
+    // is conceptually the recipient saying "Yes, release to me".
+    // The deal only actually settles when the payer has also signed
+    // `Yes` (or the auto-YES rule fires at expiry); otherwise the
+    // signature is recorded and the deal stays `Funded`.
+    // `validate_can_accept` already enforced `caller == bound
+    // recipient` for bound deals, so the role is fixed.
+    //
+    // Tip flows (recipient unbound) keep the legacy unilateral
+    // claim + settle: the caller becomes the recipient via
+    // `execute_accept` and the funds release immediately. Tips have
+    // no payer-side signature concept so no tally applies.
+    if deal.recipient.is_some() && deal.payer.is_some() {
+        return record_signature_and_dispatch(deal_id, caller, false, Signature::Yes, now).await;
+    }
+
     try_acquire_lock(deal_id)?;
     let result = execute_accept(deal_id, &deal, caller).await;
     release_lock(deal_id);
@@ -295,6 +313,32 @@ pub async fn reclaim(
     let already_done = validation::validate_can_reclaim(&deal, caller, now)?;
     if already_done {
         return Ok(DealView::from(&deal));
+    }
+
+    // Bound deals: route through the expiry auto-tally dispatcher so
+    // a manual `reclaim_deal` after expiry produces the same outcome
+    // as the housekeeping sweep would. The auto-YES rule (silence =
+    // release) means the recipient typically wins by default, NOT
+    // the payer — a behaviour change from the legacy
+    // `reclaim → Refunded` semantics. Without this routing a payer
+    // could race the housekeeping sweep and unilaterally refund
+    // themselves on a bound deal where the recipient was about to
+    // get auto-settled.
+    //
+    // The dispatch result depends on the signature state:
+    //   - both `Empty` → both auto-`Yes` → settle to recipient.
+    //   - one party signed `Yes`, other `Empty` → both effective `Yes` → settle.
+    //   - one party signed `No`, other `Empty` → mixed → auto-dispute.
+    //   - both signed `No` → abort (refund to payer).
+    //   - both signed `Yes` → settle.
+    //
+    // Tips (recipient unbound) keep the legacy unilateral refund
+    // since signatures don't apply to tip flows.
+    if deal.recipient.is_some() {
+        super::expiry::dispatch_one_expired_external(deal_id, now).await?;
+        return load_deal(deal_id)
+            .map(|d| DealView::from(&d))
+            .ok_or(EscrowError::NotFound);
     }
 
     try_acquire_lock(deal_id)?;
@@ -372,6 +416,114 @@ pub async fn reject(caller: Principal, deal_id: DealId, now: u64) -> Result<Deal
     let result = execute_terminate_with_reject(deal_id, &deal, caller, now, is_payer).await;
     release_lock(deal_id);
     result
+}
+
+/// Records the caller's settlement signature on a `Funded` bound
+/// deal and dispatches the resulting tally:
+///
+/// - both `Yes` → settle (release to recipient via [`execute_accept`]).
+/// - both `No` → abort (refund to payer via [`execute_refund`] with `target_status = Aborted`).
+/// - mixed (`Yes` / `No`) → auto-open a dispute via [`disputes::open`].
+/// - one signature still `Empty` → no-op; deal stays `Funded` with the new signature recorded.
+///
+/// The signature itself is set under the per-deal processing lock
+/// (so two concurrent `sign` calls on the same deal serialise their
+/// writes). Dispatch happens AFTER releasing the lock — each
+/// dispatch path re-acquires the lock and either runs an executor
+/// directly (settle / abort) or delegates to `disputes::open` (mixed,
+/// which manages its own lock). Each path is idempotent if a racing
+/// caller already moved the deal to a terminal state. The signature
+/// itself is latest-wins while `Funded` — re-signing with a
+/// different vote overwrites; once the tally fires the next sign
+/// hits `InvalidState`.
+///
+/// `vote` must be [`Signature::Yes`] or [`Signature::No`]. Passing
+/// [`Signature::Empty`] is rejected at the api layer.
+pub async fn sign(
+    caller: Principal,
+    deal_id: DealId,
+    vote: Signature,
+    now: u64,
+) -> Result<DealView, EscrowError> {
+    let deal = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
+    let is_payer = validation::validate_can_sign(&deal, caller, now)?;
+    record_signature_and_dispatch(deal_id, caller, is_payer, vote, now).await
+}
+
+/// Sets `caller`'s signature on a `Funded` bound deal under the
+/// per-deal lock and dispatches the resulting tally. Shared between
+/// `sign` (full new flow) and `accept` (legacy entry that routes
+/// to `sign(Yes)` for bound deals). Kept private — the caller is
+/// expected to have already validated `validate_can_sign` (or the
+/// `accept`-equivalent) so this helper trusts its inputs.
+///
+/// Lock semantics:
+/// - Phase 1 holds the per-deal lock briefly to set the signature atomically with a status re-check
+///   (defends against a racing terminal flip between caller validation and write).
+/// - Phase 2 dispatches via the existing private executors (`execute_accept`, `execute_refund`)
+///   under their own re-acquired locks, or via the public `disputes::open` (Mixed) which acquires
+///   its own. Each dispatch path is idempotent if a racing dispatcher already moved the deal to a
+///   terminal state.
+async fn record_signature_and_dispatch(
+    deal_id: DealId,
+    caller: Principal,
+    is_payer: bool,
+    vote: Signature,
+    now: u64,
+) -> Result<DealView, EscrowError> {
+    try_acquire_lock(deal_id)?;
+    let set_result: Result<(), EscrowError> = with_deal(deal_id, |d| {
+        if d.status != DealStatus::Funded {
+            return Err(EscrowError::InvalidState {
+                expected: "Funded".to_owned(),
+                actual: format!("{:?}", d.status),
+            });
+        }
+        if is_payer {
+            d.payer_signature = vote.clone();
+        } else {
+            d.recipient_signature = vote.clone();
+        }
+        d.updated_at_ns = Some(now);
+        d.updated_by = Some(caller);
+        Ok(())
+    })
+    .ok_or(EscrowError::NotFound)?;
+    release_lock(deal_id);
+    set_result?;
+
+    let updated = load_deal(deal_id).ok_or(EscrowError::NotFound)?;
+    if updated.status != DealStatus::Funded {
+        return Ok(DealView::from(&updated));
+    }
+    match validation::tally_signatures(&updated.payer_signature, &updated.recipient_signature) {
+        validation::SignatureTally::BothYes => {
+            let recipient = updated.recipient.ok_or(EscrowError::NeitherPartySet)?;
+            try_acquire_lock(deal_id)?;
+            let result = execute_accept(deal_id, &updated, recipient).await;
+            release_lock(deal_id);
+            result
+        }
+        validation::SignatureTally::BothNo => {
+            try_acquire_lock(deal_id)?;
+            let result = execute_refund(deal_id, &updated, caller, now, DealStatus::Aborted).await;
+            release_lock(deal_id);
+            result
+        }
+        validation::SignatureTally::Mixed => {
+            // Auto-open a dispute. `disputes::open` acquires its own
+            // per-deal lock. If opening fails (e.g.
+            // `InsufficientArbitrators` / `AmountTooSmallForArbitration`)
+            // the signature is still recorded, the deal stays `Funded`,
+            // and the caller can retry by signing again or calling
+            // `open_dispute` explicitly.
+            disputes::open(caller, deal_id, now).await?;
+            load_deal(deal_id)
+                .map(|d| DealView::from(&d))
+                .ok_or(EscrowError::NotFound)
+        }
+        validation::SignatureTally::Pending => Ok(DealView::from(&updated)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -551,7 +703,7 @@ async fn execute_fund(
         .ok_or(EscrowError::NotFound)
 }
 
-async fn execute_accept(
+pub(crate) async fn execute_accept(
     deal_id: DealId,
     deal: &Deal,
     recipient: Principal,
@@ -630,6 +782,29 @@ async fn execute_reclaim(
     deal: &Deal,
     caller: Principal,
 ) -> Result<DealView, EscrowError> {
+    let now = time();
+    execute_refund(deal_id, deal, caller, now, DealStatus::Refunded).await
+}
+
+/// Refunds a `Funded` deal to the payer using the same fee math
+/// as `execute_reclaim` and flips the status to `target_status`
+/// (one of [`DealStatus::Refunded`] for expiry / payer-reclaim
+/// flows, or [`DealStatus::Aborted`] for the mutual-No tally
+/// terminal). Per the project constraint "no fee logic changes for
+/// the new terminal", `Aborted` and `Refunded` share the entire
+/// fan-out: payer gets `amount − EF + DC/2 − LF` combined, recipient
+/// gets `DC/2 − LF`, and the operator's `EF` stays in the subaccount.
+///
+/// Idempotent: a non-`Funded` deal is left unchanged at the final
+/// `with_deal` write — the fee math runs once, the status flip
+/// fires once.
+pub(crate) async fn execute_refund(
+    deal_id: DealId,
+    deal: &Deal,
+    caller: Principal,
+    now_ns: u64,
+    target_status: DealStatus,
+) -> Result<DealView, EscrowError> {
     let payer = deal.payer.ok_or(EscrowError::PayerNotSet)?;
     let token_ledger = deal.asset.as_icrc()?;
     let ledger_fee = ledger::fee(token_ledger).await?;
@@ -673,13 +848,12 @@ async fn execute_reclaim(
         }
     }
 
-    let now = time();
     with_deal(deal_id, |d| {
         if d.status == DealStatus::Funded {
-            d.status = DealStatus::Refunded;
-            d.refunded_at_ns = Some(now);
+            d.status = target_status;
+            d.refunded_at_ns = Some(now_ns);
             d.refund_tx = Some(refund_tx);
-            d.updated_at_ns = Some(now);
+            d.updated_at_ns = Some(now_ns);
             d.updated_by = Some(caller);
         }
     });
@@ -807,7 +981,7 @@ mod tests {
         subaccounts::derive_deal_subaccount,
         types::{
             asset::Asset,
-            deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
+            deal::{Consent, Deal, DealFees, DealMetadata, DealStatus, Signature},
         },
     };
 
@@ -855,6 +1029,8 @@ mod tests {
             dispute: None,
             panel_size: None,
             fees: DealFees::default(),
+            payer_signature: Signature::Empty,
+            recipient_signature: Signature::Empty,
         })
     }
 

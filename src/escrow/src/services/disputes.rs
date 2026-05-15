@@ -25,7 +25,7 @@ use crate::{
     },
     types::{
         arbitrator::{ArbitratorProfile, ArbitratorStatus},
-        deal::{Deal, DealFees, DealId, DealStatus},
+        deal::{Deal, DealFees, DealId, DealStatus, Signature},
         dispute::{
             Dispute, DisputeConfig, DisputeId, DisputeOutcome, DisputePhase, Evidence, PanelMember,
             Vote,
@@ -180,9 +180,35 @@ pub async fn open(
     deal_id: DealId,
     now_ns: u64,
 ) -> Result<DisputeView, EscrowError> {
+    open_inner(caller, deal_id, now_ns, false).await
+}
+
+/// System-only entry point for the expiry sweep's auto-dispute
+/// path. Identical to [`open`] except it bypasses the `Expired`
+/// rejection — the sweep is the canonical post-expiry dispatcher
+/// and may legally open a dispute when the auto-YES tally rule
+/// produces a `Mixed` outcome on an expired deal (one party
+/// explicitly signed `No`, the other was upgraded from `Empty` to
+/// `Yes` by the auto-YES rule). `caller` should be the dissenting
+/// party (the `No`-signer) so the dispute audit trail records who
+/// triggered arbitration.
+pub(crate) async fn open_post_expiry(
+    caller: Principal,
+    deal_id: DealId,
+    now_ns: u64,
+) -> Result<DisputeView, EscrowError> {
+    open_inner(caller, deal_id, now_ns, true).await
+}
+
+async fn open_inner(
+    caller: Principal,
+    deal_id: DealId,
+    now_ns: u64,
+    allow_expired: bool,
+) -> Result<DisputeView, EscrowError> {
     let deal = get_deal(deal_id).ok_or(EscrowError::NotFound)?;
 
-    let already_done = validation::validate_can_open_dispute(&deal, caller, now_ns)?;
+    let already_done = validation::validate_can_open_dispute(&deal, caller, now_ns, allow_expired)?;
     if already_done {
         // Idempotent: deal is already Disputed; load and return the existing dispute.
         let existing_id = deal.dispute.ok_or(EscrowError::DisputeNotFound)?;
@@ -225,7 +251,7 @@ pub async fn open(
     // snapshot to `Disputed`. Locking first serialises the entire
     // open-dispute flow against other deal mutations.
     try_acquire_lock(deal_id)?;
-    let result = open_with_lock(deal_id, caller, now_ns, cfg, fee, needed).await;
+    let result = open_with_lock(deal_id, caller, now_ns, cfg, fee, needed, allow_expired).await;
     release_lock(deal_id);
     result
 }
@@ -237,13 +263,14 @@ async fn open_with_lock(
     cfg: DisputeConfig,
     fee: u128,
     needed: u32,
+    allow_expired: bool,
 ) -> Result<DisputeView, EscrowError> {
     // Re-read deal under the lock so any state change since the
     // initial validation is observed. Re-validate the open-dispute
     // preconditions; abort if the deal is no longer `Funded`, has
     // expired, or has acquired a dispute attachment.
     let deal = get_deal(deal_id).ok_or(EscrowError::NotFound)?;
-    let already_done = validation::validate_can_open_dispute(&deal, caller, now_ns)?;
+    let already_done = validation::validate_can_open_dispute(&deal, caller, now_ns, allow_expired)?;
     if already_done {
         let existing_id = deal.dispute.ok_or(EscrowError::DisputeNotFound)?;
         let dispute = load_dispute(existing_id).ok_or(EscrowError::DisputeNotFound)?;
@@ -345,6 +372,22 @@ async fn open_locked(
         d.dispute = Some(dispute.id);
         d.updated_at_ns = Some(now_ns);
         d.updated_by = Some(caller);
+        // Opening a dispute is conceptually a "No" vote: the
+        // opener disagrees that the deal completed correctly.
+        // If the opener's signature is still `Empty` (they never
+        // explicitly signed), record it as `No` for audit-trail
+        // consistency. The auto-Mixed dispatch from the expiry
+        // sweep already sets the dissenter's `No` before this
+        // (it's the trigger), so this branch is a no-op for that
+        // path. Direct manual `open_dispute` callers benefit:
+        // their open-dispute action implies a `No` and the deal
+        // record now reflects it.
+        if d.payer == Some(caller) && matches!(d.payer_signature, Signature::Empty) {
+            d.payer_signature = Signature::No;
+        }
+        if d.recipient == Some(caller) && matches!(d.recipient_signature, Signature::Empty) {
+            d.recipient_signature = Signature::No;
+        }
     });
 
     // Bump `disputes_assigned` for each panel member. The assigned counter
@@ -1233,7 +1276,7 @@ mod tests {
         types::{
             arbitrator::{ArbitratorProfile, ArbitratorStatus},
             asset::Asset,
-            deal::{Consent, Deal, DealFees, DealStatus},
+            deal::{Consent, Deal, DealFees, DealStatus, Signature},
             dispute::{Dispute, DisputeConfig, DisputePhase, PanelMember},
         },
     };
@@ -1284,6 +1327,8 @@ mod tests {
             dispute: None,
             panel_size: None,
             fees: DealFees::default(),
+            payer_signature: Signature::Empty,
+            recipient_signature: Signature::Empty,
         })
     }
 

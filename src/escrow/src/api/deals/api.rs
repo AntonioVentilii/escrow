@@ -2,17 +2,22 @@ use ic_cdk::api::{msg_caller, time};
 use ic_cdk_macros::{query, update};
 
 use super::{
+    errors::EscrowError,
     params::{
         AcceptDealArgs, CancelDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs,
-        ListMyDealsArgs, ReclaimDealArgs, RejectDealArgs,
+        ListMyDealsArgs, ReclaimDealArgs, RejectDealArgs, SignDealArgs,
     },
     results::{
         AcceptDealResult, CancelDealResult, ConsentDealResult, CreateDealResult, DealView,
         FundDealResult, GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
-        ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
+        ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult, SignDealResult,
     },
 };
-use crate::{guards::caller_is_not_anonymous, services, types::deal::DealId};
+use crate::{
+    guards::caller_is_not_anonymous,
+    services,
+    types::deal::{DealId, Signature},
+};
 
 // ---------------------------------------------------------------------------
 // Update methods
@@ -115,6 +120,37 @@ pub async fn consent_deal(ConsentDealArgs { deal_id }: ConsentDealArgs) -> Conse
 #[update(guard = "caller_is_not_anonymous")]
 pub async fn reject_deal(RejectDealArgs { deal_id }: RejectDealArgs) -> RejectDealResult {
     services::deals::reject(msg_caller(), deal_id, time())
+        .await
+        .into()
+}
+
+/// Records the caller's settlement signature on a `Funded` bound
+/// deal and dispatches the resulting two-party tally:
+///
+/// - both `Yes` → settle (release to recipient).
+/// - both `No` → abort (refund to payer; new `Aborted` terminal).
+/// - mixed (one `Yes`, one `No`) → auto-open a dispute.
+/// - one signature still `Empty` → no-op; deal stays `Funded`.
+///
+/// Caller must be the bound payer or recipient. Tip flows
+/// (`recipient = None`) reject with `DisputeRequiresBoundRecipient`.
+/// `vote` must be `Yes` or `No` — `Empty` is rejected with
+/// `ValidationError`. While the deal is still `Funded`, re-signing
+/// overwrites the previous vote (latest-wins).
+///
+/// At expiry the auto-YES rule (run by the housekeeping sweep)
+/// upgrades any unsigned party to `Yes` automatically; calling
+/// `sign_deal` after expiry returns `Expired` to make the
+/// transition explicit.
+#[update(guard = "caller_is_not_anonymous")]
+pub async fn sign_deal(SignDealArgs { deal_id, vote }: SignDealArgs) -> SignDealResult {
+    if matches!(vote, Signature::Empty) {
+        return Err(EscrowError::ValidationError(
+            "vote must be Yes or No (Empty is the default and cannot be submitted)".to_owned(),
+        ))
+        .into();
+    }
+    services::deals::sign(msg_caller(), deal_id, vote, time())
         .await
         .into()
 }

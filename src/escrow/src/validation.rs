@@ -4,7 +4,7 @@ use crate::{
     api::deals::errors::EscrowError,
     memory,
     types::{
-        deal::{Consent, Deal, DealFees, DealStatus},
+        deal::{Consent, Deal, DealFees, DealStatus, Signature},
         dispute::DisputeConfig,
         state::Config,
     },
@@ -558,12 +558,21 @@ pub fn validate_evidence(
 /// - Both `payer` and `recipient` are bound — tip flows (open recipient) are not disputable, since
 ///   there's no bound counterparty in canister state.
 /// - The caller is `payer` or `recipient` — either bound party can open a dispute (symmetric).
-/// - The deal has not yet expired.
+/// - The deal has not yet expired *unless* `allow_expired` is true.
 /// - No dispute is already attached to the deal.
+///
+/// `allow_expired` is `false` for direct callers (the public
+/// `open_dispute` endpoint) and `true` for the system-driven post-
+/// expiry auto-dispute path used by `services::expiry` when the
+/// auto-YES tally rule produces a `Mixed` outcome on an expired
+/// deal. Direct callers cannot bypass this — only the
+/// `pub(crate) disputes::open_post_expiry` entry point passes
+/// `true`, and it's only reachable from the expiry sweep.
 pub fn validate_can_open_dispute(
     deal: &Deal,
     caller: Principal,
     now_ns: u64,
+    allow_expired: bool,
 ) -> Result<bool, EscrowError> {
     if deal.recipient.is_none() || deal.payer.is_none() {
         return Err(EscrowError::DisputeRequiresBoundRecipient);
@@ -591,10 +600,15 @@ pub fn validate_can_open_dispute(
         return Err(EscrowError::DisputeAlreadyExists);
     }
 
-    // Expiry-at-open check: the auto-refund sweep skips Disputed deals,
-    // so we must not let a dispute open after the expiry-claim window
-    // has already closed in the recipient's favour.
-    if deal.expires_at_ns <= now_ns {
+    // Expiry-at-open check: direct callers can't open a dispute
+    // after expiry — the auto-YES tally rule (run by the expiry
+    // sweep) is the canonical post-expiry dispatcher, and letting
+    // a direct caller race it would let one party hijack what
+    // would otherwise be an auto-settle. The sweep itself bypasses
+    // this check via `allow_expired = true` for the `Mixed` tally
+    // case (one party explicitly signed `No`, the other was
+    // upgraded from `Empty` to `Yes` by the auto-YES rule).
+    if !allow_expired && deal.expires_at_ns <= now_ns {
         return Err(EscrowError::Expired);
     }
 
@@ -609,6 +623,106 @@ fn resolve_caller_role(deal: &Deal, caller: Principal) -> Result<bool, EscrowErr
     } else {
         Err(EscrowError::NotAuthorised)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Signature validators
+// ---------------------------------------------------------------------------
+
+/// Validates that the caller can record a settlement signature on a
+/// `Funded` bound deal.
+///
+/// Returns the caller's role: `true` if payer, `false` if recipient.
+///
+/// Allowed when:
+/// - The deal exists in `Funded` state. Other statuses (`Created`, `Settled`, `Aborted`,
+///   `Disputed`, …) are rejected with `InvalidState` — settlement signatures are a `Funded`-state
+///   operation.
+/// - Both `payer` and `recipient` are bound. Tip flows (open recipient) reject with
+///   `DisputeRequiresBoundRecipient` — same shape as `validate_can_open_dispute`, since both
+///   features are bound-deal-only.
+/// - The caller is `payer` or `recipient` of the deal.
+/// - The deal has not yet expired. After expiry, the auto-YES tally (run by `services::expiry`)
+///   takes over and direct signing is no longer accepted; the caller gets `Expired` to make the
+///   transition explicit.
+///
+/// Re-signing while still `Funded` is allowed (latest-wins). Once the
+/// signature flips the tally to a terminal state (`Settled`,
+/// `Aborted`, `Disputed`), the deal status moves out of `Funded` and
+/// the next call hits the `InvalidState` branch.
+pub fn validate_can_sign(deal: &Deal, caller: Principal, now_ns: u64) -> Result<bool, EscrowError> {
+    if deal.recipient.is_none() || deal.payer.is_none() {
+        return Err(EscrowError::DisputeRequiresBoundRecipient);
+    }
+
+    match deal.status {
+        DealStatus::Funded => {}
+        _ => {
+            return Err(EscrowError::InvalidState {
+                expected: "Funded".to_owned(),
+                actual: format!("{:?}", deal.status),
+            })
+        }
+    }
+
+    if deal.expires_at_ns <= now_ns {
+        return Err(EscrowError::Expired);
+    }
+
+    resolve_caller_role(deal, caller)
+}
+
+/// Outcome of tallying a deal's `(payer_signature, recipient_signature)` pair.
+///
+/// Drives the dispatch in `services::deals::sign` and the auto-YES
+/// path in `services::expiry`. `Pending` is the only non-terminal
+/// branch — it leaves the deal in `Funded`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureTally {
+    /// Both parties signed `Yes` → settle (release to recipient).
+    BothYes,
+    /// Both parties signed `No` → abort (refund to payer).
+    BothNo,
+    /// One `Yes` one `No` → dispute (auto-open arbitration).
+    Mixed,
+    /// At least one signature is still `Empty` → no decision yet.
+    Pending,
+}
+
+/// Pure tally function — given the two signatures, returns what
+/// should happen. Used directly by `services::deals::sign` and via
+/// the `apply_expiry_default_yes` adapter by `services::expiry`.
+#[must_use]
+pub fn tally_signatures(payer: &Signature, recipient: &Signature) -> SignatureTally {
+    use Signature::{Empty, No, Yes};
+    match (payer, recipient) {
+        (Yes, Yes) => SignatureTally::BothYes,
+        (No, No) => SignatureTally::BothNo,
+        (Yes, No) | (No, Yes) => SignatureTally::Mixed,
+        (Empty, _) | (_, Empty) => SignatureTally::Pending,
+    }
+}
+
+/// Returns the `(payer_sig, recipient_sig)` pair after applying the
+/// expiry-time default-YES rule: any `Empty` signature is treated as
+/// `Yes` (silence = release). Used by the housekeeping expiry sweep
+/// to decide what tally to dispatch on bound deals.
+#[must_use]
+pub fn apply_expiry_default_yes(
+    payer: &Signature,
+    recipient: &Signature,
+) -> (Signature, Signature) {
+    let p = if matches!(payer, Signature::Empty) {
+        Signature::Yes
+    } else {
+        payer.clone()
+    };
+    let r = if matches!(recipient, Signature::Empty) {
+        Signature::Yes
+    } else {
+        recipient.clone()
+    };
+    (p, r)
 }
 
 #[cfg(test)]
@@ -626,7 +740,7 @@ mod tests {
         subaccounts::derive_deal_subaccount,
         types::{
             asset::Asset,
-            deal::{Consent, Deal, DealMetadata, DealStatus},
+            deal::{Consent, Deal, DealMetadata, DealStatus, Signature},
         },
     };
 
@@ -676,6 +790,8 @@ mod tests {
             dispute: None,
             panel_size: None,
             fees: DealFees::default(),
+            payer_signature: Signature::Empty,
+            recipient_signature: Signature::Empty,
         }
     }
 
@@ -1123,6 +1239,8 @@ mod tests {
             dispute: None,
             panel_size: None,
             fees: DealFees::default(),
+            payer_signature: Signature::Empty,
+            recipient_signature: Signature::Empty,
         });
     }
 
@@ -1513,7 +1631,7 @@ mod tests {
         let payer = test_principal(1);
         let deal = make_deal(DealStatus::Funded, Some(payer), None);
         assert!(matches!(
-            validate_can_open_dispute(&deal, payer, 150),
+            validate_can_open_dispute(&deal, payer, 150, false),
             Err(EscrowError::DisputeRequiresBoundRecipient)
         ));
     }
@@ -1526,7 +1644,7 @@ mod tests {
         let recip = test_principal(2);
         let deal = make_deal(DealStatus::Funded, None, Some(recip));
         assert!(matches!(
-            validate_can_open_dispute(&deal, recip, 150),
+            validate_can_open_dispute(&deal, recip, 150, false),
             Err(EscrowError::DisputeRequiresBoundRecipient)
         ));
     }
@@ -1538,7 +1656,7 @@ mod tests {
         let stranger = test_principal(3);
         let deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
         assert!(matches!(
-            validate_can_open_dispute(&deal, stranger, 150),
+            validate_can_open_dispute(&deal, stranger, 150, false),
             Err(EscrowError::NotAuthorised)
         ));
     }
@@ -1550,7 +1668,7 @@ mod tests {
         let payer = test_principal(1);
         let recip = test_principal(2);
         let deal = make_deal(DealStatus::Created, Some(payer), Some(recip));
-        match validate_can_open_dispute(&deal, payer, 150) {
+        match validate_can_open_dispute(&deal, payer, 150, false) {
             Err(EscrowError::InvalidState { expected, actual }) => {
                 assert!(expected.contains("Funded"), "expected: {expected}");
                 assert!(actual.contains("Created"), "actual: {actual}");
@@ -1567,7 +1685,10 @@ mod tests {
         let recip = test_principal(2);
         let mut deal = make_deal(DealStatus::Disputed, Some(payer), Some(recip));
         deal.dispute = Some(42);
-        assert_eq!(validate_can_open_dispute(&deal, payer, 150), Ok(true));
+        assert_eq!(
+            validate_can_open_dispute(&deal, payer, 150, false),
+            Ok(true)
+        );
     }
 
     #[test]
@@ -1582,24 +1703,39 @@ mod tests {
         let mut deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
         deal.dispute = Some(7);
         assert!(matches!(
-            validate_can_open_dispute(&deal, payer, 150),
+            validate_can_open_dispute(&deal, payer, 150, false),
             Err(EscrowError::DisputeAlreadyExists)
         ));
     }
 
     #[test]
-    fn open_dispute_rejects_expired_deal() {
-        // Expiry-at-open: the auto-refund sweep skips Disputed deals,
-        // so we cannot let a dispute open after the reclaim window has
-        // closed in the recipient's favour.
+    fn open_dispute_rejects_expired_deal_for_direct_caller() {
+        // Direct callers (allow_expired=false) cannot open a dispute
+        // after expiry — the auto-YES tally rule (run by the expiry
+        // sweep) is the canonical post-expiry dispatcher. Without
+        // this gate a malicious user could let the deal expire and
+        // then "dispute" it to deny the recipient their auto-settle.
         let payer = test_principal(1);
         let recip = test_principal(2);
         let deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
         // make_deal sets expires_at_ns = 200. now_ns = 300 → expired.
         assert!(matches!(
-            validate_can_open_dispute(&deal, payer, 300),
+            validate_can_open_dispute(&deal, payer, 300, false),
             Err(EscrowError::Expired)
         ));
+    }
+
+    #[test]
+    fn open_dispute_accepts_expired_deal_when_allow_expired_set() {
+        // System-driven path (expiry sweep auto-Mixed dispatch)
+        // bypasses the expiry gate. Used by `disputes::open_post_expiry`.
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
+        assert_eq!(
+            validate_can_open_dispute(&deal, payer, 300, true),
+            Ok(false)
+        );
     }
 
     #[test]
@@ -1608,7 +1744,182 @@ mod tests {
         let recip = test_principal(2);
         let deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
         // expires_at_ns = 200 in make_deal; 150 is within the window.
-        assert_eq!(validate_can_open_dispute(&deal, payer, 150), Ok(false));
-        assert_eq!(validate_can_open_dispute(&deal, recip, 150), Ok(false));
+        assert_eq!(
+            validate_can_open_dispute(&deal, payer, 150, false),
+            Ok(false)
+        );
+        assert_eq!(
+            validate_can_open_dispute(&deal, recip, 150, false),
+            Ok(false)
+        );
+    }
+
+    // --- validate_can_sign + tally helpers ---
+
+    use super::{apply_expiry_default_yes, tally_signatures, validate_can_sign, SignatureTally};
+
+    #[test]
+    fn sign_accepts_funded_bound_deal_for_payer_and_recipient() {
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
+        // expires_at_ns = 200 in make_deal; 150 is within the window.
+        assert_eq!(validate_can_sign(&deal, payer, 150), Ok(true));
+        assert_eq!(validate_can_sign(&deal, recip, 150), Ok(false));
+    }
+
+    #[test]
+    fn sign_rejects_tip_flow_deal() {
+        // recipient is None — same DisputeRequiresBoundRecipient
+        // shape as validate_can_open_dispute, since both features
+        // are bound-deal-only.
+        let payer = test_principal(1);
+        let deal = make_deal(DealStatus::Funded, Some(payer), None);
+        assert!(matches!(
+            validate_can_sign(&deal, payer, 150),
+            Err(EscrowError::DisputeRequiresBoundRecipient)
+        ));
+    }
+
+    #[test]
+    fn sign_rejects_open_payer_deal() {
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::Funded, None, Some(recip));
+        assert!(matches!(
+            validate_can_sign(&deal, recip, 150),
+            Err(EscrowError::DisputeRequiresBoundRecipient)
+        ));
+    }
+
+    #[test]
+    fn sign_rejects_unrelated_caller() {
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let stranger = test_principal(3);
+        let deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
+        assert!(matches!(
+            validate_can_sign(&deal, stranger, 150),
+            Err(EscrowError::NotAuthorised)
+        ));
+    }
+
+    #[test]
+    fn sign_rejects_non_funded_deal() {
+        // Created / Settled / Aborted / Disputed are all rejected;
+        // signing is a Funded-state operation only.
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        for status in [
+            DealStatus::Created,
+            DealStatus::Settled,
+            DealStatus::Aborted,
+            DealStatus::Disputed,
+            DealStatus::Refunded,
+            DealStatus::Cancelled,
+            DealStatus::Rejected,
+            DealStatus::ArbitratedSettled,
+            DealStatus::ArbitratedRefunded,
+        ] {
+            let deal = make_deal(status.clone(), Some(payer), Some(recip));
+            match validate_can_sign(&deal, payer, 150) {
+                Err(EscrowError::InvalidState { expected, actual }) => {
+                    assert_eq!(expected, "Funded");
+                    assert_eq!(actual, format!("{status:?}"));
+                }
+                other => panic!("status={status:?}: wrong response: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn sign_rejects_expired_deal() {
+        // After expiry the auto-YES tally takes over; direct signs
+        // are surfaced as Expired so the caller can route to the
+        // expiry sweep / process_expired_deals.
+        let payer = test_principal(1);
+        let recip = test_principal(2);
+        let deal = make_deal(DealStatus::Funded, Some(payer), Some(recip));
+        // make_deal sets expires_at_ns = 200; now_ns = 300 → expired.
+        assert!(matches!(
+            validate_can_sign(&deal, payer, 300),
+            Err(EscrowError::Expired)
+        ));
+    }
+
+    #[test]
+    fn tally_pending_when_either_signature_is_empty() {
+        assert_eq!(
+            tally_signatures(&Signature::Empty, &Signature::Empty),
+            SignatureTally::Pending
+        );
+        assert_eq!(
+            tally_signatures(&Signature::Yes, &Signature::Empty),
+            SignatureTally::Pending
+        );
+        assert_eq!(
+            tally_signatures(&Signature::Empty, &Signature::No),
+            SignatureTally::Pending
+        );
+    }
+
+    #[test]
+    fn tally_branches_on_both_signatures_set() {
+        assert_eq!(
+            tally_signatures(&Signature::Yes, &Signature::Yes),
+            SignatureTally::BothYes
+        );
+        assert_eq!(
+            tally_signatures(&Signature::No, &Signature::No),
+            SignatureTally::BothNo
+        );
+        assert_eq!(
+            tally_signatures(&Signature::Yes, &Signature::No),
+            SignatureTally::Mixed
+        );
+        assert_eq!(
+            tally_signatures(&Signature::No, &Signature::Yes),
+            SignatureTally::Mixed
+        );
+    }
+
+    #[test]
+    fn expiry_default_yes_only_overrides_empty() {
+        // Empty sigs flip to Yes; explicit Yes / No are preserved.
+        // Per user spec: "the party that has already signed keeps
+        // the signed". The auto-YES default only applies to the
+        // party that did nothing.
+        let cases = [
+            (
+                Signature::Empty,
+                Signature::Empty,
+                Signature::Yes,
+                Signature::Yes,
+            ),
+            (
+                Signature::No,
+                Signature::Empty,
+                Signature::No,
+                Signature::Yes,
+            ),
+            (
+                Signature::Empty,
+                Signature::No,
+                Signature::Yes,
+                Signature::No,
+            ),
+            (Signature::Yes, Signature::No, Signature::Yes, Signature::No),
+            (Signature::No, Signature::No, Signature::No, Signature::No),
+            (
+                Signature::Yes,
+                Signature::Yes,
+                Signature::Yes,
+                Signature::Yes,
+            ),
+        ];
+        for (p_in, r_in, p_out, r_out) in cases {
+            let (p, r) = apply_expiry_default_yes(&p_in, &r_in);
+            assert_eq!(p, p_out, "payer {p_in:?},{r_in:?}");
+            assert_eq!(r, r_out, "recipient {p_in:?},{r_in:?}");
+        }
     }
 }

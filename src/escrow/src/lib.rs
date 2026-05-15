@@ -13,12 +13,12 @@ use crate::{
         deals::{
             params::{
                 AcceptDealArgs, CancelDealArgs, ConsentDealArgs, CreateDealArgs, FundDealArgs,
-                ListMyDealsArgs, ReclaimDealArgs, RejectDealArgs,
+                ListMyDealsArgs, ReclaimDealArgs, RejectDealArgs, SignDealArgs,
             },
             results::{
                 AcceptDealResult, CancelDealResult, ConsentDealResult, CreateDealResult, DealView,
                 FundDealResult, GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
-                ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
+                ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult, SignDealResult,
             },
         },
         disputes::{
