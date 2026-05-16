@@ -256,16 +256,20 @@ inline — go through the helper.
 Every `DealStatus` transition goes through a `validate_can_*` function.
 The current map (in `validation.rs`):
 
-| Function                    | From                              | To                                                                                           |
-| --------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------- |
-| `validate_can_fund`         | `Created`                         | `Funded`                                                                                     |
-| `validate_can_accept`       | `Funded` (tip) / `Funded` (bound) | tip → `Settled`; bound → routes through sign-tally (records recipient `Yes`)                 |
-| `validate_can_reclaim`      | `Funded` + expired                | tip → `Refunded`; bound → routes through expiry auto-tally dispatcher                        |
-| `validate_can_cancel`       | `Created`                         | `Cancelled`                                                                                  |
-| `validate_can_consent`      | `Created`                         | `Created` (consent flag flip; status unchanged)                                              |
-| `validate_can_reject`       | `Created`                         | `Rejected`                                                                                   |
-| `validate_can_sign`         | `Funded` + bound + within expiry  | (records signature; tally then dispatches to `Settled` / `Aborted` / `Disputed` — see below) |
-| `validate_can_open_dispute` | `Funded` + bound                  | `Disputed` (returns `Ok(true)` if already `Disputed`) — RFC-001 + PR #41                     |
+| Function                    | From                              | To                                                                                                                             |
+| --------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `validate_can_accept`       | `Funded` (tip) / `Funded` (bound) | tip → `Settled`; bound → routes through sign-tally (records recipient `Yes`)                                                   |
+| `validate_can_reclaim`      | `Funded` + expired                | tip → `Refunded`; bound → routes through expiry auto-tally dispatcher                                                          |
+| `validate_can_cancel`       | `Created`                         | `Cancelled` (refunds creator's create-time deposit minus 1 LF)                                                                 |
+| `validate_can_consent`      | `Created` / `Funded`              | `Created` → `Funded` (counterparty deposits THEIR obligation; auto-flip when both consents `Accepted`); `Funded` is idempotent |
+| `validate_can_reject`       | `Created`                         | `Rejected` (refunds creator's create-time deposit minus 1 LF)                                                                  |
+| `validate_can_sign`         | `Funded` + bound + within expiry  | (records signature; tally then dispatches to `Settled` / `Aborted` / `Disputed` — see below)                                   |
+| `validate_can_open_dispute` | `Funded` + bound                  | `Disputed` (returns `Ok(true)` if already `Disputed`) — RFC-001 + PR #41                                                       |
+
+`validate_can_fund` was removed in PR #41 alongside the `fund_deal`
+endpoint — funding now happens inside `create_deal` (creator's
+deposit) and `consent_deal` (counterparty's deposit) under the
+**commit-at-first-action** model.
 
 `validate_can_open_dispute` takes an `allow_expired: bool` flag — `false` for direct callers
 (`open_dispute`), `true` for the system-only `disputes::open_post_expiry` path used by the

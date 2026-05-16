@@ -2,9 +2,9 @@
 
 ## Tip flow (MVP)
 
-The tip flow is a simple **YES/YES escrow flow**:
+The tip flow is a simple **YES/YES escrow flow** under the canister's commit-at-first-action principle: the payer's `create_deal` ALSO funds the deal in one shot (no separate `fund_deal` step). The shape:
 
-- the payer creates and funds a tip deal
+- the payer pre-approves the canister for `amount + DC/2 + LF`, then calls `create_deal({ recipient: None, amount, expires_at_ns })` — the canister pulls the funds and the deal goes straight to `Funded`
 - the recipient receives a QR code or link containing the `deal_id` and `claim_code`
 - if the recipient signs up, provides the correct claim code, and accepts before expiry, the funds are released
 - if the recipient never claims the tip, the funds are refunded after the deadline
@@ -56,17 +56,13 @@ sequenceDiagram
     participant L as Token Ledger (ICRC)
     participant R as Recipient (User B)
 
-    %% --- CREATE DEAL ---
+    %% --- CREATE DEAL (commit-at-first-action — pulls funds atomically) ---
+    P->>L: approve(E, amount + DC/2 + LF)
     P->>F: Start tip flow
-    F->>E: create_deal(amount, expiry, payee?)
+    F->>E: create_deal(amount, expiry, recipient = None)
     E->>E: generate claim_code via raw_rand
-    E-->>F: deal_id + escrow_subaccount + claim_code
-
-    %% --- FUNDING ---
-    P->>L: approve(E, amount)
-    F->>E: fund_deal(deal_id)
-    E->>L: transfer_from(P -> escrow_subaccount)
-    E-->>F: status = FUNDED
+    E->>L: transfer_from(P -> escrow_subaccount, amount + DC/2)
+    E-->>F: deal_id + escrow_subaccount + claim_code, status = FUNDED
 
     %% --- SHARE ---
     F->>P: Show QR / link (deal_id + claim_code)

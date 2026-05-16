@@ -24,7 +24,8 @@ src/escrow/src/
 │
 ├── services/               Core business logic. Pure of `ic_cdk::api` for testability.
 │   ├── mod.rs
-│   ├── deals.rs            create / fund / accept / reclaim / cancel / consent / reject / sign.
+│   ├── admin.rs            Treasury subaccount wrappers (balance / withdraw) for controller-only admin endpoints.
+│   ├── deals.rs            create / accept / reclaim / cancel / consent / reject / sign. Money flows on first action.
 │   ├── expiry.rs           Expired-deal dispatcher: tip → refund payer; bound → auto-YES tally.
 │   ├── housekeeping.rs     Repeating timer that calls expiry.rs every 5 minutes.
 │   ├── icrc7.rs            ICRC-7 service logic (token metadata, ownership, transfer rejection).
@@ -34,7 +35,7 @@ src/escrow/src/
 │   ├── mod.rs
 │   ├── arbitrator.rs       Arbitrator profile + status (curated registry).
 │   ├── asset.rs            `Asset` enum — settlement-currency abstraction (today: `Icrc(Principal)` only).
-│   ├── deal.rs             Internal `Deal`, `DealStatus`, `Consent`, `DealMetadata`, `DealFees`, `Signature`.
+│   ├── deal.rs             Internal `Deal`, `DealStatus`, `Consent`, `DealMetadata`, `DealFees` (incl. `creation_fee`), `Signature`.
 │   ├── dispute.rs          `Dispute`, `DisputeConfig`, `DisputePhase`, `DisputeOutcome`, `Vote`, `PanelMember`, `Evidence`.
 │   ├── icrc7.rs            ICRC-7 / ICRC-16 `Value`, ownership helpers, metadata builders.
 │   ├── ledger_types.rs     ICRC-1 / -2 `Account` + transfer types (re-exported to api).
@@ -131,29 +132,35 @@ See [`patterns.md#errors`](./patterns.md#errors) for the full taxonomy.
 `validation.rs`. The current valid edges (RFC-001 added the `Disputed`,
 `ArbitratedSettled`, `ArbitratedRefunded` triple; the two-signature
 tally + `Aborted` + auto-YES expiry rule landed in PR #41 without a
-preceding RFC):
+preceding RFC; PR #41 also restructured the create / consent flow into
+the **commit-at-first-action** model — `fund_deal` was removed and
+money now moves on each party's first interaction with the deal):
 
 ```
-Created ──[both consent]──▶ Created ──fund──▶ Funded ─────[tally]─────▶ Settled         (BothYes)
-  │                           │                 │  │                  ▶ Aborted         (BothNo)
-  │ reject                    │ cancel          │  │                  ▶ Disputed        (Mixed → auto open_dispute)
-  ▼                           ▼                 │  │
-Rejected                  Cancelled             │  │ open_dispute     ▶ Disputed
-                                                │  │
-                                                │  ▼
-                                                │  Disputed
-                                                │    ├─[majority CC]──▶ ArbitratedSettled
-                                                │    ├─[majority IC]──▶ ArbitratedRefunded
-                                                │    ├─[no quorum]────▶ ArbitratedRefunded (Q9)
-                                                │    └─[Q12 withdrawn]▶ ArbitratedSettled / ArbitratedRefunded
-                                                │
-                                                │ EXPIRY (bound deal): auto-YES rule applied
-                                                │   any Empty signature → Yes; signed sigs preserved
-                                                │   then re-tally → Settled / Aborted / Disputed
-                                                │
-                                                │ EXPIRY (tip, recipient = None):
-                                                ▼
-                                            Refunded
+                      create_deal (creator deposits everything they owe)
+                                          │
+        ┌─────────────────────────────────┼─────────────────────────────────┐
+        ▼ tip (recipient = None)          ▼ bound (3a / 3b)                  │
+     Funded                            Created                               │
+        │                                 │                                  │
+        │                                 ├─ cancel_deal / reject_deal ─▶ Cancelled / Rejected
+        │                                 │
+        │                                 ▼ consent_deal (counterparty deposits THEIR obligation)
+        │                              Funded
+        │                                 │
+        │ accept_deal(claim_code)         ▼ [two-sig tally]
+        ▼                                 ├─ BothYes ──▶ Settled
+     Settled                              ├─ BothNo  ──▶ Aborted
+                                          ├─ Mixed   ──▶ Disputed (auto-open)
+                                          └─ open_dispute ──▶ Disputed
+                                                                │
+                                                                ├─ majority CC ──▶ ArbitratedSettled
+                                                                ├─ majority IC ──▶ ArbitratedRefunded
+                                                                ├─ no quorum ────▶ ArbitratedRefunded (Q9)
+                                                                └─ Q12 withdrawn ─▶ ArbitratedSettled / ArbitratedRefunded
+
+EXPIRY (bound deal):     auto-YES rule applied → re-tally → Settled / Aborted / Disputed
+EXPIRY (tip):            refund payer → Refunded (also via manual reclaim_deal)
 ```
 
 `Funded → Settled` / `Aborted` / `Disputed` is driven by the two-party

@@ -1,6 +1,6 @@
 # Escrow Engine Canister
 
-An Internet Computer escrow canister implementing **tip and deal flows**: a payer funds a deal-specific ledger subaccount via ICRC-2; for **two-party deals** both sides record a settlement signature (`Yes` / `No`) and the tally drives the outcome; for **tips** (unknown recipient) a claim code lets anyone claim before expiry, and otherwise the payer is refunded. Each deal is also exposed as an **ICRC-7 non-fungible token**, making deals queryable via standard NFT interfaces.
+An Internet Computer escrow canister implementing **tip and deal flows** under a single principle — **commit-at-first-action**: every party deposits everything they owe as part of their first money-moving call (creator → `create_deal`, counterparty → `consent_deal`); there is no separate `fund_deal` step. For **two-party deals** both sides record a settlement signature (`Yes` / `No`) after both have deposited and the tally drives the outcome. For **tips** (unknown recipient) a claim code lets anyone claim before expiry, and otherwise the payer is refunded. Bound deals also pay a small `creation_fee` at create time that lands in the canister's treasury subaccount as an anti-spam deterrent — drainable only by canister controllers. Each deal is also exposed as an **ICRC-7 non-fungible token**, making deals queryable via standard NFT interfaces.
 
 ## Security model
 
@@ -58,18 +58,17 @@ Two distinct mechanisms gate funds across the lifecycle:
 
 ### Escrow update methods
 
-| Method                          | Description                                                                                                                                                                                                                                                               |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create_deal(CreateDealArgs)`   | Create a new deal. Caller is assigned as payer or recipient based on the supplied args. Returns a `DealView` with the claim code.                                                                                                                                         |
-| `fund_deal(FundDealArgs)`       | Move tokens from payer to escrow subaccount via ICRC-2 `transfer_from`. Payer must have approved the canister first. Implicitly sets payer consent to `Accepted`.                                                                                                         |
-| `accept_deal(AcceptDealArgs)`   | Tip: claim with `claim_code`, bind recipient, settle immediately. Bound deal: routes to `sign_yes` for the recipient — only settles when the payer also signs `Yes` (or expiry's auto-YES fires).                                                                         |
-| `sign_yes(FundDealArgs)`        | Bound payer or recipient records a `Yes` settlement signature. Triggers the tally: BothYes → `Settled`; one party still `Empty` → deal stays `Funded`; payer-`Yes` × recipient-`No` → auto-`Disputed`. Latest-wins while `Funded`. Rejects tip flows + post-expiry calls. |
-| `sign_no(FundDealArgs)`         | Bound payer or recipient records a `No` settlement signature. BothNo → `Aborted` (refund payer); one party still `Empty` → deal stays `Funded`; payer-`No` × recipient-`Yes` → auto-`Disputed`. Same caller / tip / expiry semantics as `sign_yes`.                       |
-| `reclaim_deal(ReclaimDealArgs)` | Tip: payer refund after expiry (legacy behaviour). Bound deal: routes through the expiry auto-YES tally — typically settles to recipient on silence, NOT refunds the payer.                                                                                               |
-| `cancel_deal(CancelDealArgs)`   | Either party cancels an unfunded (Created) deal.                                                                                                                                                                                                                          |
-| `consent_deal(ConsentDealArgs)` | Explicitly consent to a deal's terms. Required for the counterparty before the payer can fund a deal with a known recipient.                                                                                                                                              |
-| `reject_deal(RejectDealArgs)`   | Reject a deal's terms. The deal transitions to `Rejected` (terminal).                                                                                                                                                                                                     |
-| `process_expired_deals(limit)`  | Batch-dispatch up to `limit` expired funded deals. Tips refund to payer; bound deals run the auto-YES tally and settle / abort / open-dispute accordingly. Idempotent. Skips deals in `Disputed` state.                                                                   |
+| Method                          | Description                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create_deal(CreateDealArgs)`   | Create a new deal AND deposit everything the creator owes via ICRC-2 (caller must have pre-approved). Tip: pulls `amount + DC/2`, status → `Funded`. 3a payer-creator: pulls `amount + DC/2 + creation_fee`, status → `Created`. 3b recipient-creator: pulls `DC/2 + creation_fee`, status → `Created`. `creation_fee` lands in the treasury subaccount; everything else in the deal subaccount. Returns `DealView` with the claim code. |
+| `accept_deal(AcceptDealArgs)`   | Tip: claim with `claim_code`, bind recipient, settle immediately. Bound deal: routes to `sign_yes` for the recipient — only settles when the payer also signs `Yes` (or expiry's auto-YES fires).                                                                                                                                                                                                                                        |
+| `sign_yes(FundDealArgs)`        | Bound payer or recipient records a `Yes` settlement signature. Triggers the tally: BothYes → `Settled`; one party still `Empty` → deal stays `Funded`; payer-`Yes` × recipient-`No` → auto-`Disputed`. Latest-wins while `Funded`. Rejects tip flows + post-expiry calls.                                                                                                                                                                |
+| `sign_no(FundDealArgs)`         | Bound payer or recipient records a `No` settlement signature. BothNo → `Aborted` (refund payer); one party still `Empty` → deal stays `Funded`; payer-`No` × recipient-`Yes` → auto-`Disputed`. Same caller / tip / expiry semantics as `sign_yes`.                                                                                                                                                                                      |
+| `reclaim_deal(ReclaimDealArgs)` | Tip: payer refund after expiry (legacy behaviour). Bound deal: routes through the expiry auto-YES tally — typically settles to recipient on silence, NOT refunds the payer.                                                                                                                                                                                                                                                              |
+| `cancel_deal(CancelDealArgs)`   | Either party cancels a deal that hasn't reached `Funded` yet (status `Created`). The creator's create-time deposit is refunded back to them minus one outgoing ledger fee. `creation_fee` stays in the treasury (forfeited).                                                                                                                                                                                                             |
+| `consent_deal(ConsentDealArgs)` | Counterparty consent — ALSO deposits what they owe (3a recipient: `DC/2`; 3b payer: `amount + DC/2`). Auto-flips status from `Created` to `Funded` once both consents are `Accepted`.                                                                                                                                                                                                                                                    |
+| `reject_deal(RejectDealArgs)`   | Reject a deal's terms before it reaches `Funded`. Same refund semantics as `cancel_deal` — creator's deposit returned, `creation_fee` stays in treasury.                                                                                                                                                                                                                                                                                 |
+| `process_expired_deals(limit)`  | Batch-dispatch up to `limit` expired funded deals. Tips refund to payer; bound deals run the auto-YES tally and settle / abort / open-dispute accordingly. Idempotent. Skips deals in `Disputed` state.                                                                                                                                                                                                                                  |
 
 ### Dispute & arbitrator methods
 
@@ -152,6 +151,8 @@ All controller-only.
 | `update_config(Config)`             | Update canister configuration.                                                                                                                                                                       |
 | `admin_register_arbitrator(args)`   | Register `args.principal` as an arbitrator (curated registration). Idempotent; reactivates `Suspended` / `Deregistered` profiles. Validators reject anonymous + the canister's own principal.        |
 | `admin_set_arbitrator_status(args)` | Set an arbitrator's status (`Active` ↔ `Suspended` ↔ `Deregistered`). All transitions allowed; self-transitions are no-op success. `Deregistered → Active` reactivates a previously-removed profile. |
+| `admin_treasury_balance(args)`      | Returns the live `icrc1_balance_of` of the canister-owned treasury subaccount for the requested asset. Every bound deal's `creation_fee` accumulates here.                                           |
+| `admin_treasury_withdraw(args)`     | Drains `amount` of `asset` from the treasury subaccount via `icrc1_transfer` to the supplied destination `Account`. Caller is responsible for sizing `amount` against the live balance.              |
 
 ## Deal lifecycle
 
@@ -187,26 +188,30 @@ respectively.
 ### State machine
 
 ```
-Created ──[both consent]──▶ Created ──fund──▶ Funded ──[two-sig tally]──▶ Settled         (BothYes)
-  │                           │                 │  │                    ▶ Aborted         (BothNo)
-  │ reject                    │ cancel          │  │                    ▶ Disputed        (Mixed → auto-open)
-  ▼                           ▼                 │  │
-Rejected                  Cancelled             │  │ open_dispute       ▶ Disputed
-                                                │  │
-                                                │  ▼
-                                                │  Disputed
-                                                │    ├─[majority CC]────▶ ArbitratedSettled
-                                                │    ├─[majority IC]────▶ ArbitratedRefunded
-                                                │    ├─[no quorum]──────▶ ArbitratedRefunded
-                                                │    └─[withdrawn]──────▶ ArbitratedSettled / ArbitratedRefunded
-                                                │
-                                                │ EXPIRY (bound deal): auto-YES rule applied,
-                                                │   then re-tally → Settled / Aborted / Disputed
-                                                │
-                                                │ EXPIRY (tip, recipient = None) or manual
-                                                │ reclaim on tip:
-                                                ▼
-                                            Refunded
+                       create_deal (creator deposits everything they owe)
+                                          │
+        ┌─────────────────────────────────┼─────────────────────────────────┐
+        ▼ tip (recipient = None)          ▼ bound (3a / 3b)                  │
+     Funded                            Created                               │
+        │                                 │                                  │
+        │                                 ├─ cancel_deal / reject_deal ─▶ Cancelled / Rejected
+        │                                 │
+        │                                 ▼ consent_deal (counterparty deposits THEIR obligation)
+        │                              Funded
+        │                                 │
+        │ accept_deal(claim_code)         ▼ [two-sig tally]
+        ▼                                 ├─ BothYes ──▶ Settled
+     Settled                              ├─ BothNo  ──▶ Aborted
+                                          ├─ Mixed   ──▶ Disputed (auto-open)
+                                          └─ open_dispute ──▶ Disputed
+                                                                │
+                                                                ├─ majority CC ──▶ ArbitratedSettled
+                                                                ├─ majority IC ──▶ ArbitratedRefunded
+                                                                ├─ no quorum ────▶ ArbitratedRefunded
+                                                                └─ withdrawn ────▶ ArbitratedSettled / ArbitratedRefunded
+
+EXPIRY (bound deal):     auto-YES rule applied → re-tally → Settled / Aborted / Disputed
+EXPIRY (tip):            refund payer → Refunded (also via manual reclaim_deal)
 ```
 
 `Settled`, `Refunded`, `Aborted`, `Cancelled`, `Rejected`, `ArbitratedSettled`, and `ArbitratedRefunded` are terminal states. `Disputed` is non-terminal — funds stay in escrow until the dispute resolves.
@@ -221,48 +226,57 @@ Rejected                  Cancelled             │  │ open_dispute       ▶ 
 
 > **Visual reference:** every flow below has a sequence + state diagram in [`docs/flows/`](../../docs/flows/) — start there if you want a picture.
 
-**Tip flow** (payer → unknown recipient): no signatures, claim-code based unilateral settle. Visual: [`docs/flows/tip.md`](../../docs/flows/tip.md).
+**Tip flow** (payer → unknown recipient): no signatures, claim-code based unilateral settle. Payer commits everything at create time. Visual: [`docs/flows/tip.md`](../../docs/flows/tip.md).
 
-1. Payer creates deal → `payer_consent = Accepted`
-2. Payer funds → `Funded`
-3. QR / link shared (contains `deal_id + claim_code`)
-4. Recipient claims with `accept_deal(claim_code)` → `recipient_consent = Accepted`, `Settled`
-5. (Or: expiry hits with no claimer → `Refunded`.)
+1. Payer pre-approves `amount + DC/2 + LF`, calls `create_deal({ recipient: None, … })` → canister pulls funds, status → `Funded`.
+2. QR / link shared (contains `deal_id + claim_code`).
+3. Recipient claims with `accept_deal(claim_code)` → `recipient_consent = Accepted`, `Settled`.
+4. (Or: expiry hits with no claimer → `Refunded`.)
 
-**Two-party deal** (both parties known): two-signature tally drives the outcome. Visual: [`docs/flows/payer-creator.md`](../../docs/flows/payer-creator.md).
+**Two-party deal — payer-creator (3a)**: payer commits everything at create; recipient consent deposits their reserve and auto-flips to `Funded`; two-signature tally drives the outcome. Visual: [`docs/flows/payer-creator.md`](../../docs/flows/payer-creator.md).
 
-1. Creator creates deal → creator's consent `Accepted`, counterparty's `Pending`
-2. Counterparty calls `consent_deal` → both consents `Accepted`
-3. Payer funds → `Funded` (both signatures `Empty`)
-4. Each party records a settlement signature via `sign_yes` / `sign_no` (or recipient via `accept_deal`, which routes to `sign_yes`).
-5. The tally on each call decides the outcome:
+1. Payer pre-approves `amount + DC/2 + creation_fee + 2*LF`, calls `create_deal({ recipient: Some(R), … })` → canister pulls everything (`amount + DC/2` to deal subaccount, `creation_fee` to treasury subaccount). Status `Created`. `payer_consent = Accepted`, `recipient_consent = Pending`.
+2. Recipient pre-approves `DC/2 + LF`, calls `consent_deal(deal_id)` → canister pulls `DC/2`. Status auto-flips `Created → Funded`. Both consents `Accepted`.
+3. Each party records a settlement signature via `sign_yes` / `sign_no` (or recipient via `accept_deal`, which routes to `sign_yes`).
+4. The tally on each call decides the outcome:
    - both `Yes` → `Settled` (recipient paid)
    - both `No` → `Aborted` (payer refunded)
    - mixed → auto-`Disputed` (panel arbitration)
    - one still `Empty` → deal stays `Funded`; wait for the other party or expiry
-6. At expiry the auto-YES rule fires: `Empty` → `Yes`, explicit votes preserved, then re-tally.
+5. At expiry the auto-YES rule fires: `Empty` → `Yes`, explicit votes preserved, then re-tally.
 
-**Invoice flow** (recipient creates, payer pays): same as two-party deal, just with the recipient as creator. Visual: [`docs/flows/recipient-creator.md`](../../docs/flows/recipient-creator.md).
+**Invoice flow — recipient-creator (3b)**: recipient commits at create; payer's consent deposits `amount + DC/2` and auto-flips to `Funded`. Visual: [`docs/flows/recipient-creator.md`](../../docs/flows/recipient-creator.md).
 
 1. Recipient creates deal with `payer` specified → `recipient_consent = Accepted`
 2. Payer calls `consent_deal` → `payer_consent = Accepted`
-3. Payer funds → `Funded`
-4. Same two-signature tally as above.
+3. Recipient pre-approves `DC/2 + creation_fee + 2*LF`, calls `create_deal({ payer: Some(P), … })` → canister pulls `DC/2` to deal subaccount + `creation_fee` to treasury. Status `Created`. `recipient_consent = Accepted`, `payer_consent = Pending`.
+4. Payer pre-approves `amount + DC/2 + LF`, calls `consent_deal(deal_id)` → canister pulls `amount + DC/2`. Status auto-flips `Created → Funded`. Both consents `Accepted`.
+5. Same two-signature tally as above.
 
 ### Fee accounting
 
-Every deal locks a [`DealFees`](./src/types/deal.rs) snapshot at `create_deal` time so subsequent admin `update_config` calls cannot retroactively change the agreed economics. The snapshot carries the escrow service fee, the per-party dispute reserve, the withdraw-fee percentage, and the create-time ledger fee (the last is record-only — every actual transfer re-queries the live `icrc1_fee`).
+Every deal locks a [`DealFees`](./src/types/deal.rs) snapshot at `create_deal` time so subsequent admin `update_config` calls cannot retroactively change the agreed economics. The snapshot carries the escrow service fee, the per-party dispute reserve, the withdraw-fee percentage, the create-time ledger fee (record-only — every actual transfer re-queries the live `icrc1_fee`), and the anti-spam `creation_fee`.
 
-On every terminal-state transition where funds leave the escrow subaccount, the recipient receives `amount − escrow_fee − ledger_fee`. The `escrow_fee` stays in the per-deal subaccount as the operator's share (a sweeper / treasury is out of scope for now). The `ledger_fee` is debited by the ledger itself.
+On every post-funding terminal-state transition (`Settled`, `Refunded`, `Aborted`, `ArbitratedSettled`, `ArbitratedRefunded`), the recipient or payer receives the deal amount minus `escrow_fee` and one outgoing ledger fee. The `escrow_fee` stays in the per-deal subaccount as the operator's share (a sweeper is out of scope for now). The `creation_fee` was already moved to the treasury subaccount at create time and is unaffected by terminal transitions.
 
-| Field on `DealFees`         | What it locks                                                                                                                                     |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `escrow_fee`                | Service fee charged on every terminal state. Default `20_000` e8s (= `2 × ICP_LEDGER_FEE`). Admin-tunable via `Config.escrow_fee`.                |
-| `dispute_reserve_per_party` | Each party's half of the full dispute cost. Snapshot of `compute_arbitration_fee(amount, DisputeConfig) / 2`. Used by the two-sided reserve flow. |
-| `withdraw_fee_pct`          | Reduced arbitrator fee on out-of-band withdrawal resolution. Snapshot of `DisputeConfig.withdraw_fee_pct`.                                        |
-| `ledger_fee_at_create`      | Record-only. The ledger's fee at the time of create — never used for arithmetic.                                                                  |
+| Field on `DealFees`         | What it locks                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `escrow_fee`                | Service fee charged on every post-funding terminal. Default `20_000` e8s (= `2 × ICP_LEDGER_FEE`). Admin-tunable via `Config.escrow_fee`.                                                                                                                                                                                                     |
+| `creation_fee`              | Anti-spam fee paid by the creator at `create_deal` time on bound deals (recipient is `Some`). Routed to the canister-owned treasury subaccount. Default `20_000` e8s. Admin-tunable via `Config.creation_fee`. Tip flows snapshot `0`. **Never refunded** on any terminal — the cost of having created a deal that consumed system resources. |
+| `dispute_reserve_per_party` | Each party's half of the full dispute cost. Snapshot of `compute_arbitration_fee(amount, DisputeConfig) / 2`. Used by the two-sided reserve flow.                                                                                                                                                                                             |
+| `withdraw_fee_pct`          | Reduced arbitrator fee on out-of-band withdrawal resolution. Snapshot of `DisputeConfig.withdraw_fee_pct`.                                                                                                                                                                                                                                    |
+| `ledger_fee_at_create`      | Record-only. The ledger's fee at the time of create — never used for arithmetic.                                                                                                                                                                                                                                                              |
 
 The min-amount check at `create_deal` rejects deals whose `amount` is too small to leave a positive remainder after all fee deductions — see `validation::validate_min_amount`.
+
+### Treasury subaccount
+
+The canister exposes a deterministic treasury subaccount (constructed from the `escrow-treasury` domain prefix; see `subaccounts::treasury_subaccount`) that accumulates every bound deal's `creation_fee`. Two controller-only endpoints manage it:
+
+- `admin_treasury_balance({ asset })` returns the live `icrc1_balance_of` of the treasury for the requested asset.
+- `admin_treasury_withdraw({ asset, to, amount })` drains funds from the treasury via `icrc1_transfer`.
+
+Both are gated by `caller_is_controller`. Non-controller callers are rejected at the guard layer before the body runs.
 
 ## Module structure
 
@@ -286,9 +300,10 @@ The min-amount check at `create_deal` rejects deals whose `amount` is too small 
 | `api/arbitrators/results.rs` | Public arbitrator result types                                                                                                                                   |
 | `api/icrc7/api.rs`           | ICRC-7 NFT standard query/update endpoints + ICRC-10 supported standards                                                                                         |
 | `api/admin/api.rs`           | Controller-only admin endpoints (`config`, `update_config`, `admin_register_arbitrator`, `admin_set_arbitrator_status`)                                          |
-| `services/deals.rs`          | Core deal business logic (create, fund, accept, reclaim, cancel, consent, reject, sign) + shared `record_signature_and_dispatch` helper                          |
+| `services/deals.rs`          | Core deal business logic (create, accept, reclaim, cancel, consent, reject, sign) + shared `record_signature_and_dispatch` helper + create-time deposit fan-out  |
 | `services/disputes.rs`       | Dispute lifecycle (open, open_post_expiry, submit_evidence, cast_vote, finalize, withdraw, queries) + tally + panel selection + auto-finalize sweep              |
 | `services/arbitrators.rs`    | Arbitrator registry service (register / deregister / get / list)                                                                                                 |
+| `services/admin.rs`          | Controller-only treasury wrappers (`treasury_balance`, `treasury_withdraw`) for the canister-owned treasury subaccount                                           |
 | `services/expiry.rs`         | Expired-deal dispatcher: tip → refund payer; bound → auto-YES tally → settle / abort / open-dispute. Skips `Disputed`.                                           |
 | `services/housekeeping.rs`   | Two repeating timers: expiry auto-refund (every 5 min) + dispute auto-finalize (every 5 min) — independent re-entrancy guards                                    |
 | `services/icrc7.rs`          | ICRC-7 service logic (token metadata, ownership, pagination, transfer rejection)                                                                                 |
