@@ -3,7 +3,7 @@ use candid::{CandidType, Deserialize, Principal};
 use super::errors::EscrowError;
 use crate::types::{
     asset::Asset,
-    deal::{Consent, Deal, DealFees, DealId, DealStatus},
+    deal::{Consent, Deal, DealFees, DealId, DealStatus, Signature},
     dispute::DisputeId,
     ledger_types::Account,
 };
@@ -28,12 +28,12 @@ macro_rules! candid_result {
 }
 
 candid_result!(CreateDealResult, DealView);
-candid_result!(FundDealResult, DealView);
 candid_result!(AcceptDealResult, DealView);
 candid_result!(ReclaimDealResult, DealView);
 candid_result!(CancelDealResult, DealView);
 candid_result!(ConsentDealResult, DealView);
 candid_result!(RejectDealResult, DealView);
+candid_result!(SignDealResult, DealView);
 candid_result!(GetDealResult, DealView);
 candid_result!(GetClaimableDealResult, ClaimableDealView);
 candid_result!(GetEscrowAccountResult, Account);
@@ -104,6 +104,14 @@ pub struct DealView {
     /// expected payout is `amount - fees.escrow_fee - live ledger
     /// fee`).
     pub fees: DealFees,
+    /// Payer's settlement signature on a `Funded` bound deal —
+    /// `Empty` until the payer calls `sign_yes` / `sign_no`. Tip
+    /// flows (recipient unbound) always carry `Empty`. See
+    /// [`Signature`] for tally semantics.
+    pub payer_signature: Signature,
+    /// Recipient's settlement signature; mirrors
+    /// [`Self::payer_signature`].
+    pub recipient_signature: Signature,
 }
 
 impl From<&Deal> for DealView {
@@ -132,6 +140,8 @@ impl From<&Deal> for DealView {
             dispute: deal.dispute,
             panel_size: deal.panel_size,
             fees: deal.fees.clone(),
+            payer_signature: deal.payer_signature.clone(),
+            recipient_signature: deal.recipient_signature.clone(),
         }
     }
 }
@@ -181,7 +191,7 @@ mod tests {
     use super::{ClaimableDealView, DealView};
     use crate::types::{
         asset::Asset,
-        deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
+        deal::{Consent, Deal, DealFees, DealMetadata, DealStatus, Signature},
     };
 
     fn test_principal(id: u8) -> Principal {
@@ -219,6 +229,8 @@ mod tests {
             dispute: None,
             panel_size: None,
             fees: DealFees::default(),
+            payer_signature: Signature::Empty,
+            recipient_signature: Signature::Empty,
         };
         let view = DealView::from(&deal);
         assert_eq!(view.title.as_deref(), Some("Test tip"));
@@ -261,6 +273,8 @@ mod tests {
             dispute: None,
             panel_size: None,
             fees: DealFees::default(),
+            payer_signature: Signature::Empty,
+            recipient_signature: Signature::Empty,
         };
         let view = ClaimableDealView::from(&deal);
         assert!(view.is_recipient_bound);

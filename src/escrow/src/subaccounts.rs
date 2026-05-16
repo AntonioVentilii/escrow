@@ -1,6 +1,23 @@
 use crate::types::deal::DealId;
 
 const DOMAIN_SEPARATOR: &[u8] = b"escrow-deal";
+const TREASURY_DOMAIN: &[u8] = b"escrow-treasury";
+
+/// Canonical 32-byte subaccount for the canister's anti-spam
+/// treasury. All `creation_fee` deposits land here at `create_deal`
+/// time. Owned by the canister principal; only drainable via the
+/// controller-only `admin_treasury_withdraw` endpoint.
+///
+/// Layout: `[treasury_domain (15 bytes) | zeros (17 bytes)]` — shares the deal-subaccount
+/// construction style (domain prefix + zero padding) so it's visually distinguishable from any
+/// derived deal subaccount in ledger explorers.
+#[must_use]
+pub fn treasury_subaccount() -> Vec<u8> {
+    let mut subaccount = vec![0_u8; 32];
+    let prefix_len = TREASURY_DOMAIN.len().min(32);
+    subaccount[..prefix_len].copy_from_slice(&TREASURY_DOMAIN[..prefix_len]);
+    subaccount
+}
 
 /// Derives a deterministic, unique 32-byte subaccount for a given deal.
 ///
@@ -18,8 +35,22 @@ pub fn derive_deal_subaccount(deal_id: DealId) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_deal_subaccount, DOMAIN_SEPARATOR};
+    use super::{derive_deal_subaccount, treasury_subaccount, DOMAIN_SEPARATOR, TREASURY_DOMAIN};
     use crate::types::deal::DealId;
+
+    #[test]
+    fn treasury_is_deterministic_and_distinct_from_deals() {
+        let t = treasury_subaccount();
+        assert_eq!(t.len(), 32);
+        assert_eq!(&t[..TREASURY_DOMAIN.len()], TREASURY_DOMAIN);
+        // Treasury must not collide with any deal subaccount —
+        // the prefixes differ (`escrow-treasury` vs `escrow-deal`),
+        // which is enough to guarantee distinctness even before the
+        // deal_id-encoded suffix matters.
+        for deal_id in [0_u64, 1, 42, u64::MAX] {
+            assert_ne!(t, derive_deal_subaccount(deal_id));
+        }
+    }
 
     #[test]
     fn deterministic() {

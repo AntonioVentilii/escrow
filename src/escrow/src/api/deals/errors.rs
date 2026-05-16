@@ -110,6 +110,15 @@ pub enum EscrowError {
     /// is the creator (3b). The deal stays `Created` so the caller
     /// can retry after approving.
     DisputeReserveRequired,
+    /// The creator has not approved the escrow canister to pull
+    /// the per-deal `creation_fee`, OR the ledger
+    /// `icrc2_transfer_from` failed at create time. Returned by
+    /// `create_deal` for any bound deal (recipient is `Some`). The
+    /// half-formed deal is rolled forward to `Cancelled` so it
+    /// doesn't sit as a stuck `Created` record. Tip flows
+    /// (`recipient = None`) skip the `creation_fee` entirely and
+    /// never emit this variant.
+    CreationFeeRequired,
     /// `create_deal` was called with a `panel_size` outside the range
     /// `[DisputeConfig.min_panel_size, DisputeConfig.max_panel_size]`,
     /// or a value that is not odd.

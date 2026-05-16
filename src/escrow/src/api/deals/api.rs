@@ -8,11 +8,15 @@ use super::{
     },
     results::{
         AcceptDealResult, CancelDealResult, ConsentDealResult, CreateDealResult, DealView,
-        FundDealResult, GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
-        ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
+        GetClaimableDealResult, GetDealResult, GetEscrowAccountResult, ProcessExpiredDealsResult,
+        ReclaimDealResult, RejectDealResult, SignDealResult,
     },
 };
-use crate::{guards::caller_is_not_anonymous, services, types::deal::DealId};
+use crate::{
+    guards::caller_is_not_anonymous,
+    services,
+    types::deal::{DealId, Signature},
+};
 
 // ---------------------------------------------------------------------------
 // Update methods
@@ -33,17 +37,6 @@ pub async fn create_deal(args: CreateDealArgs) -> CreateDealResult {
     services::deals::create(msg_caller(), args, time())
         .await
         .into()
-}
-
-/// Funds a previously created deal by transferring tokens from the payer's
-/// account into the deal's escrow subaccount via ICRC-2 `transfer_from`.
-///
-/// The deal transitions from `Created` to `Funded`. Funding implicitly sets
-/// the payer's consent to `Accepted`. For deals with a known recipient, the
-/// recipient must have consented first.
-#[update(guard = "caller_is_not_anonymous")]
-pub async fn fund_deal(FundDealArgs { deal_id }: FundDealArgs) -> FundDealResult {
-    services::deals::fund(msg_caller(), deal_id).await.into()
 }
 
 /// Accepts (claims) a funded deal, releasing the escrowed tokens to the caller.
@@ -115,6 +108,50 @@ pub async fn consent_deal(ConsentDealArgs { deal_id }: ConsentDealArgs) -> Conse
 #[update(guard = "caller_is_not_anonymous")]
 pub async fn reject_deal(RejectDealArgs { deal_id }: RejectDealArgs) -> RejectDealResult {
     services::deals::reject(msg_caller(), deal_id, time())
+        .await
+        .into()
+}
+
+/// Records the caller's `Yes` settlement signature on a `Funded`
+/// bound deal and dispatches the resulting two-party tally:
+///
+/// - other party also `Yes` → settle (release to recipient).
+/// - other party `No` → auto-open a dispute.
+/// - other party still `Empty` → no-op; deal stays `Funded` with the new signature recorded.
+///
+/// Caller must be the bound payer or recipient. Tip flows
+/// (`recipient = None`) reject with `DisputeRequiresBoundRecipient`
+/// — use `accept_deal` (with the claim code) to claim a tip.
+/// While the deal is still `Funded`, re-signing overwrites the
+/// previous vote (latest-wins). At expiry the auto-YES rule (run by
+/// the housekeeping sweep) upgrades any unsigned party to `Yes`
+/// automatically; calling `sign_yes` after expiry returns `Expired`
+/// to make the transition explicit.
+///
+/// Paired with [`sign_no`] — split into two endpoints (instead of
+/// a single `sign_deal(vote)`) to match the canister's
+/// `verb + deal_id` convention used by every other deal-action
+/// endpoint, and to make "sign with empty vote" unrepresentable
+/// at the Candid boundary.
+#[update(guard = "caller_is_not_anonymous")]
+pub async fn sign_yes(FundDealArgs { deal_id }: FundDealArgs) -> SignDealResult {
+    services::deals::sign(msg_caller(), deal_id, Signature::Yes, time())
+        .await
+        .into()
+}
+
+/// Records the caller's `No` settlement signature on a `Funded`
+/// bound deal and dispatches the resulting two-party tally:
+///
+/// - other party also `No` → abort (refund to payer; new `Aborted` terminal).
+/// - other party `Yes` → auto-open a dispute.
+/// - other party still `Empty` → no-op; deal stays `Funded` with the new signature recorded.
+///
+/// Same caller / tip / re-sign / post-expiry semantics as
+/// [`sign_yes`].
+#[update(guard = "caller_is_not_anonymous")]
+pub async fn sign_no(FundDealArgs { deal_id }: FundDealArgs) -> SignDealResult {
+    services::deals::sign(msg_caller(), deal_id, Signature::No, time())
         .await
         .into()
 }

@@ -4,9 +4,13 @@ use ic_cdk::{export_candid, init, post_upgrade, pre_upgrade};
 use crate::{
     api::{
         admin::{
-            params::{AdminRegisterArbitratorArgs, AdminSetArbitratorStatusArgs},
+            params::{
+                AdminRegisterArbitratorArgs, AdminSetArbitratorStatusArgs,
+                AdminTreasuryBalanceArgs, AdminTreasuryWithdrawArgs,
+            },
             results::{
-                AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult, UpdateConfigResult,
+                AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult,
+                AdminTreasuryBalanceResult, AdminTreasuryWithdrawResult, UpdateConfigResult,
             },
         },
         arbitrators::{params::ListArbitratorsArgs, results::DeregisterArbitratorResult},
@@ -17,8 +21,8 @@ use crate::{
             },
             results::{
                 AcceptDealResult, CancelDealResult, ConsentDealResult, CreateDealResult, DealView,
-                FundDealResult, GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
-                ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
+                GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
+                ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult, SignDealResult,
             },
         },
         disputes::{

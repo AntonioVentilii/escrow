@@ -23,6 +23,8 @@ macro_rules! candid_result {
 
 candid_result!(AdminRegisterArbitratorResult, ArbitratorProfile);
 candid_result!(AdminSetArbitratorStatusResult, ArbitratorProfile);
+candid_result!(AdminTreasuryBalanceResult, u128);
+candid_result!(AdminTreasuryWithdrawResult, u128);
 
 /// Outcome of `update_config`. `Ok` on successful validation +
 /// persistence; `Err` carries the validation failure.

@@ -32,11 +32,14 @@ use escrow::{
             RejectDealArgs,
         },
         results::{
-            AcceptDealResult, ConsentDealResult, CreateDealResult, DealView, FundDealResult,
-            ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult,
+            AcceptDealResult, ConsentDealResult, CreateDealResult, DealView, GetDealResult,
+            ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult, SignDealResult,
         },
     },
-    types::{asset::Asset, deal::DealStatus},
+    types::{
+        asset::Asset,
+        deal::{DealStatus, Signature},
+    },
 };
 use pocket_ic::PocketIc;
 
@@ -142,16 +145,6 @@ fn try_consent(escrow: &PicCanister, caller: Principal, deal_id: u64) -> Consent
         .expect("consent_deal call")
 }
 
-fn fund(escrow: &PicCanister, caller: Principal, deal_id: u64) -> DealView {
-    let result: FundDealResult = escrow
-        .update(caller, "fund_deal", (FundDealArgs { deal_id },))
-        .expect("fund_deal call");
-    match result {
-        FundDealResult::Ok(view) => *view,
-        FundDealResult::Err(e) => panic!("fund_deal: {e:?}"),
-    }
-}
-
 fn accept(escrow: &PicCanister, caller: Principal, deal_id: u64) -> DealView {
     let args = AcceptDealArgs {
         deal_id,
@@ -196,6 +189,24 @@ fn process_expired(escrow: &PicCanister, caller: Principal, limit: u32) -> Vec<u
     }
 }
 
+/// Calls either `sign_yes` or `sign_no` depending on `vote`. Both
+/// take the same `FundDealArgs` payload — the verb is encoded in
+/// the endpoint name.
+fn sign(escrow: &PicCanister, caller: Principal, deal_id: u64, vote: &Signature) -> DealView {
+    let method = match vote {
+        Signature::Yes => "sign_yes",
+        Signature::No => "sign_no",
+        Signature::Empty => panic!("sign helper: Empty is not a callable vote"),
+    };
+    let result: SignDealResult = escrow
+        .update(caller, method, (FundDealArgs { deal_id },))
+        .unwrap_or_else(|e| panic!("{method} call: {e:?}"));
+    match result {
+        SignDealResult::Ok(view) => *view,
+        SignDealResult::Err(e) => panic!("{method}: {e:?}"),
+    }
+}
+
 /// Returns a nanosecond timestamp comfortably in the future relative
 /// to pocket-ic's deterministic clock at fresh-canister time.
 fn far_future(pic: &PocketIc) -> u64 {
@@ -211,8 +222,72 @@ fn short_expiry(pic: &PocketIc) -> u64 {
     now_ns + bump
 }
 
+/// Default `Config.creation_fee` from `escrow::types::state`. Tests
+/// that need to pre-approve the creator's deposit hard-code this
+/// rather than reading it from the canister, so the approval call
+/// can fire BEFORE `create_deal`.
+const CREATION_FEE: u128 = 20_000;
+
+/// Conservative pre-approval headroom for a 3a payer-creator: the
+/// payer needs to cover `amount + DC/2 + creation_fee + 2*LF`
+/// (two `transfer_from`s at create — one to the deal subaccount,
+/// one to the treasury). Under the default `DisputeConfig`
+/// (`arbitration_fee_bps = 500` = 5%), `DC = amount * 5 / 100`
+/// and `DC/2 = amount / 40`.
+fn payer_create_approval(amount: u128, lf: u128) -> u128 {
+    let worst_case_dc_half = amount / 40;
+    amount + worst_case_dc_half + CREATION_FEE + 2 * lf + 1
+}
+
+/// Conservative pre-approval headroom for a 3b recipient-creator:
+/// `DC/2 + creation_fee + 2*LF`. Same two-`transfer_from` pattern.
+fn recipient_create_approval(amount: u128, lf: u128) -> u128 {
+    let worst_case_dc_half = amount / 40;
+    worst_case_dc_half + CREATION_FEE + 2 * lf + 1
+}
+
+/// End-to-end helper: create a 3a payer-creator deal and have the
+/// recipient consent, leaving the deal in `Funded` state ready for
+/// the two-signature tally. Returns the `DealView` after consent
+/// (status `Funded`, both consents `Accepted`, both signatures
+/// `Empty`).
+fn setup_funded_3a_deal(
+    pic: &PocketIc,
+    escrow: &PicCanister,
+    ledger: &IcrcLedger,
+    amount: u128,
+    expires_at_ns: u64,
+) -> DealView {
+    let lf = ledger.fee;
+    ledger.approve(
+        payer(),
+        escrow.canister_id(),
+        payer_create_approval(amount, lf),
+    );
+    let deal = create_bound_deal_as(escrow, payer(), ledger, amount, expires_at_ns);
+    let dc_half = deal.fees.dispute_reserve_per_party;
+    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
+    consent(escrow, recipient(), deal.id);
+    // pic.tick is unused here but the parameter is kept for callers that need a fresh time read.
+    let _ = pic;
+    use_get_deal(escrow, payer(), deal.id)
+}
+
+/// Convenience: refresh the latest `DealView` from canister state.
+fn use_get_deal(escrow: &PicCanister, caller: Principal, deal_id: u64) -> DealView {
+    let result: GetDealResult = escrow
+        .query(caller, "get_deal", (deal_id,))
+        .expect("get_deal call");
+    match result {
+        GetDealResult::Ok(view) => *view,
+        GetDealResult::Err(e) => panic!("get_deal: {e:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
-// 3a happy path: payer-creator → receiver consent → fund → accept
+// 3a happy path: payer-creator deposits everything at create →
+// recipient consent (deposits DC/2 + auto-flips to Funded) →
+// both sign Yes → settle
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -222,37 +297,47 @@ fn accept_deal_3a_settles_with_two_sided_reserve_math() {
     let lf = ledger.fee;
     let expires_at_ns = far_future(&pic);
 
+    // Pre-approve everything the payer-creator owes at create
+    // time: `amount + DC/2 + creation_fee + 2*LF` (two
+    // `transfer_from`s — one to the deal subaccount, one to the
+    // treasury — each burning 1 LF).
+    ledger.approve(
+        payer(),
+        escrow.canister_id(),
+        payer_create_approval(amount, lf),
+    );
+
+    let payer_balance_pre_create = ledger.balance_of_owner(payer());
     let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, expires_at_ns);
     let escrow_fee = deal.fees.escrow_fee;
+    let creation_fee = deal.fees.creation_fee;
     let dc_half = deal.fees.dispute_reserve_per_party;
     let subaccount = deal.escrow_subaccount.clone();
 
-    // Receiver approves + consents → DC/2 lands in the deal subaccount.
-    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
-    consent(&escrow, recipient(), deal.id);
+    // Payer wallet debited `amount + DC/2 + creation_fee + 2*LF`
+    // at create — two transfer_froms (one to deal subaccount, one
+    // to treasury), each burning 1 LF.
+    assert_eq!(
+        payer_balance_pre_create - ledger.balance_of_owner(payer()),
+        amount + dc_half + creation_fee + 2 * lf,
+        "payer wallet debited amount + DC/2 + creation_fee + 2*LF on create",
+    );
     assert_eq!(
         ledger.balance_of_subaccount(escrow.canister_id(), subaccount.clone()),
-        dc_half,
-        "subaccount holds the receiver's reserve after consent",
+        amount + dc_half,
+        "subaccount holds amount + DC/2 after payer's create-time deposit",
     );
+    assert_eq!(deal.status, DealStatus::Created);
 
-    // Payer approves `amount + DC/2 + ledger_fee` (so the canister can
-    // pull `amount + DC/2` plus burn one LF on the transfer_from).
-    ledger.approve(payer(), escrow.canister_id(), amount + dc_half + lf);
-
-    let payer_balance_pre_fund = ledger.balance_of_owner(payer());
-    let funded = fund(&escrow, payer(), deal.id);
-    assert_eq!(funded.status, DealStatus::Funded);
-
-    // Payer wallet loses `amount + DC/2 + ledger_fee` on the
-    // transfer_from (amount + reserve transferred, plus 1 LF burned).
+    // Recipient consent now ALSO pulls their DC/2 + auto-flips status.
+    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
+    let recipient_balance_pre_consent = ledger.balance_of_owner(recipient());
+    consent(&escrow, recipient(), deal.id);
     assert_eq!(
-        payer_balance_pre_fund - ledger.balance_of_owner(payer()),
-        amount + dc_half + lf,
-        "payer wallet debited amount + DC/2 + LF on fund",
+        recipient_balance_pre_consent - ledger.balance_of_owner(recipient()),
+        dc_half + lf,
+        "recipient wallet debited DC/2 + LF on consent",
     );
-
-    // Subaccount now holds `amount + DC` (DC/2 from each side).
     assert_eq!(
         ledger.balance_of_subaccount(escrow.canister_id(), subaccount.clone()),
         amount + 2 * dc_half,
@@ -261,28 +346,33 @@ fn accept_deal_3a_settles_with_two_sided_reserve_math() {
 
     let recipient_pre = ledger.balance_of_owner(recipient());
     let payer_pre = ledger.balance_of_owner(payer());
-    let settled = accept(&escrow, recipient(), deal.id);
+
+    // Two-signature tally: recipient's accept_deal records Yes;
+    // payer's sign_yes makes both Yes → Settled.
+    let after_recipient_sign = accept(&escrow, recipient(), deal.id);
+    assert_eq!(
+        after_recipient_sign.status,
+        DealStatus::Funded,
+        "deal stays Funded until both parties sign Yes",
+    );
+    assert_eq!(after_recipient_sign.recipient_signature, Signature::Yes);
+    assert_eq!(after_recipient_sign.payer_signature, Signature::Empty);
+
+    let settled = sign(&escrow, payer(), deal.id, &Signature::Yes);
     assert_eq!(settled.status, DealStatus::Settled);
 
-    // Recipient gets one combined transfer worth
-    // `amount − EF + DC/2 − LF` (settlement + reserve refund, minus
-    // the single LF burned on the outbound transfer).
-    let recipient_received = ledger.balance_of_owner(recipient()) - recipient_pre;
+    // Recipient gets `amount − EF + DC/2 − LF`.
     assert_eq!(
-        recipient_received,
+        ledger.balance_of_owner(recipient()) - recipient_pre,
         amount - escrow_fee + dc_half - lf,
         "recipient nets amount − EF + DC/2 − LF on settle",
     );
-
-    // Payer receives their `DC/2 − LF` reserve refund separately.
-    let payer_received = ledger.balance_of_owner(payer()) - payer_pre;
+    // Payer gets their `DC/2 − LF` reserve refund.
     assert_eq!(
-        payer_received,
+        ledger.balance_of_owner(payer()) - payer_pre,
         dc_half - lf,
         "payer recovers DC/2 − LF on settle",
     );
-
-    // Subaccount retains exactly EF.
     assert_eq!(
         ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
         escrow_fee,
@@ -291,7 +381,9 @@ fn accept_deal_3a_settles_with_two_sided_reserve_math() {
 }
 
 // ---------------------------------------------------------------------------
-// 3b happy path: receiver-creator deposits DC/2 atomically with create
+// 3b happy path: receiver-creator deposits DC/2 + creation_fee at create →
+// payer consent (deposits amount + DC/2 + auto-flips to Funded) →
+// both sign Yes → settle
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -300,32 +392,32 @@ fn create_deal_3b_receiver_creator_deposits_reserve_atomically() {
     let amount: u128 = 1_000_000_000;
     let lf = ledger.fee;
 
-    // Receiver must approve BEFORE create_deal — that's the gesture
-    // that authorises the create-time `transfer_from`. We don't know
-    // the deal's `DC/2` until after create, but the receiver can
-    // approve a worst-case headroom matching the canister's
-    // `compute_arbitration_fee` of `amount`.
-    let worst_case_reserve = amount * 5 / 100 / 2 + lf; // 5% bps / 2
-    ledger.approve(recipient(), escrow.canister_id(), worst_case_reserve + 1);
+    // Receiver pre-approves DC/2 + creation_fee + 2*LF for the two
+    // `transfer_from`s (one to deal subaccount, one to treasury).
+    ledger.approve(
+        recipient(),
+        escrow.canister_id(),
+        recipient_create_approval(amount, lf),
+    );
 
     let recipient_pre = ledger.balance_of_owner(recipient());
     let deal = create_bound_deal_as(&escrow, recipient(), &ledger, amount, far_future(&pic));
     let dc_half = deal.fees.dispute_reserve_per_party;
+    let creation_fee = deal.fees.creation_fee;
     let subaccount = deal.escrow_subaccount.clone();
 
-    // Receiver's wallet debited DC/2 + LF (the transfer_from fee).
     assert_eq!(
         recipient_pre - ledger.balance_of_owner(recipient()),
-        dc_half + lf,
-        "receiver-creator wallet debited DC/2 + LF on create",
+        dc_half + creation_fee + 2 * lf,
+        "receiver-creator wallet debited DC/2 + creation_fee + 2*LF on create",
     );
     assert_eq!(
         ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
         dc_half,
-        "subaccount holds receiver's reserve immediately after create",
+        "subaccount holds receiver's DC/2 immediately after create",
     );
     // Receiver's consent was auto-set to Accepted by resolve_parties.
-    // Deal is in `Created` ready for the payer to fund.
+    // Deal is `Created`, waiting for the payer to consent.
     assert_eq!(deal.status, DealStatus::Created);
 }
 
@@ -347,26 +439,40 @@ fn create_deal_3b_returns_dispute_reserve_required_without_approval() {
     }
 }
 
+#[test]
+fn create_deal_3a_returns_dispute_reserve_required_without_approval() {
+    let (pic, escrow, ledger) = setup();
+    // Symmetric coverage: payer-creator must also pre-approve at
+    // create time. Without an approval the create call fails and
+    // the half-formed deal is rolled forward to Cancelled.
+    let result =
+        try_create_bound_deal_as(&escrow, payer(), &ledger, 1_000_000_000, far_future(&pic));
+    match result {
+        CreateDealResult::Err(EscrowError::DisputeReserveRequired) => {}
+        other => panic!("expected DisputeReserveRequired, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
-// 3a reclaim path: expiry → both parties get their reserves back
+// Auto-YES expiry: bound deals where neither party signed default to
+// `Yes` for both parties at expiry → settle to recipient (silence =
+// release). Both `reclaim_deal` (manual, payer-initiated) and the
+// `process_expired_deals` housekeeping sweep dispatch through the
+// same `services::expiry::dispatch_one_expired` path so they produce
+// identical settlement money flow.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn reclaim_deal_refunds_both_halves_after_expiry() {
+fn reclaim_deal_auto_settles_bound_deal_when_both_silent_at_expiry() {
     let (pic, escrow, ledger) = setup();
     let amount: u128 = 1_000_000_000;
     let lf = ledger.fee;
     let expires_at_ns = short_expiry(&pic);
 
-    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, expires_at_ns);
+    let deal = setup_funded_3a_deal(&pic, &escrow, &ledger, amount, expires_at_ns);
     let escrow_fee = deal.fees.escrow_fee;
     let dc_half = deal.fees.dispute_reserve_per_party;
     let subaccount = deal.escrow_subaccount.clone();
-
-    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
-    consent(&escrow, recipient(), deal.id);
-    ledger.approve(payer(), escrow.canister_id(), amount + dc_half + lf);
-    fund(&escrow, payer(), deal.id);
 
     pic.advance_time(Duration::from_mins(2));
     pic.tick();
@@ -374,49 +480,46 @@ fn reclaim_deal_refunds_both_halves_after_expiry() {
     let payer_pre = ledger.balance_of_owner(payer());
     let recipient_pre = ledger.balance_of_owner(recipient());
 
-    let refunded = reclaim(&escrow, payer(), deal.id);
-    assert_eq!(refunded.status, DealStatus::Refunded);
+    // Manual reclaim by the payer on a bound deal AFTER expiry now
+    // routes through the expiry auto-tally dispatcher. With both
+    // signatures `Empty`, the auto-YES rule upgrades both to `Yes`,
+    // tally is BothYes → settle to recipient. The payer does NOT
+    // get a refund — this is the diagram's "silence = release"
+    // behaviour, opposite to the legacy `reclaim → Refunded`.
+    let settled = reclaim(&escrow, payer(), deal.id);
+    assert_eq!(settled.status, DealStatus::Settled);
 
-    // Payer recovers `amount − EF + DC/2 − LF` in one combined refund.
-    assert_eq!(
-        ledger.balance_of_owner(payer()) - payer_pre,
-        amount - escrow_fee + dc_half - lf,
-        "payer recovers amount − EF + DC/2 − LF on reclaim",
-    );
-    // Recipient recovers `DC/2 − LF`.
+    // Recipient gets `amount − EF + DC/2 − LF`.
     assert_eq!(
         ledger.balance_of_owner(recipient()) - recipient_pre,
+        amount - escrow_fee + dc_half - lf,
+        "recipient nets amount − EF + DC/2 − LF on auto-YES settle at expiry",
+    );
+    // Payer gets back only their `DC/2 − LF` reserve.
+    assert_eq!(
+        ledger.balance_of_owner(payer()) - payer_pre,
         dc_half - lf,
-        "recipient recovers DC/2 − LF on reclaim",
+        "payer recovers only DC/2 − LF on auto-YES settle at expiry",
     );
     // Subaccount retains exactly EF.
     assert_eq!(
         ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
         escrow_fee,
-        "subaccount retains exactly EF after reclaim",
+        "subaccount retains exactly EF after auto-YES settle",
     );
 }
 
-// ---------------------------------------------------------------------------
-// Auto-refund via process_expired_deals
-// ---------------------------------------------------------------------------
-
 #[test]
-fn process_expired_deals_auto_refunds_both_halves() {
+fn process_expired_deals_auto_settles_bound_deal_when_both_silent_at_expiry() {
     let (pic, escrow, ledger) = setup();
     let amount: u128 = 1_000_000_000;
     let lf = ledger.fee;
     let expires_at_ns = short_expiry(&pic);
 
-    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, expires_at_ns);
+    let deal = setup_funded_3a_deal(&pic, &escrow, &ledger, amount, expires_at_ns);
     let escrow_fee = deal.fees.escrow_fee;
     let dc_half = deal.fees.dispute_reserve_per_party;
     let subaccount = deal.escrow_subaccount.clone();
-
-    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
-    consent(&escrow, recipient(), deal.id);
-    ledger.approve(payer(), escrow.canister_id(), amount + dc_half + lf);
-    fund(&escrow, payer(), deal.id);
 
     pic.advance_time(Duration::from_mins(2));
     pic.tick();
@@ -427,21 +530,110 @@ fn process_expired_deals_auto_refunds_both_halves() {
     let processed = process_expired(&escrow, payer(), 10);
     assert_eq!(processed, vec![deal.id]);
 
-    assert_eq!(
-        ledger.balance_of_owner(payer()) - payer_pre,
-        amount - escrow_fee + dc_half - lf,
-        "auto-refund mirrors manual reclaim for payer",
-    );
+    // Same money flow as the manual reclaim path — both go through
+    // `services::expiry::dispatch_one_expired`.
     assert_eq!(
         ledger.balance_of_owner(recipient()) - recipient_pre,
+        amount - escrow_fee + dc_half - lf,
+        "housekeeping sweep settles to recipient under auto-YES",
+    );
+    assert_eq!(
+        ledger.balance_of_owner(payer()) - payer_pre,
         dc_half - lf,
-        "auto-refund mirrors manual reclaim for recipient",
+        "payer recovers only DC/2 − LF on auto-YES settle",
     );
     assert_eq!(
         ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
         escrow_fee,
-        "subaccount retains exactly EF after auto-refund",
+        "subaccount retains exactly EF after auto-YES settle",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Two-signature tally — happy paths (pre-expiry, mutual decision)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sign_both_no_aborts_with_refund_money_flow() {
+    let (pic, escrow, ledger) = setup();
+    let amount: u128 = 1_000_000_000;
+    let lf = ledger.fee;
+
+    let deal = setup_funded_3a_deal(&pic, &escrow, &ledger, amount, far_future(&pic));
+    let escrow_fee = deal.fees.escrow_fee;
+    let dc_half = deal.fees.dispute_reserve_per_party;
+    let subaccount = deal.escrow_subaccount.clone();
+
+    let payer_pre = ledger.balance_of_owner(payer());
+    let recipient_pre = ledger.balance_of_owner(recipient());
+
+    // Both parties explicitly sign `No` → BothNo tally → Aborted.
+    // Fee math is identical to `Refunded` (project constraint: no
+    // fee logic changes for the new terminal). Payer recovers
+    // `amount − EF + DC/2 − LF`, recipient recovers `DC/2 − LF`,
+    // subaccount retains EF.
+    let after_payer = sign(&escrow, payer(), deal.id, &Signature::No);
+    assert_eq!(after_payer.status, DealStatus::Funded);
+    assert_eq!(after_payer.payer_signature, Signature::No);
+
+    let aborted = sign(&escrow, recipient(), deal.id, &Signature::No);
+    assert_eq!(
+        aborted.status,
+        DealStatus::Aborted,
+        "BothNo tally aborts the deal (new terminal status)",
+    );
+
+    assert_eq!(
+        ledger.balance_of_owner(payer()) - payer_pre,
+        amount - escrow_fee + dc_half - lf,
+        "payer recovers amount − EF + DC/2 − LF on Aborted (mirrors Refunded)",
+    );
+    assert_eq!(
+        ledger.balance_of_owner(recipient()) - recipient_pre,
+        dc_half - lf,
+        "recipient recovers DC/2 − LF on Aborted",
+    );
+    assert_eq!(
+        ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
+        escrow_fee,
+        "subaccount retains exactly EF after Aborted",
+    );
+}
+
+#[test]
+fn sign_mixed_auto_opens_dispute() {
+    let (pic, escrow, ledger) = setup();
+    let amount: u128 = 1_000_000_000;
+
+    let deal = setup_funded_3a_deal(&pic, &escrow, &ledger, amount, far_future(&pic));
+
+    // Recipient signs Yes; deal stays Funded (Pending tally).
+    let after_recipient = sign(&escrow, recipient(), deal.id, &Signature::Yes);
+    assert_eq!(after_recipient.status, DealStatus::Funded);
+
+    // Payer signs No → Mixed tally → auto-open dispute. The deal
+    // would land in `Disputed` if the eligible-arbitrator pool is
+    // non-empty; with no arbitrators registered in this test
+    // setup, the auto-open returns `InsufficientArbitrators` and
+    // the deal stays `Funded` with both signatures recorded —
+    // the caller can retry by signing again or registering
+    // arbitrators and calling `open_dispute` explicitly.
+    let result: SignDealResult = escrow
+        .update(payer(), "sign_no", (FundDealArgs { deal_id: deal.id },))
+        .expect("sign_no call");
+    match result {
+        SignDealResult::Err(EscrowError::InsufficientArbitrators { need, have }) => {
+            assert!(have < need, "want < need, got need={need} have={have}");
+            // Signature was still recorded under Phase 1 of sign().
+            let view = use_get_deal(&escrow, payer(), deal.id);
+            assert_eq!(view.payer_signature, Signature::No);
+            assert_eq!(view.recipient_signature, Signature::Yes);
+            assert_eq!(view.status, DealStatus::Funded);
+        }
+        other => panic!(
+            "expected InsufficientArbitrators (no arbitrators registered in this test); got {other:?}"
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -450,39 +642,48 @@ fn process_expired_deals_auto_refunds_both_halves() {
 
 #[test]
 fn reject_after_receiver_consent_refunds_minus_ledger_fee() {
+    // 3a payer-creator deposits at create. Recipient then consents
+    // (deposits DC/2) — both consents Accepted and the auto-flip
+    // takes the deal to Funded. Once Funded, `reject_deal` is no
+    // longer applicable (validator rejects with InvalidState); use
+    // `sign_no` to abort post-funding instead. So this test now
+    // covers the pre-recipient-consent rejection path: payer
+    // creates, recipient REJECTS without consenting, and the
+    // payer's create-time deposit is refunded minus one outgoing
+    // LF. creation_fee stays in the treasury (forfeited per design).
     let (pic, escrow, ledger) = setup();
     let amount: u128 = 1_000_000_000;
     let lf = ledger.fee;
 
+    ledger.approve(
+        payer(),
+        escrow.canister_id(),
+        payer_create_approval(amount, lf),
+    );
     let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, far_future(&pic));
     let dc_half = deal.fees.dispute_reserve_per_party;
     let subaccount = deal.escrow_subaccount.clone();
+    assert_eq!(deal.status, DealStatus::Created);
 
-    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
-    consent(&escrow, recipient(), deal.id);
+    let payer_pre = ledger.balance_of_owner(payer());
 
-    let recipient_pre = ledger.balance_of_owner(recipient());
-
+    // Recipient rejects WITHOUT consenting. Subaccount holds the
+    // payer's `amount + DC/2`; the rejection refunds it back to the
+    // payer minus one outgoing ledger fee. The operator does NOT
+    // take `escrow_fee` (pre-funding terminal). `creation_fee` is
+    // already in the treasury subaccount and stays there.
     let rejected = reject(&escrow, recipient(), deal.id);
     assert_eq!(rejected.status, DealStatus::Rejected);
 
-    // Receiver gets back `DC/2 − LF`. The operator does NOT charge
-    // `escrow_fee` on a pre-funding termination — `cancel_deal` /
-    // `reject_deal` are callable by either party so charging `EF`
-    // would unfairly penalise the non-rejector side. The operator
-    // earns only on post-funding terminals (Settled / Refunded /
-    // ArbitratedX); pre-funding terminations cost the operator one
-    // outgoing ledger fee.
     assert_eq!(
-        ledger.balance_of_owner(recipient()) - recipient_pre,
-        dc_half - lf,
-        "receiver recovers DC/2 − LF on reject after consent",
+        ledger.balance_of_owner(payer()) - payer_pre,
+        amount + dc_half - lf,
+        "payer recovers amount + DC/2 − LF when recipient rejects pre-consent",
     );
-    // Subaccount empty after the refund (LF burned by ledger).
     assert_eq!(
         ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
         0,
-        "subaccount empty after reject (no EF charged on pre-funding terminal)",
+        "subaccount empty after reject (no EF on pre-funding terminal)",
     );
 }
 
@@ -494,68 +695,47 @@ fn reject_after_receiver_consent_refunds_minus_ledger_fee() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn reject_by_payer_does_not_confiscate_receiver_deposit() {
+fn reject_by_payer_3b_refunds_recipient_deposit() {
+    // Symmetric coverage for 3b: recipient creates and deposits
+    // their `DC/2 + creation_fee` at create. Payer then rejects
+    // BEFORE consenting. The recipient's `DC/2` deposit refunds
+    // minus one outgoing LF. creation_fee stays in treasury.
     let (pic, escrow, ledger) = setup();
     let amount: u128 = 1_000_000_000;
     let lf = ledger.fee;
 
-    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, far_future(&pic));
+    ledger.approve(
+        recipient(),
+        escrow.canister_id(),
+        recipient_create_approval(amount, lf),
+    );
+    let deal = create_bound_deal_as(&escrow, recipient(), &ledger, amount, far_future(&pic));
     let dc_half = deal.fees.dispute_reserve_per_party;
     let subaccount = deal.escrow_subaccount.clone();
 
-    // Receiver consents (deposits DC/2 into the subaccount).
-    ledger.approve(recipient(), escrow.canister_id(), dc_half + lf);
-    consent(&escrow, recipient(), deal.id);
-
     let recipient_pre = ledger.balance_of_owner(recipient());
 
-    // Payer is the rejector — but the receiver's reserve must still
-    // come back to the receiver minus only the outbound LF.
     let rejected = reject(&escrow, payer(), deal.id);
     assert_eq!(rejected.status, DealStatus::Rejected);
 
     assert_eq!(
         ledger.balance_of_owner(recipient()) - recipient_pre,
         dc_half - lf,
-        "receiver recovers DC/2 − LF when payer rejects (no EF confiscation)",
+        "recipient-creator recovers DC/2 − LF when payer rejects (no EF confiscation)",
     );
     assert_eq!(
         ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
         0,
-        "subaccount empty after cross-party reject",
+        "subaccount empty after cross-party reject (creation_fee already in treasury)",
     );
 }
 
-// ---------------------------------------------------------------------------
-// Reject path: no reserve deposited → free state flip
-// ---------------------------------------------------------------------------
-
-#[test]
-fn reject_before_any_deposit_is_free() {
-    let (pic, escrow, ledger) = setup();
-    let deal = create_bound_deal_as(&escrow, payer(), &ledger, 1_000_000_000, far_future(&pic));
-    let subaccount = deal.escrow_subaccount.clone();
-
-    // No consent, no fund — subaccount is empty.
-    assert_eq!(
-        ledger.balance_of_subaccount(escrow.canister_id(), subaccount.clone()),
-        0,
-    );
-
-    let recipient_pre = ledger.balance_of_owner(recipient());
-    let payer_pre = ledger.balance_of_owner(payer());
-
-    let rejected = reject(&escrow, recipient(), deal.id);
-    assert_eq!(rejected.status, DealStatus::Rejected);
-
-    // No money moved on either side.
-    assert_eq!(ledger.balance_of_owner(recipient()), recipient_pre);
-    assert_eq!(ledger.balance_of_owner(payer()), payer_pre);
-    assert_eq!(
-        ledger.balance_of_subaccount(escrow.canister_id(), subaccount),
-        0,
-    );
-}
+// (The legacy `reject_before_any_deposit_is_free` test was
+// removed in the commit-at-first-action restructure: the creator
+// now ALWAYS deposits at create_deal — there's no
+// "deal-with-zero-deposits" pre-funding state to reject from.
+// `cancel_deal` / `reject_deal` from the creator side now refund
+// what they deposited, see `reject_after_receiver_consent_refunds_minus_ledger_fee`.)
 
 // ---------------------------------------------------------------------------
 // consent_deal is idempotent — a second call from an
@@ -569,9 +749,17 @@ fn consent_deal_is_idempotent_for_already_consented_receiver() {
     let amount: u128 = 1_000_000_000;
     let lf = ledger.fee;
 
+    // 3a setup: payer creates and deposits everything at create.
+    ledger.approve(
+        payer(),
+        escrow.canister_id(),
+        payer_create_approval(amount, lf),
+    );
     let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, far_future(&pic));
     let dc_half = deal.fees.dispute_reserve_per_party;
-    let subaccount = deal.escrow_subaccount.clone();
+    let subaccount_after_create =
+        ledger.balance_of_subaccount(escrow.canister_id(), deal.escrow_subaccount.clone());
+    assert_eq!(subaccount_after_create, amount + dc_half);
 
     // Approve generously — twice the DC/2 so a second pull WOULD
     // succeed at the ledger level if the canister tried.
@@ -581,17 +769,22 @@ fn consent_deal_is_idempotent_for_already_consented_receiver() {
     consent(&escrow, recipient(), deal.id);
     let recipient_after_first = ledger.balance_of_owner(recipient());
     let subaccount_after_first =
-        ledger.balance_of_subaccount(escrow.canister_id(), subaccount.clone());
+        ledger.balance_of_subaccount(escrow.canister_id(), deal.escrow_subaccount.clone());
 
     // First consent moved DC/2 + LF out of the receiver and DC/2
-    // into the subaccount.
+    // into the subaccount on top of the payer's existing
+    // `amount + DC/2` deposit. Status auto-flipped to Funded.
     assert_eq!(recipient_pre_consent - recipient_after_first, dc_half + lf);
-    assert_eq!(subaccount_after_first, dc_half);
+    assert_eq!(subaccount_after_first, amount + 2 * dc_half);
 
-    // Second consent: should be a no-op (no ledger calls).
+    // Second consent: should be a no-op (no ledger calls). The
+    // idempotency guard inside `consent_deal` short-circuits when
+    // `recipient_consent` is already `Accepted`, regardless of
+    // whether the wallet still has a generous open allowance.
     consent(&escrow, recipient(), deal.id);
     let recipient_after_second = ledger.balance_of_owner(recipient());
-    let subaccount_after_second = ledger.balance_of_subaccount(escrow.canister_id(), subaccount);
+    let subaccount_after_second =
+        ledger.balance_of_subaccount(escrow.canister_id(), deal.escrow_subaccount);
 
     assert_eq!(
         recipient_after_second, recipient_after_first,
@@ -610,7 +803,17 @@ fn consent_deal_is_idempotent_for_already_consented_receiver() {
 #[test]
 fn consent_deal_without_approval_returns_dispute_reserve_required() {
     let (pic, escrow, ledger) = setup();
-    let deal = create_bound_deal_as(&escrow, payer(), &ledger, 1_000_000_000, far_future(&pic));
+    let amount: u128 = 1_000_000_000;
+    let lf = ledger.fee;
+
+    // Payer pre-approves and creates a 3a deal — needed because
+    // `consent_deal` requires the deal to exist.
+    ledger.approve(
+        payer(),
+        escrow.canister_id(),
+        payer_create_approval(amount, lf),
+    );
+    let deal = create_bound_deal_as(&escrow, payer(), &ledger, amount, far_future(&pic));
 
     // Receiver has balance (per the setup) but never approved the
     // escrow canister — `icrc2_transfer_from` rejects on missing

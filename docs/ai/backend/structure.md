@@ -24,8 +24,9 @@ src/escrow/src/
 │
 ├── services/               Core business logic. Pure of `ic_cdk::api` for testability.
 │   ├── mod.rs
-│   ├── deals.rs            create / fund / accept / reclaim / cancel / consent / reject.
-│   ├── expiry.rs           Batch expired-deal refund processing.
+│   ├── admin.rs            Treasury subaccount wrappers (balance / withdraw) for controller-only admin endpoints.
+│   ├── deals.rs            create / accept / reclaim / cancel / consent / reject / sign. Money flows on first action.
+│   ├── expiry.rs           Expired-deal dispatcher: tip → refund payer; bound → auto-YES tally.
 │   ├── housekeeping.rs     Repeating timer that calls expiry.rs every 5 minutes.
 │   ├── icrc7.rs            ICRC-7 service logic (token metadata, ownership, transfer rejection).
 │   └── reliability.rs      Reliability-score computation.
@@ -34,7 +35,7 @@ src/escrow/src/
 │   ├── mod.rs
 │   ├── arbitrator.rs       Arbitrator profile + status (curated registry).
 │   ├── asset.rs            `Asset` enum — settlement-currency abstraction (today: `Icrc(Principal)` only).
-│   ├── deal.rs             Internal `Deal`, `DealStatus`, `Consent`, `DealMetadata`, `DealFees`.
+│   ├── deal.rs             Internal `Deal`, `DealStatus`, `Consent`, `DealMetadata`, `DealFees` (incl. `creation_fee`), `Signature`.
 │   ├── dispute.rs          `Dispute`, `DisputeConfig`, `DisputePhase`, `DisputeOutcome`, `Vote`, `PanelMember`, `Evidence`.
 │   ├── icrc7.rs            ICRC-7 / ICRC-16 `Value`, ownership helpers, metadata builders.
 │   ├── ledger_types.rs     ICRC-1 / -2 `Account` + transfer types (re-exported to api).
@@ -129,30 +130,64 @@ See [`patterns.md#errors`](./patterns.md#errors) for the full taxonomy.
 
 `DealStatus` transitions are gated by the `validate_can_*` family in
 `validation.rs`. The current valid edges (RFC-001 added the `Disputed`,
-`ArbitratedSettled`, `ArbitratedRefunded` triple):
+`ArbitratedSettled`, `ArbitratedRefunded` triple; the two-signature
+tally + `Aborted` + auto-YES expiry rule landed in PR #41 without a
+preceding RFC; PR #41 also restructured the create / consent flow into
+the **commit-at-first-action** model — `fund_deal` was removed and
+money now moves on each party's first interaction with the deal):
 
 ```
-Created ──[both consent]──▶ Created ──fund──▶ Funded ──accept──▶ Settled
-  │                           │                 │  │
-  │ reject                    │ cancel          │  │ open_dispute
-  ▼                           ▼                 │  ▼
-Rejected                  Cancelled             │  Disputed
-                                                │    ├─[majority CC]──▶ ArbitratedSettled
-                                                │    ├─[majority IC]──▶ ArbitratedRefunded
-                                                │    ├─[no quorum]────▶ ArbitratedRefunded (Q9)
-                                                │    └─[Q12 withdrawn]▶ ArbitratedSettled / ArbitratedRefunded
-                                                │ reclaim (after expiry, if not Disputed)
-                                                ▼
-                                            Refunded
+                      create_deal (creator deposits everything they owe)
+                                          │
+        ┌─────────────────────────────────┼─────────────────────────────────┐
+        ▼ tip (recipient = None)          ▼ bound (3a / 3b)                  │
+     Funded                            Created                               │
+        │                                 │                                  │
+        │                                 ├─ cancel_deal / reject_deal ─▶ Cancelled / Rejected
+        │                                 │
+        │                                 ▼ consent_deal (counterparty deposits THEIR obligation)
+        │                              Funded
+        │                                 │
+        │ accept_deal(claim_code)         ▼ [two-sig tally]
+        ▼                                 ├─ BothYes ──▶ Settled
+     Settled                              ├─ BothNo  ──▶ Aborted
+                                          ├─ Mixed   ──▶ Disputed (auto-open)
+                                          └─ open_dispute ──▶ Disputed
+                                                                │
+                                                                ├─ majority CC ──▶ ArbitratedSettled
+                                                                ├─ majority IC ──▶ ArbitratedRefunded
+                                                                ├─ no quorum ────▶ ArbitratedRefunded (Q9)
+                                                                └─ Q12 withdrawn ─▶ ArbitratedSettled / ArbitratedRefunded
+
+EXPIRY (bound deal):     auto-YES rule applied → re-tally → Settled / Aborted / Disputed
+EXPIRY (tip):            refund payer → Refunded (also via manual reclaim_deal)
 ```
 
-`Settled`, `Refunded`, `Cancelled`, `Rejected`, `ArbitratedSettled`,
-`ArbitratedRefunded` are terminal. `Disputed` is non-terminal — funds
-remain in the escrow subaccount until the dispute resolves.
+`Funded → Settled` / `Aborted` / `Disputed` is driven by the two-party
+signature tally in `services::deals::record_signature_and_dispatch`,
+called from both `sign_yes` / `sign_no` and (for bound deals) `accept_deal`:
+
+| Tally                | Outcome          | Notes                                                                      |
+| -------------------- | ---------------- | -------------------------------------------------------------------------- |
+| both `Yes`           | `Settled`        | Recipient receives payout.                                                 |
+| both `No`            | `Aborted`        | Same fee math as `Refunded`; refund to payer.                              |
+| mixed                | `Disputed`       | Auto-opens via `disputes::open` (or `open_post_expiry` from the sweep).    |
+| at least one `Empty` | (stays `Funded`) | Signature recorded; deal sits until the other party signs or expiry fires. |
+
+Direct callers of `open_dispute` follow the legacy explicit path:
+caller-as-`No` is recorded on the deal, the panel is selected, status
+flips to `Disputed`.
+
+`Settled`, `Refunded`, `Cancelled`, `Rejected`, `Aborted`,
+`ArbitratedSettled`, `ArbitratedRefunded` are terminal. `Disputed` is
+non-terminal — funds remain in the escrow subaccount until the dispute
+resolves.
 
 **Adding a new state or edge requires an [RFC](../governance.md#rfc-workflow).**
 The accepted RFC dictates the new transition table; the implementation
-PR adds it.
+PR adds it. (PR #41 was an explicit user-approved exception to ship
+without a preceding RFC; future state changes default back to
+RFC-first.)
 
 ## Where to put new files (decision tree)
 

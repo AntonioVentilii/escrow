@@ -87,6 +87,7 @@ pub fn count_active_deals_for(principal: Principal) -> u32 {
                                 | DealStatus::Rejected
                                 | DealStatus::ArbitratedSettled
                                 | DealStatus::ArbitratedRefunded
+                                | DealStatus::Aborted
                         )
                 })
                 .count(),
@@ -117,11 +118,15 @@ pub fn compute_reliability_for(principal: Principal) -> (u32, u32) {
                 // Arbitrated outcomes count as positive just like their
                 // unilateral counterparts — successful resolution via
                 // arbitration is still a "deal that ended in a fund-
-                // release decision".
+                // release decision". `Aborted` is a mutually-agreed
+                // refund (both parties signed `No`) — it's a clean
+                // resolution like `Refunded`, so it counts the same
+                // way for reliability purposes.
                 DealStatus::Settled
                 | DealStatus::Refunded
                 | DealStatus::ArbitratedSettled
-                | DealStatus::ArbitratedRefunded => {
+                | DealStatus::ArbitratedRefunded
+                | DealStatus::Aborted => {
                     positive = positive.saturating_add(1);
                     concluded = concluded.saturating_add(1);
                 }
@@ -327,7 +332,7 @@ mod tests {
     use super::{get_deal, insert_new_deal, release_lock, try_acquire_lock, with_deal, with_deals};
     use crate::types::{
         asset::Asset,
-        deal::{Consent, Deal, DealFees, DealStatus},
+        deal::{Consent, Deal, DealFees, DealStatus, Signature},
     };
 
     fn test_principal(id: u8) -> Principal {
@@ -361,6 +366,8 @@ mod tests {
             dispute: None,
             panel_size: None,
             fees: DealFees::default(),
+            payer_signature: Signature::Empty,
+            recipient_signature: Signature::Empty,
         })
     }
 
@@ -421,6 +428,8 @@ mod tests {
             dispute: None,
             panel_size: None,
             fees: DealFees::default(),
+            payer_signature: Signature::Empty,
+            recipient_signature: Signature::Empty,
         });
         assert_ne!(deal.id, 999_999_999);
         assert!(get_deal(deal.id).is_some());

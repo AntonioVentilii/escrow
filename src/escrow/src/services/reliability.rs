@@ -68,7 +68,7 @@ mod tests {
         subaccounts::derive_deal_subaccount,
         types::{
             asset::Asset,
-            deal::{Consent, Deal, DealFees, DealStatus},
+            deal::{Consent, Deal, DealFees, DealStatus, Signature},
         },
     };
 
@@ -103,6 +103,8 @@ mod tests {
             dispute: None,
             panel_size: None,
             fees: DealFees::default(),
+            payer_signature: Signature::Empty,
+            recipient_signature: Signature::Empty,
         });
     }
 

@@ -2,7 +2,7 @@
 
 A generic escrow engine on the [Internet Computer](https://internetcomputer.org/), built as a Rust canister.
 
-Payers lock tokens into deal-specific subaccounts; recipients claim them before a deadline or the funds are automatically refunded. Every deal is also exposed as an **ICRC-7 non-fungible token**, enabling standard wallets, explorers, and other canisters to discover and display deals without custom integration.
+Two flows on top of one engine, both following the **commit-at-first-action** principle (every party deposits everything they owe on their first money-moving call — there is no separate "fund" step). **Bound deals** between two known parties: creator's `create_deal` deposits their share, counterparty's `consent_deal` deposits theirs and auto-flips the deal to `Funded`; settlement is then driven by a two-party signature tally — each side records `Yes` or `No`, and the result drives `Settled` (both `Yes`), `Aborted` (both `No`), or auto-`Disputed` (mixed) — with a panel of curated arbitrators to resolve disputes. Bound deals also pay a small `creation_fee` at create that lands in the canister's controller-controlled treasury subaccount (anti-spam deterrent). **Tips** to an unknown recipient: payer's `create_deal` deposits the full amount and the deal goes straight to `Funded`; anyone with the bearer claim code can claim before expiry, otherwise the payer is refunded. Every deal is also exposed as an **ICRC-7 non-fungible token**, enabling standard wallets, explorers, and other canisters to discover and display deals without custom integration.
 
 ## Standards compliance
 
@@ -15,11 +15,16 @@ Payers lock tokens into deal-specific subaccounts; recipients claim them before 
 
 ## Use cases
 
-| Use case | Description                                                                                                     | Details            |
-| -------- | --------------------------------------------------------------------------------------------------------------- | ------------------ |
-| **Tips** | Send a tip via QR code or link — the recipient signs up and claims it, or the payer gets a refund after expiry. | [TIPS.md](TIPS.md) |
+Each row links to a visual flow doc with sequence + state diagrams.
 
-More use cases (instalment payments, multi-party escrow, ...) are planned — see the [future expansion](src/escrow/README.md#future-expansion) section. Dispute resolution + arbitrators is the next major addition; the design is captured in [RFC-001](docs/rfcs/0001-dispute-resolution.md) (currently open for comment).
+| Use case                             | Description                                                                                                                                                         | Visual flow                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **Tip**                              | Payer locks tokens for an unknown recipient; anyone with the bearer claim code can claim before expiry, otherwise the payer gets a refund.                          | [`docs/flows/tip.md`](docs/flows/tip.md)                             |
+| **Payer-creator deal (3a)**          | Payer creates a bound deal with a known recipient. Recipient consents (deposits dispute reserve), payer funds, both parties sign at settlement (`Yes` / `No`).      | [`docs/flows/payer-creator.md`](docs/flows/payer-creator.md)         |
+| **Recipient-creator deal (3b)**      | Recipient creates an invoice for a known payer (deposits the dispute reserve atomically). Payer consents and funds; both parties sign at settlement.                | [`docs/flows/recipient-creator.md`](docs/flows/recipient-creator.md) |
+| **Dispute** (overlay on bound deals) | Either bound party can open a dispute (manually, via mixed sign-tally, or via expiry's auto-YES rule). Random arbitrator panel votes; majority decides the outcome. | [`docs/flows/dispute.md`](docs/flows/dispute.md)                     |
+
+Index + glossary: [`docs/flows/README.md`](docs/flows/README.md). Long-form security model + frontend integration for the tip flow: [`TIPS.md`](TIPS.md). Future use cases (instalment payments, multi-party escrow, ...) are tracked in the [future expansion](src/escrow/README.md#future-expansion) section.
 
 ## Scalability
 

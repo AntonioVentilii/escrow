@@ -313,7 +313,7 @@ mod tests {
         memory::insert_new_deal,
         types::{
             asset::Asset,
-            deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
+            deal::{Consent, Deal, DealFees, DealMetadata, DealStatus, Signature},
             icrc7::{Icrc7TransferArg, Icrc7TransferResponse, Value, COLLECTION_NAME},
             ledger_types::Account,
         },
@@ -353,6 +353,8 @@ mod tests {
             dispute: None,
             panel_size: None,
             fees: DealFees::default(),
+            payer_signature: Signature::Empty,
+            recipient_signature: Signature::Empty,
         })
     }
 

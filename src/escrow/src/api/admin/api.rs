@@ -2,8 +2,14 @@ use ic_cdk::api::{canister_self, msg_caller, time};
 use ic_cdk_macros::{query, update};
 
 use super::{
-    params::{AdminRegisterArbitratorArgs, AdminSetArbitratorStatusArgs},
-    results::{AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult, UpdateConfigResult},
+    params::{
+        AdminRegisterArbitratorArgs, AdminSetArbitratorStatusArgs, AdminTreasuryBalanceArgs,
+        AdminTreasuryWithdrawArgs,
+    },
+    results::{
+        AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult, AdminTreasuryBalanceResult,
+        AdminTreasuryWithdrawResult, UpdateConfigResult,
+    },
 };
 use crate::{guards::caller_is_controller, memory::CONFIG, services, validation, Config};
 
@@ -65,4 +71,39 @@ pub fn admin_set_arbitrator_status(
 ) -> AdminSetArbitratorStatusResult {
     let AdminSetArbitratorStatusArgs { principal, status } = args;
     services::arbitrators::admin_set_status(principal, status).into()
+}
+
+/// Returns the live `icrc1_balance_of` of the canister-owned
+/// treasury subaccount for the requested asset. Every bound deal's
+/// `creation_fee` accumulates here and stays until a controller
+/// drains it via `admin_treasury_withdraw`.
+///
+/// This method is gated to canister controllers — the treasury
+/// balance is operationally sensitive (it reveals total accumulated
+/// anti-spam fees across all deals).
+#[update(guard = "caller_is_controller")]
+#[must_use]
+pub async fn admin_treasury_balance(
+    AdminTreasuryBalanceArgs { asset }: AdminTreasuryBalanceArgs,
+) -> AdminTreasuryBalanceResult {
+    services::admin::treasury_balance(&asset).await.into()
+}
+
+/// Drains `amount` of `asset` from the treasury subaccount to
+/// `to` via `icrc1_transfer`. Returns the ledger block index on
+/// success.
+///
+/// Caller is responsible for sizing `amount` against the live
+/// treasury balance — under-funded withdrawals surface as
+/// `EscrowError::TransferFailed` from the ledger.
+///
+/// This method is gated to canister controllers.
+#[update(guard = "caller_is_controller")]
+#[must_use]
+pub async fn admin_treasury_withdraw(
+    AdminTreasuryWithdrawArgs { asset, to, amount }: AdminTreasuryWithdrawArgs,
+) -> AdminTreasuryWithdrawResult {
+    services::admin::treasury_withdraw(&asset, to, amount)
+        .await
+        .into()
 }

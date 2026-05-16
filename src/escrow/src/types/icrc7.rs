@@ -94,7 +94,8 @@ pub fn token_owner(deal: &Deal) -> Account {
         | DealStatus::Cancelled
         | DealStatus::Rejected
         | DealStatus::Disputed
-        | DealStatus::ArbitratedRefunded => deal.payer.unwrap_or(deal.created_by),
+        | DealStatus::ArbitratedRefunded
+        | DealStatus::Aborted => deal.payer.unwrap_or(deal.created_by),
     };
     Account {
         owner,
@@ -274,7 +275,7 @@ mod tests {
     };
     use crate::types::{
         asset::Asset,
-        deal::{Consent, Deal, DealFees, DealMetadata, DealStatus},
+        deal::{Consent, Deal, DealFees, DealMetadata, DealStatus, Signature},
         ledger_types::Account,
     };
 
@@ -313,6 +314,8 @@ mod tests {
             dispute: None,
             panel_size: None,
             fees: DealFees::default(),
+            payer_signature: Signature::Empty,
+            recipient_signature: Signature::Empty,
         }
     }
 
