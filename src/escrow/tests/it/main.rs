@@ -1,4 +1,5 @@
 mod admin_config;
+mod admin_treasury;
 mod arbitrators;
 mod deals_money_flow;
 mod disputes_evidence;
