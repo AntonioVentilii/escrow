@@ -85,13 +85,17 @@ pub async fn cancel_deal(CancelDealArgs { deal_id }: CancelDealArgs) -> CancelDe
 
 /// Explicitly consents to a deal's terms.
 ///
-/// The caller must be the payer or recipient. For the bound
-/// receiver of a deal in `Created` state, `consent_deal` performs
-/// the ICRC-2 deposit of the receiver's `DC/2` dispute reserve
-/// into the deal subaccount — receivers must therefore approve
-/// the escrow canister to spend at least `DC/2 + ledger_fee`
-/// beforehand. Payer consent is a pure state flip (the payer's
-/// actual commitment is `fund_deal`, which pulls `amount + DC/2`).
+/// The caller must be the payer or recipient. When called by the
+/// bound counterparty of a `Created` deal, `consent_deal` also
+/// performs the ICRC-2 deposit of that party's commit-at-first-action
+/// share into the deal subaccount:
+///
+/// - 3a consenting recipient: pulls `DC/2` (approve at least `DC/2 + ledger_fee`).
+/// - 3b consenting payer: pulls `amount + DC/2` (approve at least `amount + DC/2 + ledger_fee`).
+///
+/// Once both consents are recorded, the deal auto-flips from
+/// `Created` to `Funded` in the same call — there is no separate
+/// funding step.
 #[update(guard = "caller_is_not_anonymous")]
 pub async fn consent_deal(ConsentDealArgs { deal_id }: ConsentDealArgs) -> ConsentDealResult {
     services::deals::consent(msg_caller(), deal_id, time())
