@@ -20,7 +20,7 @@ src/escrow/src/
 │   │   └── errors.rs       The `EscrowError` enum (the canonical error type).
 │   ├── icrc7/              ICRC-7 NFT query/transfer endpoints + ICRC-10 supported-standards.
 │   ├── reliability/        Reliability-score read endpoint.
-│   └── admin/              Controller-only config endpoints.
+│   └── admin/              Controller-gated config + treasury endpoints, plus the public `get_fees` snapshot.
 │
 ├── services/               Core business logic. Pure of `ic_cdk::api` for testability.
 │   ├── mod.rs

@@ -656,6 +656,43 @@ type Evidence = record {
 	// `Some` — the validator rejects other lengths.
 	artefact_sha256 : opt blob
 };
+// Public, read-only snapshot of the canister's current fee schedule.
+//
+// Returned by the unguarded `get_fees` query so any caller (wallets,
+// frontends, explorers) can quote the live economics without going
+// through the controller-gated `config` endpoint, which exposes
+// operational dispute parameters (panel sizes, windows, eligibility
+// thresholds) that aren't relevant to consumers.
+//
+// Mirrors the fee-bearing fields of [`Config`] one-to-one. New deals
+// snapshot the same values into `Deal.fees` at `create_deal` time
+// (see `services::deals::compute_deal_fees`) — subsequent
+// `update_config` calls never retroactively alter in-flight deals.
+type FeesView = record {
+	// Per-deal escrow service fee in the deal's token. Charged on
+	// every terminal state. Mirrors [`Config::escrow_fee`].
+	escrow_fee : nat;
+	// Per-deal anti-spam creation fee. Pulled from the creator at
+	// `create_deal` time on bound deals and routed to the treasury
+	// subaccount; tips (`recipient = None`) skip it. Mirrors
+	// [`Config::creation_fee`].
+	creation_fee : nat;
+	// Minimum arbitration fee in the deal's token. The effective
+	// arbitration fee is
+	// `max(arbitration_min_fee, amount * arbitration_fee_bps / 10_000)`.
+	// Mirrors
+	// [`crate::types::dispute::DisputeConfig::arbitration_min_fee`].
+	arbitration_min_fee : nat;
+	// Arbitration fee in basis points of the disputed amount
+	// (`10_000` = 100%). Mirrors
+	// [`crate::types::dispute::DisputeConfig::arbitration_fee_bps`].
+	arbitration_fee_bps : nat32;
+	// Reduced percentage of the arbitration fee paid to the panel
+	// when both parties resolve out-of-band via `withdraw_dispute`.
+	// Mirrors
+	// [`crate::types::dispute::DisputeConfig::withdraw_fee_pct`].
+	withdraw_fee_pct : nat32
+};
 // Arguments for `finalize_dispute`.
 //
 // Anyone (non-anonymous) can call. Idempotent — calling again after
@@ -987,6 +1024,21 @@ service : () -> {
 	get_dispute : (nat64) -> (CastVoteResult) query;
 	// Returns the escrow `Account` (canister principal + deal subaccount) for a deal.
 	get_escrow_account : (nat64) -> (GetEscrowAccountResult) query;
+	// Returns the canister's current fee schedule as a public, read-only
+	// view ([`FeesView`]).
+	//
+	// Unguarded — any caller (including anonymous) may query. Fees are
+	// public economic terms that wallets, claim pages, and explorers need
+	// to quote before a user commits to creating or accepting a deal.
+	// Distinct from [`config`], which is controller-gated because it also
+	// surfaces operational dispute parameters (panel sizes, windows,
+	// eligibility thresholds) that aren't relevant to consumers.
+	//
+	// Values reflect the **current** config. A deal created earlier may
+	// have a different fee snapshot in its `Deal.fees` field — see
+	// `services::deals::compute_deal_fees` — because `update_config`
+	// never retroactively alters in-flight deals.
+	get_fees : () -> (FeesView) query;
 	// Returns a reduced public view of a dispute (no party / panel
 	// principals, no evidence URLs). Any non-anonymous caller may query.
 	get_public_dispute : (nat64) -> (GetPublicDisputeResult) query;

@@ -10,7 +10,8 @@ use crate::{
             },
             results::{
                 AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult,
-                AdminTreasuryBalanceResult, AdminTreasuryWithdrawResult, UpdateConfigResult,
+                AdminTreasuryBalanceResult, AdminTreasuryWithdrawResult, FeesView,
+                UpdateConfigResult,
             },
         },
         arbitrators::{params::ListArbitratorsArgs, results::DeregisterArbitratorResult},

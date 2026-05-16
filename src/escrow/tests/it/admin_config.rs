@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use candid::Principal;
 use escrow::{
-    api::{admin::results::UpdateConfigResult, deals::errors::EscrowError},
+    api::{
+        admin::results::{FeesView, UpdateConfigResult},
+        deals::errors::EscrowError,
+    },
     types::{dispute::DisputeConfig, state::Config},
 };
 use pocket_ic::PocketIc;
@@ -213,4 +216,75 @@ fn update_config_rejects_non_controller_caller() {
         escrow.update(stranger, "update_config", (cfg,));
     let err = result.expect_err("non-controller should be rejected by guard");
     assert!(err.contains("not a controller"), "got: {err}");
+}
+
+fn read_fees(escrow: &PicCanister, caller: Principal) -> FeesView {
+    escrow
+        .query(caller, "get_fees", ())
+        .expect("get_fees query failed")
+}
+
+#[test]
+fn get_fees_returns_default_schedule_for_any_caller() {
+    let (_pic, escrow) = setup();
+    let default_cfg = Config::default();
+    let stranger = Principal::from_slice(&[99]);
+    let fees = read_fees(&escrow, stranger);
+    assert_eq!(fees.escrow_fee, default_cfg.escrow_fee);
+    assert_eq!(fees.creation_fee, default_cfg.creation_fee);
+    assert_eq!(
+        fees.arbitration_fee_bps,
+        default_cfg.dispute_config.arbitration_fee_bps
+    );
+    assert_eq!(
+        fees.arbitration_min_fee,
+        default_cfg.dispute_config.arbitration_min_fee
+    );
+    assert_eq!(
+        fees.withdraw_fee_pct,
+        default_cfg.dispute_config.withdraw_fee_pct
+    );
+}
+
+#[test]
+fn get_fees_is_callable_by_anonymous() {
+    let (_pic, escrow) = setup();
+    let fees = read_fees(&escrow, Principal::anonymous());
+    let default_cfg = Config::default();
+    assert_eq!(fees.escrow_fee, default_cfg.escrow_fee);
+    assert_eq!(fees.creation_fee, default_cfg.creation_fee);
+}
+
+#[test]
+fn get_fees_reflects_update_config_changes() {
+    let (_pic, escrow) = setup();
+    let new_cfg = Config {
+        escrow_fee: 12_345,
+        creation_fee: 67_890,
+        dispute_config: DisputeConfig {
+            arbitration_fee_bps: 750,
+            arbitration_min_fee: 111_222,
+            withdraw_fee_pct: 33,
+            ..DisputeConfig::default()
+        },
+    };
+    match try_update_config(&escrow, new_cfg.clone()) {
+        UpdateConfigResult::Ok => {}
+        UpdateConfigResult::Err(e) => panic!("expected Ok, got {e:?}"),
+    }
+    let fees = read_fees(&escrow, admin());
+    assert_eq!(fees.escrow_fee, new_cfg.escrow_fee);
+    assert_eq!(fees.creation_fee, new_cfg.creation_fee);
+    assert_eq!(
+        fees.arbitration_fee_bps,
+        new_cfg.dispute_config.arbitration_fee_bps
+    );
+    assert_eq!(
+        fees.arbitration_min_fee,
+        new_cfg.dispute_config.arbitration_min_fee
+    );
+    assert_eq!(
+        fees.withdraw_fee_pct,
+        new_cfg.dispute_config.withdraw_fee_pct
+    );
 }

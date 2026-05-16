@@ -8,7 +8,7 @@ use super::{
     },
     results::{
         AdminRegisterArbitratorResult, AdminSetArbitratorStatusResult, AdminTreasuryBalanceResult,
-        AdminTreasuryWithdrawResult, UpdateConfigResult,
+        AdminTreasuryWithdrawResult, FeesView, UpdateConfigResult,
     },
 };
 use crate::{guards::caller_is_controller, memory::CONFIG, services, validation, Config};
@@ -20,6 +20,26 @@ use crate::{guards::caller_is_controller, memory::CONFIG, services, validation, 
 #[must_use]
 pub fn config() -> Config {
     CONFIG.with(|c| c.borrow().clone())
+}
+
+/// Returns the canister's current fee schedule as a public, read-only
+/// view ([`FeesView`]).
+///
+/// Unguarded — any caller (including anonymous) may query. Fees are
+/// public economic terms that wallets, claim pages, and explorers need
+/// to quote before a user commits to creating or accepting a deal.
+/// Distinct from [`config`], which is controller-gated because it also
+/// surfaces operational dispute parameters (panel sizes, windows,
+/// eligibility thresholds) that aren't relevant to consumers.
+///
+/// Values reflect the **current** config. A deal created earlier may
+/// have a different fee snapshot in its `Deal.fees` field — see
+/// `services::deals::compute_deal_fees` — because `update_config`
+/// never retroactively alters in-flight deals.
+#[query]
+#[must_use]
+pub fn get_fees() -> FeesView {
+    CONFIG.with(|c| FeesView::from(&*c.borrow()))
 }
 
 /// Updates the global configuration for the Escrow canister.

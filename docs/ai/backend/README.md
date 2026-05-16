@@ -61,7 +61,7 @@ src/escrow/
 │   │   ├── deals/          Public deal endpoints (params / results / errors / api).
 │   │   ├── icrc7/          ICRC-7 NFT query / transfer (always-Err) endpoints.
 │   │   ├── reliability/    Per-principal reliability score.
-│   │   └── admin/          Controller-only config endpoints.
+│   │   └── admin/          Controller-gated config + treasury endpoints, plus the public `get_fees` snapshot.
 │   ├── services/
 │   │   ├── deals.rs        Core deal business logic (create / fund / accept / …).
 │   │   ├── expiry.rs       Batch expired-deal refund processing.
