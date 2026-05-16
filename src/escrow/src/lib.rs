@@ -21,7 +21,7 @@ use crate::{
             },
             results::{
                 AcceptDealResult, CancelDealResult, ConsentDealResult, CreateDealResult, DealView,
-                FundDealResult, GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
+                GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
                 ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult, SignDealResult,
             },
         },

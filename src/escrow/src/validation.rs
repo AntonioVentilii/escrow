@@ -325,38 +325,6 @@ pub fn resolve_parties(
     Ok((payer, recipient, payer_consent, recipient_consent))
 }
 
-/// Returns `true` if the deal is already funded (idempotent success).
-/// Returns `Err` if funding is not allowed.
-///
-/// Funding requires:
-/// - Caller is the payer (or becomes the payer for open-payer deals).
-/// - Payer consent is `Accepted` (auto-set by funding).
-/// - If a recipient is bound, their consent must be `Accepted`.
-pub fn validate_can_fund(deal: &Deal, caller: Principal) -> Result<bool, EscrowError> {
-    if let Some(p) = deal.payer {
-        if p != caller {
-            return Err(EscrowError::NotAuthorised);
-        }
-    }
-
-    match deal.status {
-        DealStatus::Created => {}
-        DealStatus::Funded | DealStatus::Settled => return Ok(true),
-        _ => {
-            return Err(EscrowError::InvalidState {
-                expected: "Created".to_owned(),
-                actual: format!("{:?}", deal.status),
-            })
-        }
-    }
-
-    if deal.recipient.is_some() && deal.recipient_consent != Consent::Accepted {
-        return Err(EscrowError::ConsentRequired);
-    }
-
-    Ok(false)
-}
-
 /// Returns `true` if the deal is already settled (idempotent success).
 /// Returns `Err` if acceptance is not allowed.
 ///
@@ -731,8 +699,8 @@ mod tests {
 
     use super::{
         resolve_parties, validate_caller_deal_limit, validate_can_accept, validate_can_cancel,
-        validate_can_consent, validate_can_fund, validate_can_reclaim, validate_can_reject,
-        validate_create, validate_metadata, MAX_ACTIVE_DEALS_PER_PRINCIPAL, MAX_EXPIRY_WINDOW_NS,
+        validate_can_consent, validate_can_reclaim, validate_can_reject, validate_create,
+        validate_metadata, MAX_ACTIVE_DEALS_PER_PRINCIPAL, MAX_EXPIRY_WINDOW_NS,
     };
     use crate::{
         api::deals::errors::EscrowError,
@@ -863,57 +831,9 @@ mod tests {
         assert!(validate_create(100, 200, 100).is_ok());
     }
 
-    // --- fund ---
-
-    #[test]
-    fn fund_ok_when_created() {
-        let payer = test_principal(1);
-        let deal = make_deal(DealStatus::Created, Some(payer), None);
-        assert!(!validate_can_fund(&deal, payer).unwrap());
-    }
-
-    #[test]
-    fn fund_idempotent_when_funded() {
-        let payer = test_principal(1);
-        let deal = make_deal(DealStatus::Funded, Some(payer), None);
-        assert!(validate_can_fund(&deal, payer).unwrap());
-    }
-
-    #[test]
-    fn fund_rejects_non_payer() {
-        let payer = test_principal(1);
-        let other = test_principal(2);
-        let deal = make_deal(DealStatus::Created, Some(payer), None);
-        assert!(validate_can_fund(&deal, other).is_err());
-    }
-
-    #[test]
-    fn fund_rejects_refunded() {
-        let payer = test_principal(1);
-        let deal = make_deal(DealStatus::Refunded, Some(payer), None);
-        assert!(validate_can_fund(&deal, payer).is_err());
-    }
-
-    #[test]
-    fn fund_requires_recipient_consent_when_bound() {
-        let payer = test_principal(1);
-        let recip = test_principal(2);
-        let mut deal = make_deal(DealStatus::Created, Some(payer), Some(recip));
-        deal.recipient_consent = Consent::Pending;
-        assert!(matches!(
-            validate_can_fund(&deal, payer),
-            Err(EscrowError::ConsentRequired)
-        ));
-    }
-
-    #[test]
-    fn fund_ok_when_recipient_consented() {
-        let payer = test_principal(1);
-        let recip = test_principal(2);
-        let mut deal = make_deal(DealStatus::Created, Some(payer), Some(recip));
-        deal.recipient_consent = Consent::Accepted;
-        assert!(!validate_can_fund(&deal, payer).unwrap());
-    }
+    // (No `validate_can_fund` tests — `fund_deal` was removed in
+    // the commit-at-first-action restructure; funding now happens
+    // inside `create_deal` and `consent_deal`.)
 
     // --- accept ---
 

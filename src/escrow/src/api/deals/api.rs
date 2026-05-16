@@ -8,8 +8,8 @@ use super::{
     },
     results::{
         AcceptDealResult, CancelDealResult, ConsentDealResult, CreateDealResult, DealView,
-        FundDealResult, GetClaimableDealResult, GetDealResult, GetEscrowAccountResult,
-        ProcessExpiredDealsResult, ReclaimDealResult, RejectDealResult, SignDealResult,
+        GetClaimableDealResult, GetDealResult, GetEscrowAccountResult, ProcessExpiredDealsResult,
+        ReclaimDealResult, RejectDealResult, SignDealResult,
     },
 };
 use crate::{
@@ -37,17 +37,6 @@ pub async fn create_deal(args: CreateDealArgs) -> CreateDealResult {
     services::deals::create(msg_caller(), args, time())
         .await
         .into()
-}
-
-/// Funds a previously created deal by transferring tokens from the payer's
-/// account into the deal's escrow subaccount via ICRC-2 `transfer_from`.
-///
-/// The deal transitions from `Created` to `Funded`. Funding implicitly sets
-/// the payer's consent to `Accepted`. For deals with a known recipient, the
-/// recipient must have consented first.
-#[update(guard = "caller_is_not_anonymous")]
-pub async fn fund_deal(FundDealArgs { deal_id }: FundDealArgs) -> FundDealResult {
-    services::deals::fund(msg_caller(), deal_id).await.into()
 }
 
 /// Accepts (claims) a funded deal, releasing the escrowed tokens to the caller.

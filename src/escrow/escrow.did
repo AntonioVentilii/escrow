@@ -667,7 +667,6 @@ type FundDealArgs = record {
 	// Identifier of the deal to fund.
 	deal_id : nat64
 };
-type FundDealResult = variant { Ok : DealView; Err : EscrowError };
 type GetClaimableDealResult = variant {
 	Ok : ClaimableDealView;
 	Err : EscrowError
@@ -966,13 +965,6 @@ service : () -> {
 	// panel members. Triggers tally + outcome propagation + ledger
 	// transfers + arbitrator score updates.
 	finalize_dispute : (FinalizeDisputeArgs) -> (CastVoteResult);
-	// Funds a previously created deal by transferring tokens from the payer's
-	// account into the deal's escrow subaccount via ICRC-2 `transfer_from`.
-	//
-	// The deal transitions from `Created` to `Funded`. Funding implicitly sets
-	// the payer's consent to `Accepted`. For deals with a known recipient, the
-	// recipient must have consented first.
-	fund_deal : (FundDealArgs) -> (FundDealResult);
 	// Returns the arbitrator profile for `principal`, or `None` if the
 	// principal hasn't been registered. Public read; any non-anonymous
 	// caller may query any principal.
@@ -1093,7 +1085,7 @@ service : () -> {
 	// `recipient`. Funds remain in the escrow subaccount; the deal
 	// transitions `Funded → Disputed`. The expiry sweep skips
 	// `Disputed` deals.
-	open_dispute : (FundDealArgs) -> (CastVoteResult);
+	open_dispute : (CancelDealArgs) -> (CastVoteResult);
 	// Batch-processes expired deals by refunding escrowed tokens back to their
 	// payers.
 	//
@@ -1104,14 +1096,14 @@ service : () -> {
 	//
 	// Only callable after the deal's `expires_at_ns` deadline has passed. The deal
 	// transitions from `Funded` to `Refunded`.
-	reclaim_deal : (FundDealArgs) -> (GetDealResult);
+	reclaim_deal : (CancelDealArgs) -> (GetDealResult);
 	// Rejects a deal's terms. The deal transitions to `Rejected` (terminal).
 	//
 	// The caller must be the payer or recipient. Their consent is set
 	// to `Rejected` and the deal becomes final. Any reserves already
 	// deposited are refunded; the operator retains its `escrow_fee`
 	// share when a reserve was on hand.
-	reject_deal : (FundDealArgs) -> (GetDealResult);
+	reject_deal : (CancelDealArgs) -> (GetDealResult);
 	// Records the caller's `No` settlement signature on a `Funded`
 	// bound deal and dispatches the resulting two-party tally:
 	//

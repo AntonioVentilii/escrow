@@ -28,7 +28,6 @@ macro_rules! candid_result {
 }
 
 candid_result!(CreateDealResult, DealView);
-candid_result!(FundDealResult, DealView);
 candid_result!(AcceptDealResult, DealView);
 candid_result!(ReclaimDealResult, DealView);
 candid_result!(CancelDealResult, DealView);
